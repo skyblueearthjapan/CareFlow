@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Iterable
 from typing import Final
@@ -275,6 +276,43 @@ def weekdays_cell_to_en(value: str | None) -> list[str]:
     return [en for en in WEEKDAY_EN_LIST if en in found]
 
 
+# NG 曜日の 1 セル (カルテ F14) で受ける書き方: 月 / 月曜 / 月曜日 / Mon。
+# 区切りは カンマ (半角・全角)・読点・中点・空白。読めない曜日は ValueError
+# (NG 曜日を黙って消さないため。希望曜日の旧 1 セルは weekdays_cell_to_en のまま)。
+_NG_WEEKDAY_TOKEN_TO_EN: Final[dict[str, str]] = {
+    **{ja: en for en, ja in zip(WEEKDAY_EN_LIST, WEEKDAY_LABELS, strict=True)},
+    **{f"{ja}曜": en for en, ja in zip(WEEKDAY_EN_LIST, WEEKDAY_LABELS, strict=True)},
+    **{f"{ja}曜日": en for en, ja in zip(WEEKDAY_EN_LIST, WEEKDAY_LABELS, strict=True)},
+    **{en.lower(): en for en in WEEKDAY_EN_LIST},
+}
+_NG_WEEKDAY_SPLIT_RE: Final = re.compile(r"[,，、・･\s]+")
+
+
+def ng_weekdays_cell_to_en(value: str | None) -> list[str]:
+    """NG 曜日の 1 セル ("月,水" / "月曜・水曜日" / "火曜日") → 英 list (月→日の順).
+
+    空は ``[]``。読めない曜日が 1 つでもあれば ``ValueError`` (その語を添える)。
+    """
+    if value is None:
+        return []
+    text = unicodedata.normalize("NFKC", str(value)).strip()
+    if not text:
+        return []
+    found: set[str] = set()
+    unknown: list[str] = []
+    for tok in _NG_WEEKDAY_SPLIT_RE.split(text):
+        if not tok:
+            continue
+        en = _NG_WEEKDAY_TOKEN_TO_EN.get(tok.lower())
+        if en is None:
+            unknown.append(tok)
+        else:
+            found.add(en)
+    if unknown:
+        raise ValueError("、".join(unknown))
+    return [en for en in WEEKDAY_EN_LIST if en in found]
+
+
 def weekdays_en_to_yesno_cells(weekdays: list[str] | None) -> dict[str, str]:
     """Phase G-49/G-50: preferred_weekdays (英 list) → 7 列 (pref_wd_mon..) の 〇/×.
 
@@ -364,6 +402,11 @@ PATIENT_NG_WEEKDAY_KEY_TO_HEADER: Final[dict[str, str]] = {
 }
 
 
+# カルテの NG 曜日セルが読めないとき、組み立てる標準シートの NG 列に入れる目印。
+# importer がこれを見つけたら、カルテの書き方の文で行エラーにする。
+NG_KARTE_UNREADABLE_PREFIX: Final = "【読めないNG曜日】"
+
+
 def ng_weekdays_en_to_yesno_cells(weekdays: list[str] | None) -> dict[str, str]:
     """ng_weekdays (英 list) → 7 列 (ng_wd_mon..) の 〇/×. 空でも全列「×」."""
     present = {str(w) for w in (weekdays or [])}
@@ -377,10 +420,38 @@ def ng_weekday_yesno_cells_to_en(cells: dict[str, object]) -> list[str] | None:
 
     7 列がすべて空なら ``None`` (= 変えない。この列の無い古いファイルも同じ)。
     1 列でも書いてあれば、〇 の曜日だけの並び (全部 × なら ``[]`` = NG 曜日なし)。
+    〇 でも × でも空でもない値 (「NG」など) があれば ``ValueError`` (× と読んで
+    NG 曜日を黙って消さないため)。メッセージは「NG曜日_月: 'NG'」の形。
     """
     if all(_is_blank_cell(cells.get(key)) for key in PATIENT_NG_WEEKDAY_COL_KEYS):
         return None
+    for key in PATIENT_NG_WEEKDAY_COL_KEYS:
+        v = cells.get(key)
+        if isinstance(v, str) and v.startswith(NG_KARTE_UNREADABLE_PREFIX):
+            raw = v[len(NG_KARTE_UNREADABLE_PREFIX) :]
+            raise ValueError(
+                f"カルテの NG 曜日「{raw}」（月,水 / 月曜・水曜日 / なし のように書きます）"
+            )
+    bad = [
+        f"{PATIENT_NG_WEEKDAY_KEY_TO_HEADER[key]} の {str(cells.get(key)).strip()!r}"
+        for key in PATIENT_NG_WEEKDAY_COL_KEYS
+        if not _is_blank_cell(cells.get(key))
+        and not _is_yes(cells.get(key))
+        and not _is_no(cells.get(key))
+    ]
+    if bad:
+        raise ValueError(" / ".join(bad) + "（〇 か × で書きます）")
     return [en for key, en in PATIENT_NG_WEEKDAY_KEY_TO_EN.items() if _is_yes(cells.get(key))]
+
+
+def _is_no(value: object) -> bool:
+    """「選択しない」の書き方か (×/✕/x/いいえ/FALSE/0/no)。空は含めない。"""
+    if isinstance(value, bool):
+        return not value
+    s = unicodedata.normalize("NFKC", str(value)).strip()
+    if s in ("×", "✕", "✖", "いいえ"):
+        return True
+    return s.upper() in ("X", "FALSE", "0", "NO", "N")
 
 
 def _is_blank_cell(value: object) -> bool:

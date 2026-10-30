@@ -38,6 +38,7 @@ from app.services.patient_excel.schema import (
     SHEET_PFV,
     SHEET_PFV_EDIT,
     VISIT_FREQUENCY_JA_VALUES,
+    ng_weekdays_cell_to_en,
     parse_pfv_visit_week_cell,
 )
 
@@ -469,3 +470,143 @@ async def test_karte_shows_frequency_and_roundtrip_is_noop(client, db) -> None:
     await db.refresh(p)
     assert p.weekly_pattern["ng_weekdays"] == []
     assert p.weekly_pattern["visit_weeks"] == "1,3"
+
+
+# ---------------------------------------------------------------------------
+# NG 曜日を黙って消さない (2026-10-30 レビュー指摘)
+# ---------------------------------------------------------------------------
+
+
+def test_ng_weekdays_cell_accepts_common_spellings() -> None:
+    assert ng_weekdays_cell_to_en("月曜") == ["Mon"]
+    assert ng_weekdays_cell_to_en("火曜日") == ["Tue"]
+    assert ng_weekdays_cell_to_en("月・水") == ["Mon", "Wed"]
+    assert ng_weekdays_cell_to_en("金曜日、月，水,土 日") == ["Mon", "Wed", "Fri", "Sat", "Sun"]
+    assert ng_weekdays_cell_to_en("Mon,wed") == ["Mon", "Wed"]
+    assert ng_weekdays_cell_to_en("  ") == []
+    with pytest.raises(ValueError, match="月x"):
+        ng_weekdays_cell_to_en("月x,水")
+
+
+def test_ng_columns_reject_values_other_than_yes_no() -> None:
+    cells = {"ng_wd_mon": "NG", "ng_wd_tue": "×", "ng_wd_wed": "〇"}
+    updates, errors, _ = parse_weekly_extras(cells)
+    assert "ng_weekdays" not in updates
+    assert errors and "NG曜日_月" in errors[0] and "'NG'" in errors[0]
+    updates, errors, _ = parse_weekly_extras({"ng_wd_mon": "x", "ng_wd_wed": "○"})
+    assert errors == [] and updates["ng_weekdays"] == ["Wed"]
+
+
+@pytest.mark.asyncio
+async def test_import_ng_column_unknown_value_is_row_error(client, db) -> None:
+    admin = await _make_user(db, "freq-ng-bad@example.com")
+    p = await _make_patient(db, weekly_pattern={"frequency_per_week": 1, "ng_weekdays": ["Mon"]})
+    content = _book(
+        patient_rows=[
+            {"patient_id": str(p.id), "patient_code": p.code, "ng_wd_mon": "NG"},
+        ],
+    )
+    res = await _post(client, admin, "import", content, dry_run=False)
+    assert res.status_code == 200, res.text
+    row = res.json()["patient_rows"][0]
+    assert row["operation"] == "error"
+    assert "NG 曜日が読めません" in row["error_message"]
+    await db.refresh(p)
+    assert p.weekly_pattern["ng_weekdays"] == ["Mon"]
+
+
+@pytest.mark.asyncio
+async def test_karte_ng_spellings_and_unknown_token(client, db) -> None:
+    admin = await _make_user(db, "freq-karte-ng@example.com")
+    p = await _make_patient(db, weekly_pattern={**_WP, "ng_weekdays": ["Mon"]})
+    res = await client.get(
+        f"/api/v1/patients/import-export/karte-export?patient_id={p.id}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+
+    def _with_ng(text: str) -> bytes:
+        wb = load_workbook(BytesIO(res.content))
+        wb[SHEET_KARTE][KARTE_NG_CELL] = text
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # 読めない曜日: 行エラーにして、いまの NG 曜日 (月) を消さない。
+    bad = await _post(client, admin, "karte-import", _with_ng("月曜・水よう"), dry_run=False)
+    assert bad.status_code == 200, bad.text
+    row = bad.json()["patient_rows"][0]
+    assert row["operation"] == "error"
+    assert "月曜・水よう" in row["error_message"]
+    await db.refresh(p)
+    assert p.weekly_pattern["ng_weekdays"] == ["Mon"]
+
+    # 「月曜・水曜日」は読める。
+    ok = await _post(client, admin, "karte-import", _with_ng("月曜・水曜日"), dry_run=False)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["summary"]["patients_error"] == 0, ok.text
+    await db.refresh(p)
+    assert p.weekly_pattern["ng_weekdays"] == ["Mon", "Wed"]
+
+
+# ---------------------------------------------------------------------------
+# 2 人目の枠の「訪問する週」・起点の週の知らせ (2026-10-30 レビュー指摘)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slot1_visit_week_shown_in_preview_and_synced_when_slot0_same(client, db) -> None:
+    admin = await _make_user(db, "freq-slot1@example.com")
+    p = await _make_patient(db, weekly_pattern={"frequency_per_week": 1})
+    await _make_pfv(db, patient_id=p.id, weekday=1, visit_week="B")
+    tue2 = await _make_pfv(db, patient_id=p.id, weekday=1, slot_index=1, visit_week="every")
+    content = _book(
+        patient_rows=[{"patient_id": str(p.id), "patient_code": p.code}],
+        edit_rows=[
+            {
+                "patient_id": str(p.id),
+                "patient_code": p.code,
+                "service_minutes": 30,
+                "tue_time": "09:00",
+                "tue_week": "Bの週",
+            }
+        ],
+    )
+    pre = await _post(client, admin, "import", content, dry_run=True)
+    assert pre.status_code == 200, pre.text
+    slot1_rows = [r for r in pre.json()["pfv_rows"] if r.get("slot_index") == 1]
+    assert len(slot1_rows) == 1, pre.text
+    assert slot1_rows[0]["operation"] == "update"
+    assert slot1_rows[0]["changes"][0]["field"] == "visit_week"
+    assert slot1_rows[0]["changes"][0]["new_value"] == "B"
+
+    res = await _post(client, admin, "import", content, dry_run=False)
+    assert res.status_code == 200, res.text
+    await db.refresh(tue2)
+    assert tue2.visit_week == "B"
+
+
+@pytest.mark.asyncio
+async def test_anchor_snapped_to_current_value_is_not_a_change(client, db) -> None:
+    admin = await _make_user(db, "freq-anchor-same@example.com")
+    p = await _make_patient(
+        db,
+        weekly_pattern={
+            "frequency_per_week": 1,
+            "visit_frequency": "biweekly",
+            "biweekly_anchor": "2026-11-02",
+        },
+    )
+    content = _book(
+        patient_rows=[
+            {
+                "patient_id": str(p.id),
+                "patient_code": p.code,
+                "biweekly_anchor": date(2026, 11, 5),  # 木曜 → 11/2 (いまと同じ)
+            }
+        ],
+    )
+    res = await _post(client, admin, "import", content, dry_run=True)
+    assert res.status_code == 200, res.text
+    row = res.json()["patient_rows"][0]
+    assert not any(c["field"] == "biweekly_anchor" for c in row["changes"]), row

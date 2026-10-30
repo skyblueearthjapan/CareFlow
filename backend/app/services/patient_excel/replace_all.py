@@ -1433,7 +1433,15 @@ async def parse_and_diff_replace_all(
                 for col_key, idx in PATIENT_COL_INDEX.items()
             }
             weekly, w_errors, w_infos = parse_weekly_from_patient_cells_checked(row_cells)
-            op = apply_weekly_check_to_row(diff_row, op, w_errors, w_infos)
+            existing_p = existing_patients.get(diff_row.patient_id)
+            op = apply_weekly_check_to_row(
+                diff_row,
+                op,
+                w_errors,
+                w_infos,
+                weekly=weekly,
+                existing_wp=existing_p.weekly_pattern if existing_p is not None else None,
+            )
             if weekly is not None and not w_errors:
                 weekly_from_patient_sheet[diff_row.patient_id] = weekly
         patient_rows.append(diff_row)

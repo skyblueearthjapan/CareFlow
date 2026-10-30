@@ -2244,9 +2244,11 @@ def _parse_pfv_edit_patient(
                 )
             )
             update_dict["course_template_id"] = spec["course_template_id"]
-        # 訪問する週: 空セルは変えない。変えたら同じ曜日の 2 人目 (slot 1) の枠もそろえる
-        # (2 名体制の 2 行は同じ週に訪問する)。
+        # 訪問する週: 空セルは変えない。書いてあれば同じ曜日の 2 人目 (slot 1) の枠もそろえる
+        # (2 名体制の 2 行は同じ週に訪問する)。1 人目が同じで 2 人目だけ違うときもそろえ、
+        # プレビューにも 2 人目の行として出す。
         new_vw = spec["visit_week"]
+        slot1_row: PfvExcelImportRow | None = None
         if new_vw is not None and (existing_pfv.visit_week or "every") != new_vw:
             changes.append(
                 PatientExcelChange(
@@ -2256,9 +2258,24 @@ def _parse_pfv_edit_patient(
                 )
             )
             update_dict["visit_week"] = new_vw
-            slot1 = existing_pfvs.get((patient_id, "normal", wd_int, 1))
-            if slot1 is not None and (slot1.visit_week or "every") != new_vw:
-                ops.append({"_pfv_id": slot1.id, "_op": "update", "visit_week": new_vw})
+        slot1 = existing_pfvs.get((patient_id, "normal", wd_int, 1))
+        if new_vw is not None and slot1 is not None and (slot1.visit_week or "every") != new_vw:
+            ops.append({"_pfv_id": slot1.id, "_op": "update", "visit_week": new_vw})
+            slot1_row = PfvExcelImportRow(
+                row_number=row_number,
+                patient_id=patient_id,
+                patient_code=patient.code,
+                weekday=wd_int,
+                slot_index=1,
+                operation="update",
+                changes=[
+                    PatientExcelChange(
+                        field="visit_week",
+                        old_value=slot1.visit_week or "every",
+                        new_value=new_vw,
+                    )
+                ],
+            )
         # sub_office_id は本シートでは触らない (既存値を保持; round-trip 安定 + 誤削除防止).
         if changes:
             ops.append(update_dict)
@@ -2284,6 +2301,8 @@ def _parse_pfv_edit_patient(
                     operation="noop",
                 )
             )
+        if slot1_row is not None:
+            diff_rows.append(slot1_row)
 
     # 行に無い曜日の既存 normal PFV は削除 (空欄曜日 = 訪問なし).
     # ただし削除スコープは「このシートが実際に管理する曜日」(PFV_EDIT_WEEKDAY_KEYS =
@@ -2475,9 +2494,14 @@ def parse_weekly_extras(cells: dict[str, Any]) -> tuple[dict[str, Any], list[str
                         f"その週の月曜 {monday.month}/{monday.day} にそろえました）"
                     )
 
-    ng = ng_weekday_yesno_cells_to_en(cells)
-    if ng is not None:
-        updates["ng_weekdays"] = ng
+    try:
+        ng = ng_weekday_yesno_cells_to_en(cells)
+    except ValueError as exc:
+        # 「NG」など 〇/× 以外の値: × と読んで NG 曜日を消さず、行エラーにする。
+        errors.append(f"NG 曜日が読めません: {exc}")
+    else:
+        if ng is not None:
+            updates["ng_weekdays"] = ng
 
     return updates, errors, infos
 
@@ -2564,13 +2588,27 @@ def apply_weekly_check_to_row(
     op: dict[str, Any] | None,
     errors: list[str],
     infos: list[str],
+    *,
+    weekly: dict[str, Any] | None = None,
+    existing_wp: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """訪問頻度まわりの検査結果を患者の行に反映する. 返り値は積む op (エラーなら None)."""
+    """訪問頻度まわりの検査結果を患者の行に反映する. 返り値は積む op (エラーなら None).
+
+    ``infos`` は起点の週を月曜にそろえた知らせ。そろえた日がいまの起点の週と同じなら
+    変わらないので、知らせを変更として積まない。
+    """
     if errors:
         diff_row.operation = "error"
         diff_row.error_message = " / ".join(errors)
         diff_row.changes = []
         return None
+    new_anchor = (weekly or {}).get("biweekly_anchor")
+    if (
+        new_anchor is not None
+        and isinstance(existing_wp, dict)
+        and existing_wp.get("biweekly_anchor") == new_anchor
+    ):
+        return op
     for info in infos:
         diff_row.changes.append(
             PatientExcelChange(field="biweekly_anchor", old_value=None, new_value=info)
@@ -2788,7 +2826,15 @@ async def parse_and_diff(
                 for col_key, idx in PATIENT_COL_INDEX.items()
             }
             weekly, w_errors, w_infos = parse_weekly_from_patient_cells_checked(row_cells)
-            op = apply_weekly_check_to_row(diff_row, op, w_errors, w_infos)
+            existing_p = existing_patients.get(diff_row.patient_id)
+            op = apply_weekly_check_to_row(
+                diff_row,
+                op,
+                w_errors,
+                w_infos,
+                weekly=weekly,
+                existing_wp=existing_p.weekly_pattern if existing_p is not None else None,
+            )
             if weekly is not None and not w_errors:
                 weekly_from_patient_sheet[diff_row.patient_id] = weekly
         patient_rows.append(diff_row)

@@ -49,8 +49,10 @@ from app.services.patient_excel.schema import (
     ID_COLUMN_FILL_COLOR,
     ID_COLUMN_FONT_COLOR,
     INSURANCE_EN_TO_JA,
+    NG_KARTE_UNREADABLE_PREFIX,
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
+    PATIENT_NG_WEEKDAY_COL_KEYS,
     PATIENT_WEEKDAY_COL_KEYS,
     PFV_EDIT_COL_INDEX,
     PFV_EDIT_COLUMNS,
@@ -72,8 +74,8 @@ from app.services.patient_excel.schema import (
     WEEKDAY_MARK_VALUES,
     build_office_code_short_maps,
     course_token,
+    ng_weekdays_cell_to_en,
     ng_weekdays_en_to_yesno_cells,
-    weekdays_cell_to_en,
     weekdays_en_to_cell,
     weekdays_en_to_yesno_cells,
 )
@@ -509,13 +511,23 @@ def _read_anchor_cell(ws: Worksheet) -> str | None:
     return _read_cell_str(ws, KARTE_ANCHOR_CELL)
 
 
-def _ng_marks_from_cell(value: str | None) -> dict[str, str]:
-    """NG 曜日のセル ("月,水" / "なし" / 空) → ng_wd_* の 〇/×. 空は {} (= 維持)."""
+def _ng_marks_from_cell(value: str | None) -> dict[str, str | None]:
+    """NG 曜日のセル ("月,水" / "月曜・水曜日" / "なし" / 空) → ng_wd_* の 〇/×.
+
+    空は {} (= 維持)。読めない曜日があるときは、NG 列の先頭に目印付きで元の文字を
+    入れる (importer がその患者の行をエラーにする。黙って NG 曜日を消さない)。
+    """
     if value is None:
         return {}
     if value.strip() == KARTE_NG_NONE:
         return ng_weekdays_en_to_yesno_cells([])
-    return ng_weekdays_en_to_yesno_cells(weekdays_cell_to_en(value))
+    try:
+        ng = ng_weekdays_cell_to_en(value)
+    except ValueError:
+        marks: dict[str, str | None] = dict.fromkeys(PATIENT_NG_WEEKDAY_COL_KEYS)
+        marks[PATIENT_NG_WEEKDAY_COL_KEYS[0]] = f"{NG_KARTE_UNREADABLE_PREFIX}{value.strip()}"
+        return marks
+    return ng_weekdays_en_to_yesno_cells(ng)
 
 
 def _strip_office_auto_suffix(label: str | None) -> str | None:
