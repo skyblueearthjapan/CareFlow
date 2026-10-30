@@ -434,7 +434,6 @@ function parseSpecialMarkCellConflict(err: unknown): { existingMarkId: string | 
   };
 }
 
-/** Wave 39: 通算分 (= H*60+M) → "HH:MM". 範囲外チェックはしない (clamp は呼出側). */
 /**
  * 2 名で訪問を 1 行で持つ訪問 (本番の形: required_staff_count=2・visit_group_id なし・
  * 2 人目は secondary_staff_id) の 2 人目。1 行でない・2 人目がいなければ null。
@@ -448,6 +447,81 @@ function pairSecondaryOf(v: {
   return v.secondary_staff_id ?? null;
 }
 
+/** 文字コード順 (backend の Python の文字列比較と同じ順). */
+function cmpCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * 2 名で訪問を 1 行で持つ訪問の「2 人目のコース」(その日の courses の 1 つ)。
+ * backend の ``pair_visit.load_pair_partner_courses`` と同じ引き方:
+ *   1. 固定訪問の slot_index=1 の行のひな形のコース (特別週で特別週の枠がある方は
+ *      特別週の枠)。隔週の A/B は画面では週を判定しないため、同じ曜日の slot 0 と
+ *      訪問する週 (visit_week) が違う slot 1 は使わず 2 へ回す (訪問がある =
+ *      slot 0 の週なので、同じ週の枠なら slot 1 もその週に当たる)。
+ *   2. 1 で引けなければ、その日のコースのうち担当が secondary_staff_id の人のコース
+ *      (1 人目のコースと同じ拠点を先に、コースの記号・id の順)。
+ * どちらでも引けない・1 人目のコースと同じなら null。
+ */
+export function resolvePairPartnerCourse(args: {
+  visit: {
+    course_id?: string | null;
+    required_staff_count?: number | null;
+    visit_group_id?: string | null;
+    secondary_staff_id?: string | null;
+  };
+  pfvs: ReadonlyArray<
+    Pick<PatientFixedVisitV2Read, 'mode' | 'weekday' | 'slot_index' | 'course_template_id'> & {
+      visit_week?: string | null;
+    }
+  >;
+  specialWeek: boolean;
+  templates: CourseTemplateRead[];
+  courses: CourseV2Read[];
+}): CourseV2Read | null {
+  const { visit, pfvs, specialWeek, templates, courses } = args;
+  if ((visit.required_staff_count ?? 1) < 2 || visit.visit_group_id) return null;
+  const primary = visit.course_id ? courses.find((c) => c.id === visit.course_id) : undefined;
+  if (!primary) return null;
+  const { iso_year: isoYear, iso_week: isoWeek, weekday } = primary;
+  const mode = specialWeek && pfvs.some((p) => p.mode === 'special') ? 'special' : 'normal';
+  const slotOf = (idx: number) =>
+    pfvs.find((p) => p.mode === mode && p.weekday === weekday && (p.slot_index ?? 0) === idx);
+  const slot1 = slotOf(1);
+  const slot0 = slotOf(0);
+  const sameWeek =
+    mode === 'special' ||
+    !slot0 ||
+    (slot1?.visit_week ?? 'every') === (slot0.visit_week ?? 'every');
+  if (slot1?.course_template_id && sameWeek) {
+    const tpl = templates.find((t) => t.id === slot1.course_template_id);
+    const c = tpl
+      ? findCourseForTemplate({ template: tpl, weekday, isoYear, isoWeek, courses })
+      : null;
+    if (c && c.id !== primary.id) return c;
+  }
+  const sec = visit.secondary_staff_id;
+  if (!sec) return null;
+  const cands = courses
+    .filter(
+      (c) =>
+        !c.deleted_at &&
+        c.id !== primary.id &&
+        c.assigned_staff_id === sec &&
+        c.iso_year === isoYear &&
+        c.iso_week === isoWeek &&
+        c.weekday === weekday,
+    )
+    .sort(
+      (a, b) =>
+        Number(a.office_id !== primary.office_id) - Number(b.office_id !== primary.office_id) ||
+        cmpCodeUnits(String(a.code), String(b.code)) ||
+        cmpCodeUnits(a.id, b.id),
+    );
+  return cands[0] ?? null;
+}
+
+/** Wave 39: 通算分 (= H*60+M) → "HH:MM". 範囲外チェックはしない (clamp は呼出側). */
 function formatHHMM(totalMinutes: number): string {
   const m = Math.max(0, totalMinutes);
   const hh = Math.floor(m / 60);
@@ -1261,6 +1335,55 @@ export function CourseDayTablePanel({
     [patientStatusOfVisit, patientStatusSinceOfVisit, showInactive],
   );
 
+  // ─── Wave 32: staffId → StaffRead マップ (CourseWeekOverview 担当名表示用) ──
+  const staffMap = useMemo(() => {
+    const m = new Map<string, (typeof allStaff)[number]>();
+    for (const s of allStaff) m.set(s.id, s);
+    return m;
+  }, [allStaff]);
+
+  // ─── 2 名で訪問の 1 行 → 2 人目のコース (backend の load_pair_partner_courses と同じ) ──
+  // 訪問は 1 人目のコースの 1 行。2 人目のコースの列にも薄い写しを出し、件数と空き時間に数える。
+  const pairPartnerCourseByVisitId = useMemo(() => {
+    const m = new Map<string, CourseV2Read>();
+    const pfvsByPatient = new Map<string, PatientFixedVisitV2Read[]>();
+    pfvPatientIds.forEach((pid, i) => pfvsByPatient.set(pid, pfvQueries[i]?.data ?? []));
+    for (const v of weekVisits) {
+      if (!pairSecondaryOf(v)) continue;
+      const patient = patientById.get(v.patient_id) as
+        | { special_week_active?: Array<{ iso_year: number; iso_week: number }> | null }
+        | undefined;
+      const specialWeek = (patient?.special_week_active ?? []).some(
+        (r) => r.iso_year === isoYear && r.iso_week === isoWeek,
+      );
+      const c = resolvePairPartnerCourse({
+        visit: v,
+        pfvs: pfvsByPatient.get(v.patient_id) ?? [],
+        specialWeek,
+        templates,
+        courses,
+      });
+      if (c) m.set(v.id, c);
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    weekVisits,
+    patientById,
+    templates,
+    courses,
+    isoYear,
+    isoWeek,
+    pfvPatientIds,
+    pfvQueriesDepKey,
+  ]);
+
+  /** 職員の名前 (「〇〇さん」の〇〇)。分からなければ null。 */
+  const staffNameOf = useCallback(
+    (id: string | null | undefined) => (id ? (staffMap.get(id)?.name ?? null) : null),
+    [staffMap],
+  );
+
   // ─── visits を (course_id, slot) → CourseGridVisit[] にバケット化 ──
   // course_id 経由で template に逆引きする (BE Layer 1 が visits.course_id を埋める前提)。
   const visitsByCourse = useMemo(() => {
@@ -1394,8 +1517,12 @@ export function CourseDayTablePanel({
       const beFixedVisitId = (v as { fixed_visit_id?: string | null }).fixed_visit_id ?? null;
       if (beFixedVisitId) fixedVisitId = beFixedVisitId;
 
-      const arr = m.get(cid) ?? [];
-      arr.push({
+      // 2 名で 1 行 (本番の形): 1 人目のカードに 2 人目の名前を添える。
+      const pairSecondary = pairSecondaryOf(v);
+      const pairNote = pairSecondary
+        ? `2 名（${staffNameOf(pairSecondary) ?? '2 人目'}さんと）`
+        : null;
+      const card: CourseGridVisit = {
         id: v.id,
         patient_id: v.patient_id,
         patient_name: patient?.name ?? v.patient_name ?? null,
@@ -1435,11 +1562,34 @@ export function CourseDayTablePanel({
         start_time: v.start_time ?? null,
         end_time: v.end_time ?? null,
         patient_sex: (patient?.sex as string | null | undefined) ?? null,
-      });
+        pair_note: pairNote,
+      };
+      const arr = m.get(cid) ?? [];
+      arr.push(card);
       m.set(cid, arr);
+      // 2 人目のコースの列にも薄い写しを出す (2 人目の時間がふさがっている)。
+      // 動かす・消す・ピン・今週のみ・同住所の囲みは 1 人目のカードだけ。
+      const partnerCourse = pairPartnerCourseByVisitId.get(v.id);
+      if (partnerCourse) {
+        const linked: CourseGridVisit = {
+          ...card,
+          pair_linked: true,
+          pair_note: `2 名（${staffNameOf(v.primary_staff_id) ?? '1 人目'}さんと）`,
+          same_address_group_id: null,
+          fixed_visit_id: null,
+          movability: null,
+          master_start_time: null,
+          source: null,
+        };
+        const parr = m.get(partnerCourse.id) ?? [];
+        parr.push(linked);
+        m.set(partnerCourse.id, parr);
+      }
     }
     return m;
   }, [
+    pairPartnerCourseByVisitId,
+    staffNameOf,
     weekVisits,
     patientById,
     patientStatusOfVisit,
@@ -1482,12 +1632,23 @@ export function CourseDayTablePanel({
         same_address_key: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
       });
       rawByCourse.set(cid, arr);
+      // 2 名で 1 行: 2 人目のコースの時間もふさぐ (同住所の 90 分占有には入れない)。
+      const partnerCid = pairPartnerCourseByVisitId.get(v.id)?.id;
+      if (partnerCid) {
+        const parr = rawByCourse.get(partnerCid) ?? [];
+        parr.push({
+          start_time: v.start_time ?? '',
+          end_time: v.end_time ?? '',
+          same_address_key: null,
+        });
+        rawByCourse.set(partnerCid, parr);
+      }
     }
     for (const [cid, raw] of rawByCourse.entries()) {
       m.set(cid, computeFreeGaps(raw, businessBlocks));
     }
     return m;
-  }, [weekVisits, businessBlocks, sameAddressKeyByPatientId]);
+  }, [weekVisits, businessBlocks, sameAddressKeyByPatientId, pairPartnerCourseByVisitId]);
 
   // ─── Phase G-55: (template_id, weekday) → 空き時間帯 のマップ (週ビュー用) ──
   // freeGapsByCourse は course_id 単位。週ビュー (CourseWeekOverview) は
@@ -1810,13 +1971,6 @@ export function CourseDayTablePanel({
   // Phase G-6: sameAddressKeyByPatientId は visitsByCourse より前に移動済み.
   // CourseWeekOverview (週ビュー) と CourseDayTable (テーブル表示 同住所×同時刻ペア囲み)
   // の両方で使う.
-
-  // ─── Wave 32: staffId → StaffRead マップ (CourseWeekOverview 担当名表示用) ──
-  const staffMap = useMemo(() => {
-    const m = new Map<string, (typeof allStaff)[number]>();
-    for (const s of allStaff) m.set(s.id, s);
-    return m;
-  }, [allStaff]);
 
   // ─── Wave 28 Phase B-3: (template_id, weekday) → assigned_staff_id マップ ──
   // CourseWeekOverview で担当スタッフ別 event を表示するために必要。
@@ -2546,7 +2700,8 @@ export function CourseDayTablePanel({
     if (tlId) {
       let found: CourseGridVisit | null = null;
       for (const c of timelineColumns) {
-        const v = c.visits.find((x) => x.id === tlId);
+        // 2 人目のコースの写し (pair_linked) は掴めないので、1 人目のカードを探す。
+        const v = c.visits.find((x) => x.id === tlId && !x.pair_linked);
         if (v) {
           found = v;
           break;
@@ -2559,9 +2714,11 @@ export function CourseDayTablePanel({
     // 同住所ペア (2名セット) のドラッグはペアボックス実寸ゴースト。
     const pairIds = parseTlPairDraggableId(id);
     if (pairIds) {
-      const col = timelineColumns.find((c) => c.visits.some((v) => v.id === pairIds[0]));
+      const col = timelineColumns.find((c) =>
+        c.visits.some((v) => v.id === pairIds[0] && !v.pair_linked),
+      );
       const vs = pairIds
-        .map((vid) => col?.visits.find((v) => v.id === vid))
+        .map((vid) => col?.visits.find((v) => v.id === vid && !v.pair_linked))
         .filter((v): v is CourseGridVisit => v != null);
       setActiveTlPairVisits(vs.length === 2 ? vs : null);
     } else {
@@ -2640,9 +2797,12 @@ export function CourseDayTablePanel({
       // 固定枠は保持)。同住所ペア (tl-pair) は 2 件とも外す (同一 op_group_id で
       // 1 操作 = undo でまとめて戻る。tlMove の作法に倣う)。
       if (isPoolDrop) {
-        const srcCol = timelineColumns.find((c) => c.visits.some((v) => v.id === wantIds[0]));
+        // 2 人目のコースの写し (pair_linked) は元の列にしない。
+        const srcCol = timelineColumns.find((c) =>
+          c.visits.some((v) => v.id === wantIds[0] && !v.pair_linked),
+        );
         const poolVisits = wantIds
-          .map((id) => srcCol?.visits.find((v) => v.id === id))
+          .map((id) => srcCol?.visits.find((v) => v.id === id && !v.pair_linked))
           .filter((v): v is CourseGridVisit => v != null);
         if (poolVisits.length !== wantIds.length) return;
         // 2 名体制 (visit_group_id) は BE の cascade_partner で相方まで消えるため禁止
@@ -2697,9 +2857,11 @@ export function CourseDayTablePanel({
       const colKey = parseTlColDroppableId(overId);
       if (!colKey) return; // タイムライン外へのドロップは無効 (何もしない)
       const toCol = timelineColumns.find((c) => c.key === colKey);
-      const fromCol = timelineColumns.find((c) => c.visits.some((v) => v.id === wantIds[0]));
+      const fromCol = timelineColumns.find((c) =>
+        c.visits.some((v) => v.id === wantIds[0] && !v.pair_linked),
+      );
       const visits = wantIds
-        .map((id) => fromCol?.visits.find((v) => v.id === id))
+        .map((id) => fromCol?.visits.find((v) => v.id === id && !v.pair_linked))
         .filter((v): v is CourseGridVisit => v != null);
       if (!toCol || !fromCol || visits.length !== wantIds.length) return;
       const oldStartMin = parseHM(visits[0]!.start_time);
@@ -5744,8 +5906,11 @@ export function CourseDayTablePanel({
           // T-1L: タイムライン兄弟リスト用の患者性別 (行頭ドット・左色帯).
           patient_sex: (patient?.sex as string | null | undefined) ?? null,
           // G2/G3: 日リストの × (訪問削除) と「今週のみ」チップ (固定昇格) の根拠.
-          visit_id: cv.id,
+          // 2 人目のコースの写しは消せない (訪問は 1 人目のコースの 1 行)。
+          visit_id: cv.pair_linked ? null : cv.id,
           source: cv.source ?? null,
+          pair_note: cv.pair_note ?? null,
+          pair_linked: cv.pair_linked ?? false,
           // T-6撤去: 旧テーブルの ①/② バッジと「相方: ...」注記を日リストへ移設.
           group_slot_label: cv.group_slot_label,
           partner_location: cv.partner_location ?? null,

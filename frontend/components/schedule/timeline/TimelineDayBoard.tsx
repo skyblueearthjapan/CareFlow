@@ -327,6 +327,8 @@ export function partnerInfo(visit: {
   group_slot_label?: 1 | 2;
   partner_location?: PartnerLocation | null;
   partner_label?: string | null;
+  /** 2 名で 1 行の訪問の相手の注記 (例: 「2 名（山田さんと）」)。 */
+  pair_note?: string | null;
 }): {
   slotMark: string | null;
   text: string | null;
@@ -335,7 +337,10 @@ export function partnerInfo(visit: {
 } {
   const slotMark = visit.group_slot_label === 1 ? '①' : visit.group_slot_label === 2 ? '②' : null;
   const loc = visit.partner_location ?? null;
-  if (!loc) return { slotMark, text: null, warn: false, tooltip: null };
+  if (!loc) {
+    const note = visit.pair_note ?? null;
+    return { slotMark, text: note, warn: false, tooltip: note };
+  }
   const warn = loc.kind === 'pool';
   const where = loc.kind === 'cell' ? `${loc.cellLabel} ${loc.time}` : 'プール';
   const text = warn && slotMark ? `複数 ${slotMark} のみ (相方未配置)` : `相方: ${where}`;
@@ -459,7 +464,8 @@ function VisitCard({
       // onKeyDown は spread の「後」に置く (後勝ち)。将来 KeyboardSensor を足しても
       // listeners.onKeyDown に黙って上書きされずキーボード操作が生き残る (レビューMED)。
       onKeyDown={cardKeyDownHandler(accClick)}
-      data-testid={`tl-visit-${visit.id}`}
+      data-testid={visit.pair_linked ? `tl-visit-linked-${visit.id}` : `tl-visit-${visit.id}`}
+      data-pair-linked={visit.pair_linked ? 'true' : undefined}
       data-accompaniment-selected={accSelected ? 'true' : undefined}
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
       // 小さいカードは行が出ないため、相方情報はツールチップで必ず補完する。
@@ -493,6 +499,8 @@ function VisitCard({
         accSelected && !accOverlap && 'z-[4] ring-2 ring-brand-primary',
         // 非稼働患者の残骸 / 連動取消 (§3-4)。
         VISIT_DISPLAY_CLASS[displayKind],
+        // 2 名で 1 行の訪問の、2 人目のコースの写し (薄く・破線)。
+        visit.pair_linked && 'border-dashed',
       )}
       style={{
         top,
@@ -502,7 +510,7 @@ function VisitCard({
         borderColor: accOverlap ? 'var(--error)' : isCancelled ? 'var(--border-default)' : pal.ln,
         borderLeftColor: accOverlap ? 'var(--error)' : isCancelled ? 'var(--text-muted)' : pal.bar,
         color: isCancelled ? 'var(--text-muted)' : pal.ink,
-        opacity: isCancelled ? 0.7 : 1,
+        opacity: isCancelled ? 0.7 : visit.pair_linked ? 0.6 : 1,
         // 案 A (2026-08-08): 型とズレている訪問は左端の帯を破線＋警告色にする。
         // 同行の重なり (error) / キャンセルの表示より優先度は低いので後置きで上書き。
         ...(!accOverlap && !isCancelled ? (masterDivergenceCardStyle(visit) ?? {}) : {}),
@@ -1571,6 +1579,14 @@ function TimelineColumn({
               accompaniment={accompaniment}
             />
           )
+        ) : it.v.pair_linked ? (
+          // 2 名で 1 行の訪問の、2 人目のコースの写し: 見せるだけ (動かす・消すは 1 人目のカード)。
+          <VisitCard
+            key={`linked:${it.id}`}
+            visit={it.v}
+            laneInfo={lanes.get(it.id)}
+            onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
+          />
         ) : dndEnabled ? (
           <DraggableVisitCard
             key={it.id}

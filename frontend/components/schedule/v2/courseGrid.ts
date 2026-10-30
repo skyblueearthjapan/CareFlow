@@ -188,6 +188,17 @@ export interface CourseGridVisit {
    */
   partner_location?: PartnerLocation | null;
   /**
+   * 2 名で訪問を 1 行で持つ訪問 (本番の形: required_staff_count=2・visit_group_id なし・
+   * 2 人目は secondary_staff_id) の相手の名前つき注記。例: 「2 名（山田さんと）」。
+   * 1 人目のコースのカードには 2 人目の名前、2 人目のコースの写しには 1 人目の名前。
+   */
+  pair_note?: string | null;
+  /**
+   * 2 名で訪問の 1 行を、2 人目のコースの列に出した写し (薄く出す・動かせない・消せない)。
+   * 訪問そのものは 1 人目のコースの 1 行。2 人目の時間がふさがっていることを見せるため。
+   */
+  pair_linked?: boolean;
+  /**
    * Phase G-6: 同住所バケット key (lat/lng を 0.001 桁で丸めた "lat:lng" 文字列).
    * 同 start_slot 内で **異なる患者** が同じ key を持つ visit を複数 (≥2) 持てば
    * 「同住所×同時刻ペア」と判定し、黄色枠で強調する.

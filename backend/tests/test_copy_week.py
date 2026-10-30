@@ -912,3 +912,39 @@ def test_japanese_holidays() -> None:
         date(2026, 10, 12): "スポーツの日"
     }
     assert date(2026, 3, 20) in dict(holidays_between(date(2026, 3, 1), date(2026, 3, 31)))
+
+
+def test_needs_manual_staff_skips_pair_secondary_slot() -> None:
+    """2 名で訪問の 2 人目の枠は行を作らないので、「担当を手で付ける」一覧に出さない."""
+    from types import SimpleNamespace
+
+    from app.services.scheduling.copy_week import CopyItem, CopyPlan
+
+    def _item(*, pair_secondary: bool) -> CopyItem:
+        return CopyItem(
+            key=uuid.uuid4(),
+            origin="fill",
+            patient=SimpleNamespace(id=uuid.uuid4(), name="2名"),  # type: ignore[arg-type]
+            target_date=date(2026, 6, 1),
+            start_time=time(11, 0),
+            end_time=time(11, 30),
+            type="regular",
+            required_staff_count=2,
+            group_key=None,
+            kaipoke_service_override=None,
+            template_id=None,
+            weekday=0,
+            temp_course=False,
+            not_in_fixed=False,
+            pair_secondary=pair_secondary,
+            manual_reason="コースがありません",
+        )
+
+    first, second = _item(pair_secondary=False), _item(pair_secondary=True)
+    plan = CopyPlan(
+        source_monday=date(2026, 5, 25),
+        target_monday=date(2026, 6, 1),
+        mode="add_only",
+        fill_items=[first, second],
+    )
+    assert plan.needs_manual_staff == [first]

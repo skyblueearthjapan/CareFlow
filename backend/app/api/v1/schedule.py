@@ -524,17 +524,20 @@ class PlaceAndFixRequest(BaseModel):
 
     W37 Phase 2-A: 複数スタッフ対応.
         - ``staff_count == 2`` (または ``patient.requires_multiple_staff``)
-          のとき、同 patient × 同 visit_date × 同 start_time に
-          ``visit_group_id`` を共有する 2 つの visit を作成する.
+          のとき、visit を 1 つ作成する (2026-10-30 本番の形: required_staff_count=2・
+          visit_group_id=NULL・course / primary = 1 つ目のコースとその担当・
+          secondary_staff_id = 2 つ目のコースの担当).
         - リクエスト形式は ``course_template_ids: list[UUID]`` (推奨) で
           2 つの異なる course_template を受ける. 後方互換として旧形式
           ``course_template_id: UUID`` も受け付ける (= staff_count=1 と同等).
 
     挙動:
-        1. ``visits`` に 1 または 2 行を作成 (1 トランザクション内)
+        1. ``visits`` に 1 行を作成 (1 トランザクション内)
            - patient_id, visit_date = ISO 週から計算, status='planned',
              source='manual'
-           - staff_count=2 の場合は ``visit_group_id = uuid4()`` を 2 visit で共有
+           - staff_count=2 の場合も 1 行 (required_staff_count=2・2 人目は
+             secondary_staff_id. 同じ組 id の 2 行は partial UNIQUE
+             ``uq_visits_pds_group_active`` に当たる)
         2. ``fix_pattern=True`` のとき: ``patient_fixed_visits`` を upsert
            - staff_count=1: slot_index=0 の 1 行
            - staff_count=2: slot_index=0/1 の 2 行 (各 course_template を持つ)

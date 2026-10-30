@@ -115,6 +115,10 @@ export interface VisitListItem {
   group_slot_label?: 1 | 2;
   partner_location?: PartnerLocation | null;
   partner_label?: string | null;
+  /** 2 名で 1 行の訪問の相手の注記 (例: 「2 名（山田さんと）」)。提案系は未使用。 */
+  pair_note?: string | null;
+  /** 2 名で 1 行の訪問を 2 人目のコースに出した写し (薄く出す)。提案系は未使用。 */
+  pair_linked?: boolean;
 }
 
 /** 1 コース分のサマリ. */

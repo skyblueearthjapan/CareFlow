@@ -1422,6 +1422,9 @@ class Layer3Assigner:
                 )
             ).all()
             seed_group_ids = {gid for gid, _ in seed_group_rows if gid is not None}
+            # visit_group_id -> 所属 course_id 集合 (1 行の 2 名で訪問は visit id をキーに
+            # 1 人目のコースと 2 人目のコースの組を入れる)
+            courses_by_group: dict[UUID, set[UUID]] = {}
             if seed_group_ids:
                 grp_member_rows = (
                     await db.execute(
@@ -1432,12 +1435,39 @@ class Layer3Assigner:
                         )
                     )
                 ).all()
-                # visit_group_id -> 所属 course_id 集合
-                courses_by_group: dict[UUID, set[UUID]] = {}
                 for gid, c_id in grp_member_rows:
                     if gid is None or c_id is None:
                         continue
                     courses_by_group.setdefault(gid, set()).add(c_id)
+            # 1 行の 2 名で訪問 (本番の形): 1 人目のコースと 2 人目のコース
+            # (``pair_visit.load_pair_partner_courses`` と同じ引き方) を組にする.
+            # seed が 1 人目のコース (訪問がそこにある) でも 2 人目のコースでもよい.
+            seed_courses = list(
+                (await db.scalars(select(Course).where(Course.id.in_(seed_ids)))).all()
+            )
+            seed_pair_visits = list(
+                (
+                    await db.scalars(
+                        select(Visit).where(
+                            Visit.course_id.in_(seed_ids),
+                            Visit.required_staff_count >= 2,
+                            Visit.visit_group_id.is_(None),
+                            Visit.status == VISIT_STATUS_PLANNED,
+                            Visit.deleted_at.is_(None),
+                        )
+                    )
+                ).all()
+            )
+            _spv_by_id = {v.id: v for v in seed_pair_visits}
+            for vid, pc in (await load_pair_partner_courses(db, seed_pair_visits)).items():
+                _cid = _spv_by_id[vid].course_id
+                if _cid is not None:
+                    courses_by_group.setdefault(vid, set()).update({_cid, pc.id})
+            for pcid, pvs in (await load_pair_visits_by_partner_course(db, seed_courses)).items():
+                for pv in pvs:
+                    if pv.course_id is not None:
+                        courses_by_group.setdefault(pv.id, set()).update({pv.course_id, pcid})
+            if courses_by_group:
                 # 各 seed (連続) course の所属 group の他 course を partner として相互紐付け.
                 # 修正A: partner Y が既に承認済み (確定 staff == 候補) の場合は exclude /
                 # partner_links に含めない (= commit に残す). 連動対象は未承認メンバーのみ.
@@ -3980,6 +4010,32 @@ class Layer3Assigner:
         stmt = select(Course).where(Course.id.in_(course_ids))
         courses = list((await db.scalars(stmt)).all())
         course_by_id = {c.id: c for c in courses}
+
+        # 2 名で訪問の 1 行 (本番の形・visit_group_id なし): 2 人目のコースを、コースの
+        # 担当を書き換える前に引く (``pair_visit.load_pair_partner_courses``. slot 1 の
+        # ひな形が無い訪問は「2 人目の担当のその日のコース」で引くため、書き換えた後だと
+        # 引けなくなる). 2 人目のコースの担当が変われば 2 人目もいっしょに変わる.
+        _pre_visits = (
+            list(
+                (
+                    await db.scalars(
+                        select(Visit).where(
+                            Visit.course_id.in_(list(course_by_id)),
+                            Visit.status == VISIT_STATUS_PLANNED,
+                            Visit.deleted_at.is_(None),
+                        )
+                    )
+                ).all()
+            )
+            if course_by_id
+            else []
+        )
+        pair_partner_course = await load_pair_partner_courses(db, _pre_visits)
+        # そのコースを 2 人目のコースとする訪問 (訪問は 1 人目のコースに属する. 下の 5b).
+        pair_partner_side = await load_pair_visits_by_partner_course(
+            db, courses, exclude_visit_ids={v.id for v in _pre_visits}
+        )
+
         now = datetime.now(UTC)
         # course.id -> assigned staff_id (今回の Layer 3 出力)
         staff_by_course: dict[UUID, UUID] = {}
@@ -4053,10 +4109,6 @@ class Layer3Assigner:
                 if c.assigned_staff_id is not None:
                     staff_by_course[c.id] = c.assigned_staff_id
 
-        # 2 名で訪問の 1 行 (本番の形・visit_group_id なし): 2 人目 = 固定訪問 slot_index=1
-        # のコースのその日の担当 (``pair_visit.load_pair_partner_courses``).
-        pair_partner_course = await load_pair_partner_courses(db, target_visits)
-
         def _course_staff(c: Course) -> UUID | None:
             return staff_by_course.get(c.id, c.assigned_staff_id)
 
@@ -4102,8 +4154,8 @@ class Layer3Assigner:
                     secondary_pairs.append((visit, secondary_staff_id))
             elif is_two_person:
                 # 1 行の 2 名で訪問: 2 人目のコースの担当. 2 人目のコースが引けない訪問
-                # (カイポケ取込・今週だけの配置で固定訪問に slot 1 が無い) は今の
-                # secondary_staff_id を残す (1 人目と同じ人になったときだけ外す).
+                # (2 人目の担当にその日のコースが無い) は今の secondary_staff_id を残す
+                # (1 人目と同じ人になったときだけ外す). 残した 2 人目も性別 / NG を検査する.
                 _pc = pair_partner_course.get(visit.id)
                 secondary_staff_id = pair_secondary_staff(
                     primary_staff_id,
@@ -4111,8 +4163,7 @@ class Layer3Assigner:
                 )
                 if secondary_staff_id is not None:
                     staff_ids.append(secondary_staff_id)
-                    if _pc is not None:
-                        secondary_pairs.append((visit, secondary_staff_id))
+                    secondary_pairs.append((visit, secondary_staff_id))
 
             # 重複排除 (primary == secondary になり得ないが念のため)
             seen: set[UUID] = set()
@@ -4135,11 +4186,9 @@ class Layer3Assigner:
         # 訪問は 1 人目のコースに属するので上の対象に入らない. 2 人目 (secondary) と
         # VSA の 2 人目だけを今のコース担当にそろえる (1 人目は触らない).
         await db.flush()
-        _assigned_courses = [c for c in course_by_id.values() if c.id in staff_by_course]
-        _partner_side = await load_pair_visits_by_partner_course(
-            db, _assigned_courses, exclude_visit_ids=target_visit_ids
-        )
-        for _pcid, _pvisits in _partner_side.items():
+        for _pcid, _pvisits in pair_partner_side.items():
+            if _pcid not in staff_by_course:
+                continue
             for visit in _pvisits:
                 if visit.manual_staff_override:
                     continue

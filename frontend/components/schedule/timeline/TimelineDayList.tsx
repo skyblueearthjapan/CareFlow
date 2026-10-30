@@ -126,6 +126,8 @@ function VisitRow({
         warn && 'bg-error-bg/40 hover:bg-error-bg/60',
         // L-3: ピン留め行は薄い琥珀背景で強調 (性別ウォッシュより優先)。
         !warn && isLocked && 'bg-amber-50/60',
+        // 2 名で 1 行の訪問の、2 人目のコースの写し (薄く・破線)。
+        v.pair_linked && 'border-dashed opacity-60',
       )}
       style={{
         borderColor: pal.ln,

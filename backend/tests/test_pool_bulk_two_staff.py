@@ -19,6 +19,7 @@ PO 決定 2026-10-30: 2 名で訪問の方 (requires_multiple_staff) も、保�
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
@@ -190,7 +191,30 @@ async def _simulate(client, admin: User, office: Office, patients: list[Patient]
         },
     )
     assert res.status_code == 200, res.text
+    await _settle()
     return res.json()
+
+
+async def _settle() -> None:
+    """API の後始末 (監査ログを書く fire-and-forget のタスク) が終わるまで待つ.
+
+    試験の DB はメモリ上の SQLite 1 本のつながりを API と共有する. 監査ログのタスクが
+    応答の後に走って commit / rollback すると、試験側の書き込み (UPDATE と COMMIT の間)
+    が巻き戻ることがあった (まとめて流すと時々落ちた). 次の書き込み・読み取りの前に待つ.
+    """
+    me = asyncio.current_task()
+    pending = [t for t in asyncio.all_tasks() if t is not me and not t.done()]
+    if pending:
+        await asyncio.wait(pending, timeout=5)
+
+
+async def _fresh(db) -> None:
+    """API が書いた行を読む前に、後始末を待ち、試験の session が持つ古い値を捨てる.
+
+    session は expire_on_commit=False なので、前に読んだ ORM の値のまま返すことがある.
+    """
+    await _settle()
+    db.expire_all()
 
 
 def _unplaced_reason(body: dict, patient: Patient) -> str | None:
@@ -229,6 +253,13 @@ async def test_pair_placed_and_applied_as_grouped_visits(client, db) -> None:
     assert again["placements"] == body["placements"]
     assert again["state_token"] == body["state_token"]
 
+    # API が書いた後に読み直すため、ここで要る値を控えてから試験の session を捨てる
+    # (expire_all 後に ORM の属性を触ると読み直しが走る).
+    pid = p.id
+    tpl_by_code = {course_a.code: course_a.template_id, course_b.code: course_b.template_id}
+    course_by_code = {course_a.code: course_a.id, course_b.code: course_b.id}
+    staff_by_code = {course_a.code: staff_a.id, course_b.code: staff_b.id}
+
     res = await client.post(
         APPLY_URL,
         headers=_bearer(admin),
@@ -242,12 +273,12 @@ async def test_pair_placed_and_applied_as_grouped_visits(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     assert res.json()["applied_slots"] == 1
+    await _fresh(db)
 
-    tpl_by_code = {course_a.code: course_a.template_id, course_b.code: course_b.template_id}
     pfvs = (
         await db.scalars(
             select(PatientFixedVisit).where(
-                PatientFixedVisit.patient_id == p.id, PatientFixedVisit.mode == "normal"
+                PatientFixedVisit.patient_id == pid, PatientFixedVisit.mode == "normal"
             )
         )
     ).all()
@@ -260,17 +291,15 @@ async def test_pair_placed_and_applied_as_grouped_visits(client, db) -> None:
     assert by_slot[0].start_time.strftime("%H:%M:%S") == pl["start_time"]
 
     visits = (
-        await db.scalars(select(Visit).where(Visit.patient_id == p.id, Visit.deleted_at.is_(None)))
+        await db.scalars(select(Visit).where(Visit.patient_id == pid, Visit.deleted_at.is_(None)))
     ).all()
     assert len(visits) == 1, visits
     v = visits[0]
-    course_by_code = {course_a.code: course_a, course_b.code: course_b}
-    staff_by_code = {course_a.code: staff_a, course_b.code: staff_b}
     assert v.visit_group_id is None
     assert v.required_staff_count == 2
-    assert v.course_id == course_by_code[pl["course_code"]].id
-    assert v.primary_staff_id == staff_by_code[pl["course_code"]].id
-    assert v.secondary_staff_id == staff_by_code[pl["partner_course_code"]].id
+    assert v.course_id == course_by_code[pl["course_code"]]
+    assert v.primary_staff_id == staff_by_code[pl["course_code"]]
+    assert v.secondary_staff_id == staff_by_code[pl["partner_course_code"]]
     assert v.start_time.strftime("%H:%M:%S") == pl["start_time"]
     vsa = set(
         (
@@ -279,7 +308,7 @@ async def test_pair_placed_and_applied_as_grouped_visits(client, db) -> None:
             )
         ).all()
     )
-    assert vsa == {staff_a.id, staff_b.id}
+    assert vsa == set(staff_by_code.values())
 
 
 @pytest.mark.asyncio
@@ -482,16 +511,14 @@ async def test_apply_rejects_two_staff_placement_without_partner(client, db) -> 
             "state_token": body["state_token"],
         },
     )
+    await _settle()
     assert res.status_code == 422, res.text
     assert "two_staff_partner_required" in res.text
-    pfvs = (
-        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
-    ).all()
-    assert pfvs == []
+    assert await _pfv_count(db, p) == 0
 
 
 async def _apply(client, admin: User, office: Office, body: dict, placements: list[dict]):
-    return await client.post(
+    res = await client.post(
         APPLY_URL,
         headers=_bearer(admin),
         json={
@@ -502,12 +529,17 @@ async def _apply(client, admin: User, office: Office, body: dict, placements: li
             "state_token": body["state_token"],
         },
     )
+    await _settle()
+    return res
 
 
 async def _pfv_count(db, p: Patient) -> int:
+    """API が書いた (書かなかった) 後の固定訪問の行数を、session を捨てて読み直す."""
+    pid = p.id
+    await _fresh(db)
     return len(
         (
-            await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+            await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
         ).all()
     )
 
@@ -751,3 +783,71 @@ async def test_single_row_pair_visit_occupies_partner_course_bucket(db) -> None:
     for code in ("A", "B"):
         pids = [v.patient_id for v in buckets[(office.id, 0, code)].visits]
         assert pids.count(p.id) == 1, (code, pids)
+
+
+async def _existing_pair_without_slot1(db, office: Office, code: str):
+    """カイポケ取込・今週だけの配置と同じ 1 行の 2 名で訪問 (固定訪問の slot 1 が無い).
+
+    A コースの 1 行・1 人目 = A の担当・2 人目 = B の担当 (secondary_staff_id) で、月曜 11:00.
+    """
+    course_a, staff_a = await _course(db, office, "A")
+    course_b, staff_b = await _course(db, office, "B")
+    p = await _patient(db, office, code, wp=_wp(frequency_per_week=1))
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=WEEK_MONDAY,
+            start_time=time(11, 0),
+            end_time=time(11, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="import",
+            required_staff_count=2,
+            course_id=course_a.id,
+            primary_staff_id=staff_a.id,
+            secondary_staff_id=staff_b.id,
+        )
+    )
+    await db.flush()
+    return course_a, course_b, staff_b, p
+
+
+@pytest.mark.asyncio
+async def test_existing_pair_without_slot1_occupies_secondary_staff_course(db) -> None:
+    """slot 1 の無い 1 行 (取込など) は、2 人目の担当のその日のコースのバケットに入る."""
+    from app.services.scheduling.propose_slots_service import load_week_course_buckets
+
+    office = await _office(db, "TS31")
+    _a, _b, _sb, p = await _existing_pair_without_slot1(db, office, "TS-IMP")
+    await db.commit()
+
+    buckets, _names, _codes = await load_week_course_buckets(
+        db, iso_year=ISO_YEAR, iso_week=ISO_WEEK, office_ids=[office.id]
+    )
+    for code in ("A", "B"):
+        pids = [v.patient_id for v in buckets[(office.id, 0, code)].visits]
+        assert pids.count(p.id) == 1, (code, pids)
+
+
+@pytest.mark.asyncio
+async def test_existing_pair_without_slot1_blocks_secondary_in_bulk_insert(client, db) -> None:
+    """2 人目 (B の担当) は月曜 11:00 に取込の 2 名の訪問がある → 一括投入で B 11:00 に置かない.
+
+    以前は 2 人目の時間をふさぐのが固定訪問 slot 1 のある方だけで、B 11:00 が空いて見えた.
+    """
+    admin = await _admin(db, "2s-bulk-imp-block@example.com")
+    office = await _office(db, "TS32")
+    await _existing_pair_without_slot1(db, office, "TS-IMP2")
+    single = await _patient(
+        db, office, "TS-IMP-S", multi=False, wp=_wp(time_type="固定", preferred_start="11:00")
+    )
+    await db.commit()
+
+    body = await _simulate(client, admin, office, [single])
+    taken = [
+        (pl["course_code"], pl["start_time"][:5])
+        for pl in body["placements"]
+        if pl["patient_id"] == str(single.id)
+    ]
+    assert ("B", "11:00") not in taken, body
+    assert ("A", "11:00") not in taken, body

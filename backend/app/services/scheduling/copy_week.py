@@ -193,7 +193,8 @@ class CopyPlan:
 
     @property
     def needs_manual_staff(self) -> list[CopyItem]:
-        return [it for it in [*self.items, *self.fill_items] if it.manual_reason]
+        # 2 名で訪問の 2 人目の枠は行を作らない (組の 1 行目の secondary になる) ので出さない.
+        return [it for it in self.visit_items if it.manual_reason]
 
 
 def _week_range(monday: date) -> tuple[date, date]:

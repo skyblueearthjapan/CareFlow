@@ -437,3 +437,129 @@ async def test_course_targets_count_single_row_pair_in_partner_course(db) -> Non
     assert ca.id in by_id and cb.id in by_id
     assert by_id[cb.id].patient_ids == [visit.patient_id]
     assert len(by_id[cb.id].visits) == 1
+
+
+# ---------------------------------------------------------------------------
+# 5) slot 1 の無い 1 行 (取込など): 2 人目のコース = 2 人目の担当のその日のコース
+# ---------------------------------------------------------------------------
+
+
+async def _import_pair_setup(db, code: str, *, n_staff: int = 3):
+    """A/B コース (A=s1・B=s2)・A に 2 名の訪問 1 行 (2 人目 = s2)・固定訪問は無い."""
+    office, staffs = await _make_office_and_staff(db, n_staff=n_staff)
+    ca = await _make_course(db, weekday=0, code="A", office_id=office.id)
+    cb = await _make_course(db, weekday=0, code="B", office_id=office.id)
+    ca.assigned_staff_id = staffs[0].id
+    cb.assigned_staff_id = staffs[1].id
+    patient = await _make_patient(db, code=code)
+    visit = await _make_visit(db, patient_id=patient.id, course_id=ca.id, visit_group_id=None)
+    visit.primary_staff_id = staffs[0].id
+    visit.secondary_staff_id = staffs[1].id
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=staffs[0].id))
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=staffs[1].id))
+    await db.commit()
+    return staffs, (ca, cb), patient, visit
+
+
+@pytest.mark.asyncio
+async def test_course_targets_count_import_pair_in_secondary_staff_course(db) -> None:
+    """slot 1 の無い 1 行も、2 人目の担当のコース B に数える (B の時間がふさがる)."""
+    _staffs, (ca, cb), _p, visit = await _import_pair_setup(db, "W37-L3-I1")
+
+    targets = await Layer3Assigner()._load_course_targets(
+        db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK
+    )
+    by_id = {t.course_id: t for t in targets}
+    assert by_id[cb.id].patient_ids == [visit.patient_id]
+
+
+@pytest.mark.asyncio
+async def test_persist_import_pair_secondary_follows_partner_course(db) -> None:
+    """2 人目のコース B の担当が s2 → s3 に変わると、2 人目も s3 になる (両側がいっしょに動く)."""
+    (s1, _s2, s3), (ca, cb), _p, visit = await _import_pair_setup(db, "W37-L3-I2")
+
+    await Layer3Assigner()._persist(
+        db,
+        [
+            StaffAssignment(weekday=0, course_code="A", course_id=ca.id, staff_id=s1.id),
+            StaffAssignment(weekday=0, course_code="B", course_id=cb.id, staff_id=s3.id),
+        ],
+    )
+    await db.commit()
+    await db.refresh(visit)
+
+    assert visit.primary_staff_id == s1.id
+    assert visit.secondary_staff_id == s3.id
+    assert await _vsa_staff(db, visit.id) == {s1.id, s3.id}
+
+
+@pytest.mark.asyncio
+async def test_persist_kept_secondary_is_checked_for_ng(db) -> None:
+    """2 人目のコースが引けず今の 2 人目を残すときも、NG スタッフの警告を出す."""
+    from app.models.patient_ng_staff import PatientNgStaff
+
+    office, (s1, s2) = await _make_office_and_staff(db, n_staff=2)
+    ca = await _make_course(db, weekday=0, code="A", office_id=office.id)
+    patient = await _make_patient(db, code="W37-L3-I3")
+    visit = await _make_visit(db, patient_id=patient.id, course_id=ca.id, visit_group_id=None)
+    visit.secondary_staff_id = s2.id
+    db.add(PatientNgStaff(patient_id=patient.id, staff_id=s2.id))
+    await db.commit()
+
+    warnings = await Layer3Assigner()._persist(
+        db, [StaffAssignment(weekday=0, course_code="A", course_id=ca.id, staff_id=s1.id)]
+    )
+    await db.commit()
+    await db.refresh(visit)
+
+    assert visit.secondary_staff_id == s2.id
+    assert [(w.staff_id, w.kind) for w in warnings] == [(s2.id, "ng_staff")]
+
+
+@pytest.mark.asyncio
+async def test_partner_course_skips_slot1_of_other_biweekly_week(db) -> None:
+    """隔週の A の週に、B の週の slot 1 は使わない (slot 0 と同じ決まり) → 2 人目の担当で引く."""
+    from app.models.course_template import CourseTemplate
+    from app.models.patient_fixed_visit import PatientFixedVisit
+    from app.services.scheduling.pair_visit import load_pair_partner_courses
+
+    (_s1, _s2, s3), (ca, cb), patient, visit = await _import_pair_setup(db, "W37-L3-I4")
+    # B の週だけの slot 1 は C コース (担当 s3) のひな形.
+    tpl_c = CourseTemplate(office_id=ca.office_id, label="C")
+    db.add(tpl_c)
+    await db.flush()
+    cc = await _make_course(db, weekday=0, code="C", office_id=ca.office_id)
+    cc.template_id = tpl_c.id
+    cc.assigned_staff_id = s3.id
+    patient.weekly_pattern = {
+        "visit_frequency": "biweekly",
+        "biweekly_anchor": TEST_WEEK_MONDAY.isoformat(),  # この週 = A の週
+    }
+    for slot, vw in ((0, "A"), (1, "B")):
+        db.add(
+            PatientFixedVisit(
+                patient_id=patient.id,
+                mode="normal",
+                weekday=0,
+                start_time=time(9, 0),
+                duration_min=60,
+                slot_index=slot,
+                course_template_id=tpl_c.id if slot == 1 else None,
+                visit_week=vw,
+            )
+        )
+    await db.commit()
+
+    got = await load_pair_partner_courses(db, [visit])
+    assert got[visit.id].id == cb.id  # s2 (今の 2 人目) のコース
+
+    # B の週の slot 1 を A の週に変えると、slot 1 のひな形 (C) のコースになる.
+    pfv1 = await db.scalar(
+        select(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == patient.id, PatientFixedVisit.slot_index == 1
+        )
+    )
+    pfv1.visit_week = "A"
+    await db.commit()
+    got = await load_pair_partner_courses(db, [visit])
+    assert got[visit.id].id == cc.id
