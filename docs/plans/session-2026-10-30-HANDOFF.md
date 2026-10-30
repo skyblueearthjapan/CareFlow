@@ -5,7 +5,7 @@ PO の相談（10/30）：患者マスタの「隔週」が週の生成に効か
 
 ## 1. 状態
 
-- ブランチ `feat/visit-frequency`（origin/develop = 62090614 から）。22 コミット、129 ファイル。**10/30 に develop へ push 済み（7452bbaa・PO 了承）。本番は未反映**。
+- ブランチ `feat/visit-frequency`（origin/develop = 62090614 から）。22 コミット、129 ファイル。**10/30 に develop へ push（PO 了承）、同日 PO の了承で本番へ反映済み（71f996db・alembic 0102）**。記録は §8。
 - 5 段をそれぞれ実装 → 別のレビュー役（Opus・code-reviewer）→ 指摘を直す、で仕上げた。どの段も判定は「軽微な修正で可」、重大な指摘は 0。指摘はすべて直した。
 - 実際の画面での確認は**まだ**（Docker を閉じているため手元で動かしていない）。
 
@@ -48,3 +48,11 @@ PO の相談（10/30）：患者マスタの「隔週」が週の生成に効か
 
 - 前から落ちている試験：`test_patients_v2` 4 件、`test_schedule_v2_api::test_reset_to_fixed_*` 2 件、`test_pfv_sub_office::test_pool_expansion_includes_sub_office_patients`、`test_patients_excel_replace_all::test_replace_all_manager_forbidden`。まとめて流すと時々落ちる：`test_visits::test_visits_delete_manager_returns_204`、`test_pfv_sub_office_validates_course_template_office`（単独では通る）。
 - PC のメモリが少なく、試験は 1 ファイルずつ流した。pre-commit が未ステージのファイルを戻すときに改行が CRLF になり、prettier/ruff format で止まることがある（ステージしたファイルに format をかけ直して入れ直す）。
+
+## 8. 本番の作業の記録（2026-10-30・時刻は UTC）
+
+- 事前：本番 505fa1f0・alembic 0101。カイポケのロボットは止まっていた。ディスク空き 33 GB。11/26 前後の週の訪問 967 件・取消 6・2 名 1・固定訪問の枠 173（10/26〜12/5）。
+- 10:49 pg_dump：`/opt/carelink/backups/pre-deploy-visit-frequency-20261030-1049.sql.gz`（6.9 MB・gunzip -t 済み）。
+- develop を 71f996db まで fast-forward → backend・frontend を build → **入れ替えの前に** `run --rm --no-deps backend alembic upgrade head`（0101→0102・単一 head・既存 173 枠はすべて every）→ `up -d --no-deps --force-recreate backend frontend` → agent-relay・agent-sandbox を build・up（`-p carelink-agent`・agent.prod.env）。
+- 確認：healthz 内側・公開・/agent-relay とも 200、全コンテナ healthy。訪問・取消・2 名・枠の件数は前と同じ。エージェントの SQL 5 本が本番で通った。`/schedule/v2/visit-frequency-week` と患者の visit-frequency-preview が応答。入れ替えの後の backend に 5xx・Traceback なし。
+- 残り：検証用の患者様で画面を PO と確かめる。現場は Ctrl+Shift+R が要る（画面を変えたため）。
