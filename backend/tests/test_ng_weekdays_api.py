@@ -16,22 +16,29 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Office, Patient, User
+from app.models import Office, Patient, Staff, User
 from app.models.course import Course
 from app.models.course_template import CourseTemplate
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.pending_request import PendingRequest
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.services.pending_request_applier import (
+    PendingRequestApplier,
+    PendingRequestApplyError,
+)
 from app.services.scheduling.feasibility_check import (
     KIND_NG_WEEKDAY,
     load_ng_weekday_findings,
 )
+from app.services.scheduling.layer1_expander import Layer1Expander
+from app.services.scheduling.ng_weekdays import ng_weekday_message
 
 _TODAY_JST = datetime.now(UTC).astimezone(ZoneInfo("Asia/Tokyo")).date()
 WEEK_MONDAY = _TODAY_JST + timedelta(days=7 - _TODAY_JST.weekday())
@@ -357,8 +364,11 @@ async def test_put_fixed_visits_rejects_new_slot_on_ng_weekday(client, db) -> No
     res = await client.put(f"/api/v1/patients/{p.id}/fixed-visits", headers=h, json=_pfv_body(1))
     assert res.status_code == 422, res.text
     detail = res.json()["detail"]
+    assert detail["code"] == "ng_weekday"
+    assert detail["weekdays"] == [1]
     assert "NG 曜日（訪問しない曜日）" in detail["message"]
-    assert [v["code"] for v in detail["violations"]] == ["ng_weekday"]
+    # 画面は message と violations[].message を並べて出すので、同じ文言を二度入れない.
+    assert detail["violations"] == []
     assert (
         await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
     ).all() == []
@@ -557,3 +567,410 @@ async def test_pool_bulk_apply_rejects_stale_placement_on_ng_weekday(client, db)
     )
     _assert_ng(res, p, 1)
     assert (await db.scalars(select(Visit).where(Visit.patient_id == p.id))).all() == []
+
+
+# ---------------------------------------------------------------------------
+# F. ステージ 3 レビューの指摘 (現場ボードの申請・全面最適化・固定枠の書き込み口)
+# ---------------------------------------------------------------------------
+
+
+async def _staff(db, name: str = "職員NG") -> Staff:
+    s = Staff(name=name, role="staff", is_trainee=False)
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return s
+
+
+async def _pending(db, *, user: User, patient: Patient, payload: dict, scope: str | None = None):
+    row = PendingRequest(
+        requester_user_id=user.id,
+        request_type="patient_visit_add",
+        payload=payload,
+        target_patient_id=patient.id,
+        scope=scope,
+        status="pending",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def _plain_user(db, email: str) -> User:
+    u = User(email=email, password_hash="x", role="admin")
+    db.add(u)
+    await db.commit()
+    await db.refresh(u)
+    return u
+
+
+def _assert_apply_ng(exc: PendingRequestApplyError, pid, name: str, weekday: int) -> None:
+    assert exc.http_status == 422
+    assert exc.detail is not None
+    assert exc.detail["code"] == "ng_weekday"
+    assert exc.detail["weekday"] == weekday
+    assert exc.detail["patient_id"] == str(pid)
+    assert exc.detail["message"] == ng_weekday_message(name, weekday)
+    # HTTP 層へ渡す detail は構造化した dict (ほかの経路の NG 曜日の 422 と同じ形).
+    assert exc.http_detail == exc.detail
+
+
+@pytest.mark.asyncio
+async def test_visit_add_permanent_request_rejects_ng_weekday(db) -> None:
+    user = await _plain_user(db, "ng-va-perm@example.com")
+    office = await _office(db)
+    p = await _patient(db, code="NG-VA-PERM", office=office)
+    pid, name = p.id, p.name
+
+    def payload(weekday: int) -> dict:
+        return {
+            "patient_id": str(p.id),
+            "proposed_visits": [{"weekday": weekday, "start_time": "10:00", "duration_min": 30}],
+        }
+
+    pr = await _pending(db, user=user, patient=p, payload=payload(1))
+    with pytest.raises(PendingRequestApplyError) as ei:
+        await PendingRequestApplier().apply(db, pr)
+    _assert_apply_ng(ei.value, pid, name, 1)
+    await db.rollback()
+    assert (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all() == []
+
+    await db.refresh(user)
+    await db.refresh(p)
+    pr2 = await _pending(db, user=user, patient=p, payload=payload(2))
+    await PendingRequestApplier().apply(db, pr2)
+    await db.commit()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).all()
+    assert [r.weekday for r in rows] == [2]
+
+
+@pytest.mark.asyncio
+async def test_visit_add_one_time_request_rejects_ng_weekday(db) -> None:
+    user = await _plain_user(db, "ng-va-one@example.com")
+    office = await _office(db)
+    p = await _patient(db, code="NG-VA-ONE", office=office)
+    pid, name = p.id, p.name
+    course = Course(
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=1,
+        code="A",
+        course_status="course_fixed",
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.commit()
+    await db.refresh(course)
+    pr = await _pending(
+        db,
+        user=user,
+        patient=p,
+        scope="one_time",
+        payload={
+            "patient_id": str(p.id),
+            "course_id": str(course.id),
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "weekday": 1,
+            "proposed_visits": [{"weekday": 1, "start_time": "13:30", "duration_min": 30}],
+        },
+    )
+    with pytest.raises(PendingRequestApplyError) as ei:
+        await PendingRequestApplier().apply(db, pr)
+    _assert_apply_ng(ei.value, pid, name, 1)
+    await db.rollback()
+    assert (await db.scalars(select(Visit).where(Visit.patient_id == pid))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_reschedule_permanent_request_keeps_other_weekly_pattern_keys(db) -> None:
+    """時刻変更の申請 (恒常) は、申請に載ったキーだけを書き換える (NG 曜日などを消さない)."""
+    user = await _plain_user(db, "ng-resched@example.com")
+    office = await _office(db)
+    p = await _patient(
+        db,
+        code="NG-RESCHED",
+        office=office,
+        ng=("Tue",),
+        preferred_weekdays=["Mon"],
+        visit_frequency="biweekly",
+        biweekly_anchor="2026-11-02",
+        visit_weeks=[1, 3],
+        entries=[{"weekday": "Mon", "preferred_start": "09:00"}],
+        future_key={"keep": True},
+    )
+    v = await _visit(db, p, weekday=0)
+    row = PendingRequest(
+        requester_user_id=user.id,
+        request_type="patient_reschedule",
+        payload={
+            "visit_id": str(v.id),
+            "new_start_time": "10:00",
+            "new_end_time": "10:30",
+            "new_weekly_pattern": {"preferred_start": "10:00", "preferred_weekdays": ["Mon"]},
+        },
+        target_patient_id=p.id,
+        scope="permanent",
+        status="pending",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    await PendingRequestApplier().apply(db, row)
+    await db.commit()
+    await db.refresh(p)
+    wp = p.weekly_pattern
+    assert wp["preferred_start"] == "10:00"
+    assert wp["ng_weekdays"] == ["Tue"]
+    assert wp["visit_frequency"] == "biweekly"
+    assert wp["biweekly_anchor"] == "2026-11-02"
+    assert wp["visit_weeks"] == [1, 3]
+    assert wp["entries"] == [{"weekday": "Mon", "preferred_start": "09:00"}]
+    assert wp["future_key"] == {"keep": True}
+
+
+@pytest.mark.asyncio
+async def test_pfv_validate_second_slot_on_ng_weekday_is_error(client, db) -> None:
+    """保存前からある NG 曜日の枠は slot ごとに見る: 同じ曜日の 2 つ目の枠は新しく作る扱い."""
+    h = await _admin(db, "ng-pfv-slot@example.com")
+    office = await _office(db)
+    p = await _patient(db, code="NG-PFV-SLOT", office=office)
+    p.requires_multiple_staff = True
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=1,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+    res = await client.post(
+        f"/api/v1/patients/{p.id}/fixed-visits/validate",
+        headers=h,
+        json={
+            "mode": "normal",
+            "items": [
+                {"weekday": 1, "start_time": "10:00:00", "duration_min": 30, "slot_index": 0},
+                {"weekday": 1, "start_time": "10:00:00", "duration_min": 30, "slot_index": 1},
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    ng = [w for w in res.json()["warnings"] if w["code"] == "ng_weekday"]
+    assert len(ng) == 1 and ng[0]["severity"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_slot1_only_on_ng_weekday_does_not_count_as_existing(
+    client, db
+) -> None:
+    """採用は slot 0 を書くので、その曜日に slot 1 しか無ければ新しい枠として 422."""
+    h = await _admin(db, "ng-ai-slot@example.com")
+    office = await _office(db)
+    p = await _patient(db, code="NG-AI-SLOT", office=office)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=1,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=1,
+        )
+    )
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=h,
+        json={
+            "confirm": True,
+            "patient_id": str(p.id),
+            "change_scope": "pattern_only",
+            "visit_plans": [
+                {
+                    "weekday": 1,
+                    "start_time": "10:00:00",
+                    "end_time": "10:30:00",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    _assert_ng(res, p, 1)
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_master_rejects_new_slot_on_ng_weekday(client, db) -> None:
+    h = await _admin(db, "ng-uftm@example.com")
+    office = await _office(db)
+    p = await _patient(db, code="NG-UFTM", office=office)
+    body = {"patient_id": str(p.id), "weekday": 1, "new_start": "10:00", "new_end": "10:30"}
+    res = await client.post("/api/v1/schedule/v2/update-fixed-time-master", headers=h, json=body)
+    _assert_ng(res, p, 1)
+    assert (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).all() == []
+
+    # 保存前からある NG 曜日の枠の時刻だけを変えるのは通す.
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=1,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+    res = await client.post("/api/v1/schedule/v2/update-fixed-time-master", headers=h, json=body)
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_patch_visit_on_existing_ng_day_allows_staff_or_time_only(client, db) -> None:
+    """すでに NG 曜日にある訪問の担当だけ / 時刻だけの変更は止めない."""
+    h = await _admin(db, "ng-pv-same@example.com")
+    office = await _office(db)
+    p = await _patient(db, code="NG-PV-SAME", office=office)
+    staff = await _staff(db)
+    v = await _visit(db, p, weekday=1)  # NG (火)
+    res = await client.patch(
+        f"/api/v1/visits/{v.id}", headers=h, json={"primary_staff_id": str(staff.id)}
+    )
+    assert res.status_code == 200, res.text
+    res = await client.patch(
+        f"/api/v1/visits/{v.id}",
+        headers=h,
+        json={"start_time": "11:00:00", "end_time": "11:30:00"},
+    )
+    assert res.status_code == 200, res.text
+    await db.refresh(v)
+    assert v.primary_staff_id == staff.id
+    assert v.start_time == time(11, 0)
+
+
+@pytest.mark.asyncio
+async def test_week_generation_still_expands_existing_ng_weekday_slot(db) -> None:
+    """週の生成は保存済みの枠をそのまま作る (NG 曜日でも黙って落とさない)."""
+    office = await _office(db)
+    p = await _patient(db, code="NG-L1", office=office)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=1,  # NG (火)
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+    await Layer1Expander().expand_week(db, iso_year=ISO_YEAR, iso_week=ISO_WEEK)
+    await db.commit()
+    visits = (
+        await db.scalars(select(Visit).where(Visit.patient_id == p.id, Visit.deleted_at.is_(None)))
+    ).all()
+    assert [v.visit_date for v in visits] == [WEEK_MONDAY + timedelta(days=1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra_wp",
+    [
+        # 希望 (月・火) + NG 曜日 (火) に保存済みの枠: 希望から作る患者.
+        {"preferred_weekdays": ["Mon", "Tue"], "preferred_start": "10:00", "service_minutes": 30},
+        # 使える希望が無い (NG 曜日だけ) 患者: 固定訪問の表から作る.
+        {},
+    ],
+    ids=["with-preferences", "ng-only"],
+)
+async def test_full_optimize_then_apply_week_only_keeps_ng_weekday_visit(
+    client, db, extra_wp: dict
+) -> None:
+    """全面最適化 → この週だけ反映 で、NG 曜日にある保存済みの枠の訪問が消えない."""
+    from tests.test_schedule_v2_api import _seed_office_with_staff, _seed_patient
+
+    h = await _admin(db, f"ng-fo-{len(extra_wp)}@example.com")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(
+        db,
+        office=office,
+        code=f"NG-FO-{len(extra_wp)}",
+        weekly_pattern={"ng_weekdays": ["Tue"], "time_type": "固定", **extra_wp},
+    )
+    for wd in (0, 1):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.commit()
+
+    fo = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=h,
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert fo.status_code == 200, fo.text
+    body = fo.json()
+    plans = [
+        {
+            "weekday": day["weekday"],
+            "start_time": v["start_time"],
+            "end_time": v["end_time"],
+            "duration_min": v["duration_min"],
+            "course_code": c["code"],
+            "office_id": c["office_id"],
+            "am_pm": v["am_pm"],
+        }
+        for day in body["week_proposals"]
+        for c in (day["after"] or {}).get("courses", [])
+        for v in c["visits"]
+        if v["patient_id"] == str(p.id)
+    ]
+    assert sorted(pl["weekday"] for pl in plans) == [0, 1]
+    assert any(
+        w["patient_id"] == str(p.id) and w["weekday"] == 1 and "NG 曜日" in w["message"]
+        for w in body["warnings"]
+    )
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=h,
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [{"patient_id": str(p.id), "visit_plans": plans}],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    week_monday = date.fromisocalendar(2026, 20, 1)
+    days = sorted(
+        v.visit_date
+        for v in (
+            await db.scalars(
+                select(Visit).where(Visit.patient_id == p.id, Visit.deleted_at.is_(None))
+            )
+        ).all()
+    )
+    assert days == [week_monday, week_monday + timedelta(days=1)]

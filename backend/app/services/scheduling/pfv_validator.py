@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, time, timedelta
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -485,20 +486,28 @@ async def validate_pfv_changes(
     # --- V10: NG 曜日 (通常の枠だけ) ---------------------------------------
     if mode == "normal" and patient is not None:
         ng = patient_ng_weekdays(patient)
-        hit_wds = sorted({item.weekday for item in proposed_items if item.weekday in ng})
-        if hit_wds:
-            existing_wds = set(
-                (
-                    await db.scalars(
-                        select(PatientFixedVisit.weekday).where(
+        hit_items = [item for item in proposed_items if item.weekday in ng]
+        if hit_items:
+            # 「保存前からある枠」は (曜日, slot_index) ごとに見る. 同じ NG 曜日に枠が
+            # 1 つあっても、2 つ目 (別の slot) を新しく作るのは error にする.
+            existing_slots = {
+                (row_wd, row_slot)
+                for row_wd, row_slot in (
+                    await db.execute(
+                        select(PatientFixedVisit.weekday, PatientFixedVisit.slot_index).where(
                             PatientFixedVisit.patient_id == patient_id,
                             PatientFixedVisit.mode == "normal",
                         )
                     )
                 ).all()
-            )
-            for wd in hit_wds:
-                kept = wd in existing_wds
+            }
+            new_wds = {
+                item.weekday
+                for item in hit_items
+                if (item.weekday, item.slot_index) not in existing_slots
+            }
+            for wd in sorted({item.weekday for item in hit_items}):
+                kept = wd not in new_wds
                 warnings.append(
                     PfvValidationWarning(
                         code=CODE_NG_WEEKDAY,
@@ -743,9 +752,42 @@ async def validate_pfv_changes(
 
 
 def errors_message(errors: list[PfvValidationWarning], default: str) -> str:
-    """422 の detail.message: error の文言 (重複なし・並び順のまま)。無ければ ``default``."""
+    """error の文言をつなぐ (重複なし・並び順のまま)。無ければ ``default``."""
     seen: list[str] = []
     for w in errors:
         if w.message not in seen:
             seen.append(w.message)
     return " ".join(seen) if seen else default
+
+
+def errors_detail(
+    errors: list[PfvValidationWarning], default: str, *, prefix: str = ""
+) -> dict[str, Any]:
+    """検査の error を 422 の detail にする (固定訪問の枠を書く経路で共通).
+
+    画面 (``frontend/lib/api/errorMessage.ts``) は ``message`` と ``violations[].message``
+    を改行でつないで出すので、同じ文言を両方に入れない:
+
+    * NG 曜日 (V10) の error は ``message`` にだけ書き、top-level に
+      ``code='ng_weekday'`` と ``weekdays`` を付ける (ほかの経路の NG 曜日の 422 と同じ見分け方)。
+    * それ以外 (ピン留めの保護など) は従来どおり ``message`` = ``default``、
+      中身は ``violations`` に 1 件ずつ。
+    """
+    ng = [w for w in errors if w.code == CODE_NG_WEEKDAY]
+    others = [w for w in errors if w.code != CODE_NG_WEEKDAY]
+    detail: dict[str, Any] = {
+        "message": prefix + (errors_message(ng, default) if ng else default),
+        "violations": [
+            {
+                "code": w.code,
+                "message": w.message,
+                "weekday": w.weekday,
+                "severity": w.severity,
+            }
+            for w in others
+        ],
+    }
+    if ng:
+        detail["code"] = CODE_NG_WEEKDAY
+        detail["weekdays"] = sorted({w.weekday for w in ng if w.weekday is not None})
+    return detail

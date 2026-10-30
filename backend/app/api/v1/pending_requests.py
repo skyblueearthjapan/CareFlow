@@ -622,7 +622,7 @@ async def create_and_apply_pending_request(
         await db.commit()
     except PendingRequestApplyError as exc:
         await db.rollback()
-        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.http_status, detail=exc.http_detail) from exc
     except IntegrityError as exc:
         await db.rollback()
         if payload.request_type.value == RequestType.STAFF_OFF.value:
@@ -828,7 +828,7 @@ async def _do_approve(
         await applier.apply(db, row, actor=user)
     except PendingRequestApplyError as exc:
         await db.rollback()
-        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.http_status, detail=exc.http_detail) from exc
     except IntegrityError as exc:
         await db.rollback()
         if row.request_type == RequestType.STAFF_OFF.value:

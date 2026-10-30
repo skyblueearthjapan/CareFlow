@@ -275,7 +275,7 @@ from app.services.scheduling.improvement_engine import (
 from app.services.scheduling.ng_weekdays import patient_ng_weekdays
 from app.services.scheduling.pfv_validator import (
     _find_conflict,
-    errors_message,
+    errors_detail,
     validate_pfv_changes,
 )
 from app.services.scheduling.pool_bulk_inserter import (
@@ -1109,6 +1109,8 @@ async def apply_individual_endpoint(
 
     # NG 曜日 (PO 決定 2026-10-30): 提案を採用して NG 曜日に枠を作る/動かすのは 422.
     # すでにその曜日にある枠 (時刻だけの変更) は止めない (既存の食い違いは点検で知らせる).
+    # 採用は slot_index=0 の枠だけを書く (apply_individual_proposal) ので、保存前からある
+    # かどうかも (曜日, slot 0) の行で見る (同じ曜日の slot 1 だけでは通さない).
     if patient_ng_weekdays(_patient_row):
         _existing_wds = set(
             (
@@ -1116,6 +1118,7 @@ async def apply_individual_endpoint(
                     select(PatientFixedVisit.weekday).where(
                         PatientFixedVisit.patient_id == payload.patient_id,
                         PatientFixedVisit.mode == "normal",
+                        PatientFixedVisit.slot_index == 0,
                     )
                 )
             ).all()
@@ -2543,6 +2546,8 @@ async def update_fixed_time_master_endpoint(
                 )
 
         if pfv_row is None:
+            # NG 曜日 (設計 §9): 新しい枠を NG 曜日に作らない (既存の枠の時刻だけの変更は通す).
+            ensure_weekday_not_ng(patient_row, payload.weekday)
             # 0102: 新しい曜日の枠は、同じ slot の既存行の訪問する週を引き継ぐ
             # (枠が全部 B の方なら B. ばらばら・既存行なしは every).
             _vw_by_slot = await load_visit_week_by_slot(db, patient_id=payload.patient_id)
@@ -4853,20 +4858,7 @@ async def improvement_apply_swap_endpoint(
     if va.has_errors or vb.has_errors:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "message": errors_message(
-                    [*va.errors, *vb.errors], "ピン留めされた枠は入れ替えできません"
-                ),
-                "violations": [
-                    {
-                        "code": w.code,
-                        "message": w.message,
-                        "weekday": w.weekday,
-                        "severity": w.severity,
-                    }
-                    for w in (*va.errors, *vb.errors)
-                ],
-            },
+            detail=errors_detail([*va.errors, *vb.errors], "ピン留めされた枠は入れ替えできません"),
         )
     warnings: list[str] = [w.message for w in va.warnings_only]
     warnings.extend(w.message for w in vb.warnings_only)
@@ -5409,19 +5401,7 @@ async def _validate_and_move_one(
         await _abort_apply(
             db,
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {
-                "message": f"手順{seq}: "
-                + errors_message(v.errors, "適用が固定枠の保護に違反します"),
-                "violations": [
-                    {
-                        "code": w.code,
-                        "message": w.message,
-                        "weekday": w.weekday,
-                        "severity": w.severity,
-                    }
-                    for w in v.errors
-                ],
-            },
+            errors_detail(v.errors, "適用が固定枠の保護に違反します", prefix=f"手順{seq}: "),
         )
     warnings.extend(f"手順{seq}: {w.message}" for w in v.warnings_only)
 
@@ -6055,18 +6035,7 @@ async def _insert_target_pfv(
         await _abort_apply(
             db,
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {
-                "message": errors_message(v.errors, "対象患者の配置が固定枠の保護に違反します"),
-                "violations": [
-                    {
-                        "code": w.code,
-                        "message": w.message,
-                        "weekday": w.weekday,
-                        "severity": w.severity,
-                    }
-                    for w in v.errors
-                ],
-            },
+            errors_detail(v.errors, "対象患者の配置が固定枠の保護に違反します"),
         )
     warnings.extend(f"配置: {w.message}" for w in v.warnings_only)
 

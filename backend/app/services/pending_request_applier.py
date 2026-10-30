@@ -65,6 +65,7 @@ from app.services.proposed_visits_pfv import (
     apply_proposed_visits_as_normal_pfv,
 )
 from app.services.scheduling.config import load_scheduling_config
+from app.services.scheduling.ng_weekdays import ng_weekday_detail, patient_ng_weekdays
 from app.services.scheduling.visit_week_carry import carried_visit_week, load_visit_week_by_slot
 from app.services.staff_leave import (
     StaffLeaveError,
@@ -85,9 +86,34 @@ class PendingRequestApplyError(Exception):
     呼び出し側の HTTP 層は本例外を 4xx (主に 422 / 409) に翻訳する。
     """
 
-    def __init__(self, message: str, *, http_status: int = 422) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int = 422,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.http_status = http_status
+        #: HTTP の detail に構造化した値を渡したいとき (例: NG 曜日の
+        #: ``{code='ng_weekday', message, ...}``)。None なら ``str(exc)`` を使う。
+        self.detail = detail
+
+    @property
+    def http_detail(self) -> Any:
+        return self.detail if self.detail is not None else str(self)
+
+
+def _ensure_not_ng_weekday(patient: Patient, weekday: int) -> None:
+    """NG 曜日 (``weekly_pattern.ng_weekdays``) に枠／訪問を作る申請なら 422 で止める.
+
+    detail は ``guards.ensure_weekday_not_ng`` と同じ形 (code='ng_weekday')。
+    """
+    if weekday in patient_ng_weekdays(patient):
+        detail = ng_weekday_detail(
+            patient_id=patient.id, patient_name=patient.name, weekday=weekday
+        )
+        raise PendingRequestApplyError(detail["message"], http_status=422, detail=detail)
 
 
 # 各 handler が受け取る payload (申請時 payload か edited_payload のいずれか)
@@ -662,6 +688,8 @@ async def _apply_visit_add_permanent(
             f"patient_visit_add: patient {patient_id} not found",
             http_status=404,
         )
+    # NG 曜日 (設計 §9): 訪問しない曜日に毎週の枠を作らない。
+    _ensure_not_ng_weekday(patient, new_weekday)
 
     # 対象 weekday の slot_index=0 行が既存か判定 (置換 = time_overlap 相当の赤).
     # 注意: slot_index=1 / 他 weekday の行は読み出さない (保全対象なので無関係).
@@ -857,6 +885,8 @@ async def _apply_visit_add_onetime(
             f"patient_visit_add(one_time): patient {patient_id} not found",
             http_status=404,
         )
+    # NG 曜日 (設計 §9): 訪問しない曜日にその週だけの訪問も入れない。
+    _ensure_not_ng_weekday(patient, weekday)
 
     # Course 検証: 存在・deleted_at NULL・iso_year/iso_week/weekday が payload と一致.
     # 不一致だとボードに出ない / 別週に出るため INSERT 前に 422 で弾く.
@@ -1047,7 +1077,14 @@ async def _apply_patient_reschedule(
                     "patient_reschedule: patient not found",
                     http_status=404,
                 )
-            patient.weekly_pattern = new_pattern
+            if not isinstance(new_pattern, dict):
+                raise PendingRequestApplyError(
+                    "patient_reschedule: new_weekly_pattern must be an object",
+                    http_status=422,
+                )
+            # 申請に載ったキーだけを書き換える (ng_weekdays / biweekly_anchor /
+            # visit_weeks / entries など、申請が触れないキーを消さない)。
+            patient.weekly_pattern = {**(patient.weekly_pattern or {}), **new_pattern}
 
     await db.flush()
     # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。

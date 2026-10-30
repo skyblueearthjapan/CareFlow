@@ -728,6 +728,41 @@ async def test_apply_pinned_crafted_422_rollback(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_rejects_insert_on_ng_weekday(client, db) -> None:
+    """提案の後に対象患者の NG 曜日へ入った置き先は、apply で 422 (code=ng_weekday)・何も動かさない."""
+    admin = await _make_user(db, email="ubng@example.com")
+    office, candidate, blocker = await _seed_single_blocker(db)
+    sim = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    sim_data = sim.json()
+    assert sim_data["plans"]
+    assert sim_data["plans"][0]["insert"]["weekday"] == 0
+
+    candidate.weekly_pattern = {"ng_weekdays": ["Mon"]}
+    await db.commit()
+
+    res = await client.post(
+        _APPLY_URL, headers=_bearer(admin), json=_apply_body(office, sim_data, candidate)
+    )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail["code"] == "ng_weekday"
+    assert detail["weekday"] == 0
+    assert detail["patient_id"] == str(candidate.id)
+    blk_pfv = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == blocker.id)
+        )
+    ).one()
+    assert blk_pfv.weekday == 0 and blk_pfv.start_time == time(10, 0)
+    tgt = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == candidate.id)
+        )
+    ).all()
+    assert tgt == []
+
+
+@pytest.mark.asyncio
 async def test_apply_non_target_patient_unchanged(client, db) -> None:
     """apply は退避対象と対象患者以外の PFV を変えない (Tue filler は不変)."""
     admin = await _make_user(db, email="ubunch@example.com")

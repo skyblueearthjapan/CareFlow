@@ -81,7 +81,7 @@ from app.services.scheduling.constants import (
     SAME_ADDRESS_TOLERANCE,
 )
 from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_visits
-from app.services.scheduling.ng_weekdays import ng_weekdays_of
+from app.services.scheduling.ng_weekdays import ng_weekdays_of, weekday_label
 from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
     filter_pfv_rows_for_week,
@@ -2238,8 +2238,18 @@ def build_visits_for_pool(
     warnings: list[V2Warning] | None = None,
     config: SchedulingConfig | None = None,
     allowed_weekdays_by_patient: dict[UUID, frozenset[int]] | None = None,
+    keep_fixed_on_ng_weekdays: bool = False,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
+
+    NG 曜日 (``weekly_pattern.ng_weekdays``・設計 §9「週の生成は保存済みの枠をそのまま
+    作る・黙って消さない」): 希望から作る候補は NG 曜日を使わない (``_extract_weekly_entries``)。
+    固定訪問の枠が NG 曜日にあるときは ``keep_fixed_on_ng_weekdays`` で分かれる:
+
+    * ``False`` (既定・保留プールの追加): 新しく置く候補なので NG 曜日には置かない。
+    * ``True`` (全面最適化): 保存済みの枠をそのまま作り、注意書き (general) を 1 件出す。
+      希望から作る患者でも、NG 曜日にある保存済みの枠だけは固定訪問の表から作る
+      (希望は NG 曜日を返さないので同じ曜日に二重にならない)。
 
     訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): ``allowed_weekdays_by_patient``
     に載っている患者は、その曜日の候補だけを作る (固定枠・希望の両方の分岐で).
@@ -2287,6 +2297,8 @@ def build_visits_for_pool(
     visits: list[V2Visit] = []
     # Phase G-45: 拠点休業日 skip の重複 emit 抑止. (patient_id, weekday) ごと 1 件.
     closed_warned: set[tuple[UUID, int]] = set()
+    # NG 曜日に残した保存済みの枠の注意書き. (patient_id, weekday) ごと 1 件.
+    ng_kept_warned: set[tuple[UUID, int]] = set()
     for patient in patients:
         if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
             continue
@@ -2336,8 +2348,17 @@ def build_visits_for_pool(
                     pinned_pfv_by_wd[_wd] = _r0
                     frozen_pfv_by_wd[_wd] = _r0
         used_fixed = False
-        if use_fixed_as_source and fixed_by_patient is not None:
-            fixed_rows = fixed_by_patient.get(patient.id) or []
+        _patient_fixed_rows = (
+            (fixed_by_patient.get(patient.id) or []) if fixed_by_patient is not None else []
+        )
+        if use_fixed_as_source:
+            fixed_rows = _patient_fixed_rows
+        elif keep_fixed_on_ng_weekdays and _ng_wds:
+            # 希望から作る患者: NG 曜日にある保存済みの枠だけを固定訪問の表から作る.
+            fixed_rows = [_r for _r in _patient_fixed_rows if _r.weekday in _ng_wds]
+        else:
+            fixed_rows = []
+        if fixed_rows:
             # CareFlow #102 Fix A: weekday -> course_code map を patient ごとに構築.
             # 同 patient で複数曜日に異なる course_template_id が指定されている
             # ケースを尊重するため (実運用ではほぼ単一だが、データ的に許容される).
@@ -2370,14 +2391,34 @@ def build_visits_for_pool(
                             wd_to_course_office_id[_row.weekday] = _co
             entries_fixed = _extract_fixed_visits_for_patient(fixed_rows)
             if entries_fixed:
-                used_fixed = True
+                # 希望から作る患者 (NG 曜日の枠だけここで作った) は、下の希望の分岐も通す.
+                used_fixed = use_fixed_as_source
                 for wd, st, sm in entries_fixed:
                     if _allowed_wds is not None and wd not in _allowed_wds:
                         continue  # 訪問頻度: この週に訪問しない曜日
                     if wd in _ng_wds:
-                        # NG 曜日 (PO 決定 2026-10-30): プールの候補として NG 曜日に置かない.
-                        # 枠そのものは消さない (週の生成はそのまま展開し、点検で知らせる).
-                        continue
+                        if not keep_fixed_on_ng_weekdays:
+                            # NG 曜日 (PO 決定 2026-10-30): プールの候補として NG 曜日に置かない.
+                            continue
+                        # 全面最適化: 保存済みの枠は黙って消さない. そのまま作って知らせる.
+                        if warnings is not None and (patient.id, wd) not in ng_kept_warned:
+                            ng_kept_warned.add((patient.id, wd))
+                            warnings.append(
+                                V2Warning(
+                                    type="general",
+                                    message=(
+                                        f"{_weekday_jp(wd)}: {patient.name} 様は"
+                                        f"{weekday_label(wd)}曜日が NG 曜日（訪問しない曜日）ですが、"
+                                        "保存済みの固定訪問の枠があるためそのまま作ります。"
+                                        "患者マスタの NG 曜日か固定訪問の枠をご確認ください"
+                                    ),
+                                    weekday=wd,
+                                    actionable=False,
+                                    patient_id=patient.id,
+                                    patient_name=patient.name,
+                                    affected_patient_ids=[patient.id],
+                                )
+                            )
                     ov = overlay.get((patient.id, wd))
                     if ov is not None:
                         st_eff = ov.new_start
@@ -7532,17 +7573,22 @@ async def run_v2_pipeline(
         # dict でない + PFV あり) は ``build_visits_for_pool`` が weekly_pattern ベース
         # では visit を 0 件しか生成しない. 全面最適化でもこの種の患者を取りこぼさない
         # よう、diff_add と同様 PFV ベース展開する経路を作る.
+        #
+        # NG 曜日 (設計 §9): weekly_pattern が dict でも、使える希望が 1 つも無い患者
+        # (例: ``{"ng_weekdays": [...]}`` だけ / 希望曜日がすべて NG 曜日) は、希望から
+        # 作ると 0 件になり保存済みの枠が黙って消える. 同じく固定訪問の表から作る.
         pool_patients = list(patients_by_id.values())
-        pool_patients_no_fixed = [
-            p
+        _full_orphan_ids = {
+            p.id
             for p in pool_patients
-            if not (p.id in patients_with_fixed and not isinstance(p.weekly_pattern, dict))
-        ]
-        pool_patients_orphan_fixed = [
-            p
-            for p in pool_patients
-            if p.id in patients_with_fixed and not isinstance(p.weekly_pattern, dict)
-        ]
+            if p.id in patients_with_fixed
+            and (
+                not isinstance(p.weekly_pattern, dict)
+                or not _extract_weekly_entries(p, config=config)
+            )
+        }
+        pool_patients_no_fixed = [p for p in pool_patients if p.id not in _full_orphan_ids]
+        pool_patients_orphan_fixed = [p for p in pool_patients if p.id in _full_orphan_ids]
         # 孤児 patient の PFV を取得 (PFV ベース展開用)
         # PatientFixedVisit は soft-delete を持たない (固定枠は物理削除)
         if pool_patients_orphan_fixed:
@@ -7727,6 +7773,8 @@ async def run_v2_pipeline(
         warnings=warnings,
         config=config,
         allowed_weekdays_by_patient=freq_allowed_wds or None,
+        # 全面最適化は NG 曜日にある保存済みの枠をそのまま作る (黙って消さない).
+        keep_fixed_on_ng_weekdays=mode == "full_optimize",
     )
     if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
@@ -7768,6 +7816,9 @@ async def run_v2_pipeline(
             warnings=warnings,
             config=config,
             allowed_weekdays_by_patient=freq_allowed_wds or None,
+            # 全面最適化は NG 曜日にある保存済みの枠をそのまま作る. 保留プールの追加
+            # (diff_add) は新しく置く候補なので NG 曜日を避ける (希望へフォールバック).
+            keep_fixed_on_ng_weekdays=mode == "full_optimize",
         )
         # Phase G-92: 固定訪問スケジュール由来の候補は pool_origin="fixed" を立てる.
         # 固定が 3 条件 (時間不適合 / 定員オーバー / 時間衝突) で入らない場合に
