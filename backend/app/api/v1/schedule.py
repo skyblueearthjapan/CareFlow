@@ -115,6 +115,7 @@ from app.services.scheduling.layer3_assignment import (
     UnresolvedGenderWarning,
     UnresolvedNgStaffWarning,
 )
+from app.services.scheduling.pair_visit import pair_secondary_staff
 from app.services.scheduling.week_clear import GENERATE_NEEDS_EMPTY_WEEK_MESSAGE, week_is_empty
 from app.services.staff_event_defaults import expand_staff_event_defaults
 
@@ -658,7 +659,8 @@ class PlaceAndFixResponse(BaseModel):
     """``POST /api/v1/schedule/place-and-fix`` のレスポンス.
 
     W37 Phase 2-A:
-        staff_count=2 のときは ``visits`` / ``fixed_visits`` がそれぞれ 2 件返る.
+        staff_count=2 のときは ``fixed_visits`` が 2 件・``visits`` は 1 件 (2 名で 1 行.
+        2026-10-30 本番の形) 返る.
         後方互換のため、staff_count=1 (旧挙動) では従来どおり ``visit`` /
         ``fixed_visit`` 単数フィールドにも 1 件目を入れる.
     """
@@ -672,7 +674,7 @@ class PlaceAndFixResponse(BaseModel):
     # W37 Phase 2-A: 複数スタッフ対応で配列形式も追加 (Phase 3 FE で使用).
     visits: list[VisitV2Read] = Field(default_factory=list)
     fixed_visits: list[PatientFixedVisitV2Read] = Field(default_factory=list)
-    # 2 名体制で共有される visit_group_id (staff_count=1 のときは None).
+    # 旧: 2 名体制で共有される visit_group_id. 2 名も 1 行にしたため常に None.
     visit_group_id: UUID | None = None
 
 
@@ -867,19 +869,18 @@ async def place_and_fix(
 
     W37 Phase 2-A: 複数スタッフ対応 (2 名体制).
         - staff_count=2 (または patient.requires_multiple_staff=True) の場合
-          2 visit + 2 fixed_visit を visit_group_id 共有で作成する.
+          1 visit (required_staff_count=2・visit_group_id=NULL・secondary_staff_id =
+          2 つ目のコースの担当) + 2 fixed_visit (slot_index 0/1) を作成する
+          (2026-10-30: 本番の形. 同じ組 id の 2 行は partial UNIQUE
+          ``uq_visits_pds_group_active`` に当たる).
         - course_template_ids[0] / [1] が異なる course_template_id を持つ.
-        - 2 つの visit は (patient_id, visit_date, start_time) が同じだが、
-          異なる course_id (= 異なる course_template から派生) と
-          共通 visit_group_id を持つ. partial UNIQUE
-          ``uq_visits_pds_group_active`` (visit_group_id 込み) により共存可能.
 
     挙動:
         1. patient 存在チェック (404 if not found)
         2. ISO (iso_year, iso_week) の月曜 + weekday から visit_date を算出
         3. duration_min から end_time を算出 (24:00 越えは 422)
-        4. ``Visit`` を staff_count 件作成 (status='planned', source='manual',
-           required_staff_count=staff_count, visit_group_id 共有)
+        4. ``Visit`` を 1 件作成 (status='planned', source='manual',
+           required_staff_count=staff_count, visit_group_id=NULL)
         5. ``fix_pattern=True`` のとき:
            - special_week_active 判定で mode を決定
            - 同一 (patient_id, mode, weekday, slot_index) の既存行を DELETE
@@ -1033,11 +1034,13 @@ async def place_and_fix(
                 detail=constraint_confirmation_detail(_cw),
             )
 
-        # ----- 1) visits に新規行を作成 (staff_count 件; 共通 visit_group_id) -----
-        # W37 Phase 2-A: 2 名体制では visit_group_id を共有することで partial UNIQUE
-        # uq_visits_pds_group_active (visit_group_id 込み) を通過させる.
-        # 1 名体制 (旧挙動) では visit_group_id=None.
-        shared_visit_group_id: UUID | None = uuid.uuid4() if body.staff_count == 2 else None
+        # ----- 1) visits に新規行を 1 行作成 -----
+        # 2 名体制も 1 行 (2026-10-30: 本番の形・カイポケ取込と同じ). 本番の partial UNIQUE
+        # uq_visits_pds_group_active (patient, date, start, COALESCE(visit_group_id, NIL)) は
+        # 同じ組 id の 2 行を許さない. course_id / primary = 1 つ目のコースとその担当、
+        # secondary_staff_id = 2 つ目のコースの担当 (1 人目と同じ人・未定なら NULL =
+        # 2 人目が足りない). 2 つ目のコースは上で確保済み (固定枠の slot_index=1 も書く).
+        shared_visit_group_id: UUID | None = None
         # Wave U-1 (§2.2 反映先の統一 B 経路 = プール採用「この週だけ配置」):
         #   - fix_pattern=True (型も更新)  → source='manual' (従来どおり).
         #   - fix_pattern=False (今週だけ) → source='manual_week'. 週生成・固定枠戻の
@@ -1045,7 +1048,7 @@ async def place_and_fix(
         #     今週は消えない. FE は現状 fix_pattern=true 固定送信のため既存挙動は不変.
         visit_source = "manual" if body.fix_pattern else VISIT_SOURCE_MANUAL_WEEK
         new_visits: list[Visit] = []
-        for course in courses:
+        for course in courses[:1]:
             v = Visit(
                 patient_id=body.patient_id,
                 visit_date=visit_date,
@@ -1063,6 +1066,11 @@ async def place_and_fix(
                 # ``manual_staff_override`` は立てない (人が名指ししたのではなく
                 # コース担当のミラーなので、コース担当の変更に追随してよい)。
                 primary_staff_id=course.assigned_staff_id,
+                secondary_staff_id=(
+                    pair_secondary_staff(course.assigned_staff_id, courses[1].assigned_staff_id)
+                    if len(courses) >= 2
+                    else None
+                ),
                 visit_group_id=shared_visit_group_id,
             )
             db.add(v)

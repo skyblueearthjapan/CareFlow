@@ -78,6 +78,11 @@ from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.scheduling.constants import DEFAULT_OFFICE_OPERATING_WEEKDAYS
 from app.services.scheduling.layer2_clustering import haversine_km
+from app.services.scheduling.pair_visit import (
+    load_pair_partner_courses,
+    load_pair_visits_by_partner_course,
+    pair_secondary_staff,
+)
 
 # Phase G-45: 拠点稼働曜日デフォルト (= 月-土).
 # Phase G-88: 正準値は ``constants`` に単一ソース化. 既存ローカル名は別名で維持.
@@ -3129,6 +3134,24 @@ class Layer3Assigner:
         stmt = select(Course).where(*where_clauses).order_by(Course.weekday, Course.code)
         courses = (await db.scalars(stmt)).all()
 
+        # 2 名で訪問 (1 行・本番の形): 訪問は 1 人目のコースにだけ属するが、2 人目
+        # (固定訪問 slot_index=1) のコースにも入れて数える (時間・重心・性別・NG・
+        # 空コース判定). 2 行で持っていたときに 2 人目のコースにあった 1 行の代わり.
+        pair_extra_by_course = await load_pair_visits_by_partner_course(db, courses)
+        pair_extra_patients: dict[UUID, Patient] = {}
+        _extra_pids = {v.patient_id for vs in pair_extra_by_course.values() for v in vs}
+        if _extra_pids:
+            pair_extra_patients = {
+                p.id: p
+                for p in (
+                    await db.scalars(
+                        select(Patient).where(
+                            Patient.id.in_(list(_extra_pids)), Patient.deleted_at.is_(None)
+                        )
+                    )
+                ).all()
+            }
+
         targets: list[CourseAssignmentTarget] = []
         for course in courses:
             # Phase G-28 fix: コース所属 visits を先頭で取得し、 0 件のコースは
@@ -3141,6 +3164,8 @@ class Layer3Assigner:
                 Visit.deleted_at.is_(None),
             )
             course_visit_rows = list((await db.scalars(visit_stmt)).all())
+            _pair_extra = pair_extra_by_course.get(course.id, [])
+            course_visit_rows.extend(_pair_extra)
             if not course_visit_rows:
                 # visits=0 のコースは patient_ids が空になりハンガリアン法に
                 # 含めても意味がない (W21 本番 5/35 NULL の根本原因).
@@ -3162,6 +3187,12 @@ class Layer3Assigner:
                 )
             )
             patients = list((await db.scalars(patient_stmt)).all())
+            _seen_pids = {p.id for p in patients}
+            for _v in _pair_extra:
+                _pp = pair_extra_patients.get(_v.patient_id)
+                if _pp is not None and _pp.id not in _seen_pids:
+                    _seen_pids.add(_pp.id)
+                    patients.append(_pp)
 
             # 重心算出
             lats = [float(p.lat) for p in patients if p.lat is not None]
@@ -3986,10 +4017,8 @@ class Layer3Assigner:
         # 立てるため、行単位の除外で group 全体が一貫して保護される。
         # (設計: docs/plans/p3-1-staff-substitute-design.md §4)
         target_visits = [v for v in target_visits if not v.manual_staff_override]
-
-        if not target_visits:
-            await db.flush()
-            return []
+        # target_visits が空でも続ける: 2 人目のコースだけ担当が決まった 1 行の 2 名で
+        # 訪問 (下の 5b) をそろえるため (空の IN は何もしない).
 
         # 2 名体制グループの partner 解決のため、同じ visit_group_id を持つ
         # visit を全件取得 (別コースに所属する partner も含む)
@@ -4023,6 +4052,13 @@ class Layer3Assigner:
             for c in (await db.scalars(extra_stmt)).all():
                 if c.assigned_staff_id is not None:
                     staff_by_course[c.id] = c.assigned_staff_id
+
+        # 2 名で訪問の 1 行 (本番の形・visit_group_id なし): 2 人目 = 固定訪問 slot_index=1
+        # のコースのその日の担当 (``pair_visit.load_pair_partner_courses``).
+        pair_partner_course = await load_pair_partner_courses(db, target_visits)
+
+        def _course_staff(c: Course) -> UUID | None:
+            return staff_by_course.get(c.id, c.assigned_staff_id)
 
         # ---------- 3. 既存の visit_staff_assignments を冪等のため DELETE ----------
         target_visit_ids = [v.id for v in target_visits]
@@ -4064,6 +4100,19 @@ class Layer3Assigner:
                     # 据えたもので、 当該 visit の患者の性別制限 / NG は未検証.
                     # 割当は行い (構造的ペアリングを壊さない)、 後段で警告化する.
                     secondary_pairs.append((visit, secondary_staff_id))
+            elif is_two_person:
+                # 1 行の 2 名で訪問: 2 人目のコースの担当. 2 人目のコースが引けない訪問
+                # (カイポケ取込・今週だけの配置で固定訪問に slot 1 が無い) は今の
+                # secondary_staff_id を残す (1 人目と同じ人になったときだけ外す).
+                _pc = pair_partner_course.get(visit.id)
+                secondary_staff_id = pair_secondary_staff(
+                    primary_staff_id,
+                    _course_staff(_pc) if _pc is not None else visit.secondary_staff_id,
+                )
+                if secondary_staff_id is not None:
+                    staff_ids.append(secondary_staff_id)
+                    if _pc is not None:
+                        secondary_pairs.append((visit, secondary_staff_id))
 
             # 重複排除 (primary == secondary になり得ないが念のため)
             seen: set[UUID] = set()
@@ -4081,6 +4130,41 @@ class Layer3Assigner:
             # ---------- 5. レガシー互換: visits.primary/secondary_staff_id ----------
             visit.primary_staff_id = primary_staff_id
             visit.secondary_staff_id = secondary_staff_id
+
+        # ---------- 5b. 2 人目のコースだけ担当が決まった 1 行の 2 名で訪問 ----------
+        # 訪問は 1 人目のコースに属するので上の対象に入らない. 2 人目 (secondary) と
+        # VSA の 2 人目だけを今のコース担当にそろえる (1 人目は触らない).
+        await db.flush()
+        _assigned_courses = [c for c in course_by_id.values() if c.id in staff_by_course]
+        _partner_side = await load_pair_visits_by_partner_course(
+            db, _assigned_courses, exclude_visit_ids=target_visit_ids
+        )
+        for _pcid, _pvisits in _partner_side.items():
+            for visit in _pvisits:
+                if visit.manual_staff_override:
+                    continue
+                new_sec = pair_secondary_staff(visit.primary_staff_id, staff_by_course[_pcid])
+                old_sec = visit.secondary_staff_id
+                if new_sec == old_sec:
+                    continue
+                if old_sec is not None and old_sec != visit.primary_staff_id:
+                    await db.execute(
+                        delete(VisitStaffAssignment).where(
+                            VisitStaffAssignment.visit_id == visit.id,
+                            VisitStaffAssignment.staff_id == old_sec,
+                        )
+                    )
+                if new_sec is not None:
+                    _dup = await db.scalar(
+                        select(VisitStaffAssignment.visit_id).where(
+                            VisitStaffAssignment.visit_id == visit.id,
+                            VisitStaffAssignment.staff_id == new_sec,
+                        )
+                    )
+                    if _dup is None:
+                        db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=new_sec))
+                    secondary_pairs.append((visit, new_sec))
+                visit.secondary_staff_id = new_sec
 
         await db.flush()
 

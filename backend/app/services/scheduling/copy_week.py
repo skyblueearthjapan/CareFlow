@@ -65,6 +65,7 @@ from app.services.scheduling.layer1_expander import (
     _get_or_create_course_for_template_week_l1,
     _is_special_week_active,
 )
+from app.services.scheduling.pair_visit import pair_secondary_staff
 from app.services.scheduling.visit_frequency import (
     frequency_rule_active,
     is_slot_visit_week,
@@ -126,6 +127,9 @@ class CopyItem:
     not_in_fixed: bool
     # 写す元の担当 (primary / secondary / VSA)。同じ人が続かないための検査に使う
     source_staff_ids: frozenset[UUID] = frozenset()
+    # 2 名で訪問の 2 人目の枠 (組の 2 つ目)。自分の行は作らず、組の 1 行目の
+    # secondary_staff_id になる (本番の形 = 1 行・visit_group_id なし)。
+    pair_secondary: bool = False
     # ---- 置き場所 (``_place_items`` が決める) ----
     course_template_id: UUID | None = None
     staff_after: UUID | None = None
@@ -176,7 +180,16 @@ class CopyPlan:
 
     @property
     def fill_count(self) -> int:
-        return len(self.fill_items)
+        return sum(1 for it in self.fill_items if not it.pair_secondary)
+
+    @property
+    def copy_count(self) -> int:
+        return sum(1 for it in self.items if not it.pair_secondary)
+
+    @property
+    def visit_items(self) -> list[CopyItem]:
+        """行を作る項目 (2 名で訪問の 2 人目の枠を除く)."""
+        return [it for it in [*self.items, *self.fill_items] if not it.pair_secondary]
 
     @property
     def needs_manual_staff(self) -> list[CopyItem]:
@@ -499,6 +512,7 @@ async def build_copy_plan(
     plan.fill_items = _fill_items(
         [*(plan.missing_fixed if fill_from_fixed else []), *plan.frequency_fixed]
     )
+    _mark_pair_secondaries([*plan.items, *plan.fill_items])
 
     # ----- 置き場所 (コース) と担当の検査 (H-1 / M-6 / M-2) -----
     await _place_items(db, plan, kept=kept)
@@ -611,6 +625,18 @@ async def _plan_missing_fixed(
             if patient.id not in copied_patients:
                 without_visits.add(patient.id)
     plan.missing_patients_without_visits = len(without_visits)
+
+
+def _mark_pair_secondaries(items: list[CopyItem]) -> None:
+    """組 (group_key) の 2 つ目以降を「2 人目の枠」にする (行は組で 1 行)."""
+    seen: set[UUID] = set()
+    for it in items:
+        if it.group_key is None:
+            continue
+        if it.group_key in seen:
+            it.pair_secondary = True
+        else:
+            seen.add(it.group_key)
 
 
 def _fill_items(missing: list[MissingFixed]) -> list[CopyItem]:
@@ -822,7 +848,6 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
             ).all()
         }
     before_courses = await _count_week_courses(db, iso.year, iso.week)
-    new_group: dict[UUID, UUID] = {}
     course_cache: dict[tuple[UUID, int], Course] = {}
     created: list[tuple[CopyItem, Visit]] = []
     for it in items:
@@ -836,9 +861,10 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
                     db, template=tpl, iso_year=iso.year, iso_week=iso.week, weekday=it.weekday
                 )
                 course_cache[key] = course
-        group_id = None
-        if it.group_key is not None:
-            group_id = new_group.setdefault(it.group_key, uuid.uuid4())
+        if it.pair_secondary:
+            # 2 名で訪問の 2 人目の枠: コースは確保する (2 人目のコースの担当を Layer 3 が
+            # secondary_staff_id へ書くため) が、行は作らない (組で 1 行・本番の形).
+            continue
         v = Visit(
             patient_id=it.patient_id,
             visit_date=it.target_date,
@@ -848,7 +874,8 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
             status=VISIT_STATUS_PLANNED,
             source=VISIT_SOURCE_MANUAL_WEEK if it.origin == "copy" else LAYER1_VISIT_SOURCE,
             required_staff_count=it.required_staff_count,
-            visit_group_id=group_id,
+            # 2 名で訪問も 1 行 (本番の partial UNIQUE は同じ組 id の 2 行を許さない).
+            visit_group_id=None,
             kaipoke_service_override=it.kaipoke_service_override,
             course_id=course.id if course is not None else None,
         )
@@ -861,24 +888,27 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
 
     # 4) 検査を通って担当の決まったコースへ入れた訪問は、コース・primary・VSA の
     #    3 か所を揃える。写す元の担当ではない (写さない)。
-    by_group: dict[UUID, list[tuple[CopyItem, Visit]]] = defaultdict(list)
+    #    2 名で訪問は、組の 2 人目の枠が入ったコースの担当を secondary_staff_id と VSA に
+    #    入れる (カイポケ取込の 1 行と同じ形・カイポケの職員名2)。
+    partner_staff: dict[UUID, UUID] = {}
+    for it in items:
+        if it.pair_secondary and it.group_key is not None and it.staff_after is not None:
+            partner_staff.setdefault(it.group_key, it.staff_after)
     for it, v in created:
-        if it.group_key is not None:
-            by_group[it.group_key].append((it, v))
-    for it, v in created:
-        if it.staff_after is None:
+        secondary = (
+            pair_secondary_staff(it.staff_after, partner_staff.get(it.group_key))
+            if it.group_key is not None
+            else None
+        )
+        if it.staff_after is None and secondary is None:
             continue
-        secondary = None
-        for p_it, _ in by_group.get(it.group_key, []) if it.group_key else []:
-            if p_it is not it and p_it.staff_after not in (None, it.staff_after):
-                secondary = p_it.staff_after
-                break
-        v.primary_staff_id = it.staff_after
-        v.secondary_staff_id = secondary
-        db.add(VisitStaffAssignment(visit_id=v.id, staff_id=it.staff_after))
+        if it.staff_after is not None:
+            v.primary_staff_id = it.staff_after
+            db.add(VisitStaffAssignment(visit_id=v.id, staff_id=it.staff_after))
+            result.staff_mirrored += 1
         if secondary is not None:
+            v.secondary_staff_id = secondary
             db.add(VisitStaffAssignment(visit_id=v.id, staff_id=secondary))
-        result.staff_mirrored += 1
     await db.flush()
 
     # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。

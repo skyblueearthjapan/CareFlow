@@ -5,7 +5,8 @@
     利用者が外したもの / 残す訪問と同じ枠 / 打刻のある週の埋まっている日)
   - 担当が一切写らないこと (primary / secondary / mentor / VSA / コース担当 /
     manual_staff_override)・メモ / kaipoke_id / 青ピン / 同行も写らない
-  - 2 名体制の組み直し (新しい組 ID)・サービス内容の上書きは写る
+  - 2 名体制は 1 行 (本番の形・visit_group_id なし) のまま写る・固定訪問から補う 2 名体制も
+    1 行 (2 人目は slot 1 のコースの担当)・サービス内容の上書きは写る
   - 臨時コース配下はコースなし・通常はテンプレートの同じコースへ (無ければ作る)
   - 写す先に打刻・取込・青ピン・取消がある場合 (§4-5)
   - スナップショットからの復元 (「コピー前に戻す」)
@@ -275,24 +276,16 @@ async def _seed_categories(db):
     )
     await w.visit(p4, source, 0, course=mon)
     temp = await w.visit(p5, source, 4, course=fri_temp, staff=s1)  # 固定訪問は月のみ
-    gid = uuid.uuid4()
-    mon_b_course = mon  # 2 名体制は同じコースでも組が区別できる
+    # 2 名体制は 1 行 (本番の形: required_staff_count=2・2 人目は secondary_staff_id)
     pair = [
         await w.visit(
             p6,
             source,
             0,
             start=time(13, 0),
-            course=mon_b_course,
-            visit_group_id=gid,
-            required_staff_count=2,
-        ),
-        await w.visit(
-            p6,
-            source,
-            0,
-            start=time(13, 0),
-            visit_group_id=gid,
+            course=mon,
+            staff=s0,
+            secondary_staff_id=s1.id,
             required_staff_count=2,
         ),
     ]
@@ -306,7 +299,7 @@ async def _seed_categories(db):
         )
     )
     await db.commit()
-    return w, dict(normal=normal, temp=temp, pair=pair, gid=gid, p5=p5)
+    return w, dict(normal=normal, temp=temp, pair=pair, p5=p5)
 
 
 @pytest.mark.asyncio
@@ -321,23 +314,19 @@ async def test_preview_counts_each_category_and_writes_nothing(client, db) -> No
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["mode"] == "replace"
-    # 写す: P1 月 / P5 金 (臨時) / P6 月の 2 名体制 2 行
-    assert body["copy_count"] == 4
+    # 写す: P1 月 / P5 金 (臨時) / P6 月の 2 名体制 1 行
+    assert body["copy_count"] == 3
     sk = body["skipped"]
     assert sk["cancelled"] == 1
     assert sk["unplanned"] == 1
     assert sk["special_extra"] == 1
     assert sk["inactive_patient"] == 1
-    # 2 名体制の相方 (コースなし) は既定コースに入れると相方と同じコースになる → 手で
-    manual = body["needs_manual_staff"]
-    assert len(manual) == 1
-    assert manual[0]["patient_name"] == "患者P6"
-    assert "相方と同じコース" in manual[0]["reason"]
+    assert body["needs_manual_staff"] == []
     assert body["temp_course_count"] == 1
     # 固定訪問に無い (患者・曜日) = P5 の金曜だけ
     assert [r["patient_name"] for r in body["not_in_fixed"]] == ["患者P5"]
     assert body["not_in_fixed"][0]["excluded"] is False
-    assert {d["weekday"]: d["count"] for d in body["by_weekday"]} == {0: 3, 4: 1}
+    assert {d["weekday"]: d["count"] for d in body["by_weekday"]} == {0: 2, 4: 1}
 
     assert len((await db.scalars(select(Visit))).all()) == before
     assert (await db.scalars(select(InboundSnapshot))).all() == []
@@ -349,7 +338,7 @@ async def test_preview_counts_each_category_and_writes_nothing(client, db) -> No
 
 
 @pytest.mark.asyncio
-async def test_copy_never_copies_staff_and_regroups_pairs(client, db) -> None:
+async def test_copy_never_copies_staff_and_keeps_pair_one_row(client, db) -> None:
     admin = await _user(db)
     w, seeded = await _seed_categories(db)
     pfv_before = await _pfv_rows(db)
@@ -361,12 +350,12 @@ async def test_copy_never_copies_staff_and_regroups_pairs(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["created"] == 4
+    assert body["created"] == 3
     assert body["restorable"] is True
     assert body["assign_result"] is None
 
     copied = await _live(db, w.target)
-    assert len(copied) == 4
+    assert len(copied) == 3
     for v in copied:
         assert v.source == "manual_week"
         assert v.status == "planned"
@@ -405,13 +394,11 @@ async def test_copy_never_copies_staff_and_regroups_pairs(client, db) -> None:
     assert temp.end_time == time(10, 0)
 
     pair = [v for v in copied if v.start_time == time(13, 0)]
-    assert len(pair) == 2
-    assert pair[0].visit_group_id == pair[1].visit_group_id
-    assert pair[0].visit_group_id not in (None, seeded["gid"])
-    assert {v.required_staff_count for v in pair} == {2}
-    # 片方はコースへ・もう片方は相方と同じコースを避けてコースなし (手で付ける)
-    assert sorted(v.course_id is None for v in pair) == [False, True]
-    assert len(body["needs_manual_staff"]) == 1
+    assert len(pair) == 1
+    assert pair[0].visit_group_id is None
+    assert pair[0].required_staff_count == 2
+    assert pair[0].course_id is not None
+    assert body["needs_manual_staff"] == []
 
     snaps = (await db.scalars(select(InboundSnapshot))).all()
     assert [(s.kind, s.week_start) for s in snaps] == [("copy_week", w.target)]
@@ -421,7 +408,7 @@ async def test_copy_never_copies_staff_and_regroups_pairs(client, db) -> None:
     ).all()
     assert len(audit) == 1
     assert audit[0].after["source_week_start"] == w.source.isoformat()
-    assert audit[0].after["created"] == 4
+    assert audit[0].after["created"] == 3
     assert audit[0].after["options"]["assign_staff"] is False
 
     assert await _pfv_rows(db) == pfv_before  # 固定訪問は 1 行も変わらない
@@ -435,21 +422,21 @@ async def test_user_can_exclude_not_in_fixed_visits(client, db) -> None:
     res = await client.post(f"{URL}/preview", headers=_bearer(admin), json=body)
     assert res.status_code == 200
     pv = res.json()
-    assert pv["copy_count"] == 3
+    assert pv["copy_count"] == 2
     assert pv["skipped"]["user_excluded"] == 1
     assert pv["not_in_fixed"][0]["excluded"] is True  # 外しても一覧には残る
 
-    # 2 名体制は片方を外すと組ごと外れる
+    # 2 名体制 (1 行) を外すとその 1 行が外れる
     body2 = _body(w.source, w.target, exclude_visit_ids=[str(seeded["pair"][0].id)])
     pv2 = (await client.post(f"{URL}/preview", headers=_bearer(admin), json=body2)).json()
     assert pv2["copy_count"] == 2
-    assert pv2["skipped"]["user_excluded"] == 2
+    assert pv2["skipped"]["user_excluded"] == 1
 
     res = await client.post(
         URL, headers=_bearer(admin), json={**body, "assign_staff": False, "confirm": True}
     )
     assert res.status_code == 200, res.text
-    assert res.json()["created"] == 3
+    assert res.json()["created"] == 2
     assert all(v.patient_id != seeded["p5"].id for v in await _live(db, w.target))
 
 
@@ -652,6 +639,81 @@ async def test_fill_from_fixed_is_optional(client, db) -> None:
     assert filled.visit_date == target + timedelta(days=2)
     assert filled.primary_staff_id is None
     assert await _pfv_rows(db) == pfv_before
+
+
+@pytest.mark.asyncio
+async def test_fill_two_staff_fixed_visit_makes_one_row(
+    client, db, visits_pds_unique_index
+) -> None:
+    """2 名体制の固定訪問 (slot 0 = A・slot 1 = B) から補う → 訪問は 1 行.
+
+    1 人目 = A コースの担当・2 人目 (secondary_staff_id) = B コースの担当・VSA も 2 人.
+    本番と同じ partial UNIQUE を張って流す (2 行にすると落ちる).
+    """
+    admin = await _user(db)
+    source, target = _weeks()
+    w = await World(db, source, target).setup()
+    s0, s1, _s2 = w.staff
+    tpl_b = CourseTemplate(office_id=w.office.id, label="B")
+    db.add(tpl_b)
+    await db.flush()
+    p = await w.patient("F2S", pfv=(2,))
+    p.requires_multiple_staff = True
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=2,
+            start_time=time(9, 0),
+            duration_min=60,
+            slot_index=1,
+            course_template_id=tpl_b.id,
+        )
+    )
+    course_a = await w.course(target, 2, staff=s0)
+    course_b = await w.course(target, 2, code="B", staff=s1)
+    course_b.template_id = tpl_b.id
+    # 置き換えで担当が外れないよう、両コースに残る訪問 (取込) を置く (M-1)
+    for i, (c, st) in enumerate(((course_a, s0), (course_b, s1))):
+        anchor = await w.patient(f"F2S-ANC{i}")
+        await w.visit(anchor, target, 2, start=time(14, 0), course=c, staff=st, source="import")
+    await db.commit()
+
+    pv = (
+        await client.post(
+            f"{URL}/preview",
+            headers=_bearer(admin),
+            json=_body(source, target, fill_from_fixed=True),
+        )
+    ).json()
+    assert pv["missing_fixed_count"] == 1
+    assert pv["fill_count"] == 1
+
+    res = await client.post(
+        URL,
+        headers=_bearer(admin),
+        json=_body(source, target, fill_from_fixed=True, assign_staff=False, confirm=True),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["filled"] == 1
+    rows = [v for v in await _live(db, target) if v.patient_id == p.id]
+    assert len(rows) == 1, rows
+    v = rows[0]
+    assert v.visit_group_id is None
+    assert v.required_staff_count == 2
+    assert v.course_id == course_a.id
+    assert v.primary_staff_id == s0.id
+    assert v.secondary_staff_id == s1.id
+    vsa = {
+        a.staff_id
+        for a in (
+            await db.scalars(
+                select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == v.id)
+            )
+        ).all()
+    }
+    assert vsa == {s0.id, s1.id}
+    assert course_b.id != course_a.id
 
 
 # ---------------------------------------------------------------------------

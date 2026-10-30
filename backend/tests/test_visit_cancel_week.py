@@ -495,8 +495,10 @@ async def test_cancelled_visit_is_not_regenerated_by_week_expand(client, db) -> 
 
 
 @pytest.mark.asyncio
-async def test_cancelled_two_staff_pair_is_not_regenerated_by_week_expand(client, db) -> None:
-    """2 名体制 (slot 0/1) でもペアごと復活・二重化しない."""
+async def test_cancelled_two_staff_pair_is_not_regenerated_by_week_expand(
+    client, db, visits_pds_unique_index
+) -> None:
+    """2 名体制 (slot 0/1・訪問は 1 行) でも取消が復活・二重化しない."""
     admin = await _make_user(db, email="vcw-15@example.com", role="admin")
     patient = Patient(
         code="VCW-15",
@@ -528,8 +530,9 @@ async def test_cancelled_two_staff_pair_is_not_regenerated_by_week_expand(client
     await expander.expand_week(db, iso_year=iso.year, iso_week=iso.week)
     await db.commit()
     rows = await _all_visits(db, patient)
-    assert len(rows) == 2
-    assert len({r.visit_group_id for r in rows}) == 1
+    assert len(rows) == 1
+    assert rows[0].visit_group_id is None
+    assert rows[0].required_staff_count == 2
 
     res = await client.post(
         _URL, headers=_bearer(admin), json={"visit_id": str(rows[0].id), "cancel": True}
@@ -539,7 +542,7 @@ async def test_cancelled_two_staff_pair_is_not_regenerated_by_week_expand(client
     await expander.expand_week(db, iso_year=iso.year, iso_week=iso.week)
     await db.commit()
     rows_after = await _all_visits(db, patient)
-    assert len(rows_after) == 2, [(r.id, r.status) for r in rows_after]
+    assert len(rows_after) == 1, [(r.id, r.status) for r in rows_after]
     assert {r.status for r in rows_after} == {"cancelled"}
 
 

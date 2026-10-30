@@ -82,6 +82,7 @@ from app.services.scheduling.constants import (
 )
 from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_visits
 from app.services.scheduling.ng_weekdays import ng_weekdays_of, weekday_label
+from app.services.scheduling.pair_visit import pair_secondary_staff
 from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
     filter_pfv_rows_for_week,
@@ -10259,14 +10260,19 @@ async def reset_visits_to_fixed(
     visits_to_skip_protected = 0
     visits_to_skip_conflict = 0
     new_visits_with_staff: list[tuple[Visit, UUID]] = []
+    # 2 名で訪問の 1 行と 2 人目 (slot 1 のコースの担当)。
+    new_visits_with_secondary: list[tuple[Visit, UUID]] = []
 
     # 2 名で訪問の方 (requires_multiple_staff): Layer1 (_expand_fixed_visits_to_visits) と同じく
-    # 同じ曜日に slot_index 0 と 1 の両方がそろう枠だけを、2 件の訪問 (同じ visit_group_id・
-    # required_staff_count=2) にする. 2 件とも 1 人目 (slot 0) の時刻 (mode="auto" では補正後)
-    # で作る. 2 人目だけ別のコースで補正されて時刻がずれると、組が割れる・片方だけ残るため.
-    # どちらかが作れない (物理不可能・保護 visit と衝突) ときは 2 件とも作らない.
+    # 同じ曜日に slot_index 0 と 1 の両方がそろう枠だけを、**1 件の訪問** にする
+    # (本番の形・カイポケ取込と同じ: required_staff_count=2・visit_group_id=NULL・
+    # course_id と primary_staff_id = 1 人目 (slot 0) のコースと担当・secondary_staff_id =
+    # 2 人目 (slot 1) のコースの担当)。本番の partial UNIQUE uq_visits_pds_group_active
+    # (patient, date, start, COALESCE(visit_group_id, NIL)) は同じ組 id の 2 行を許さない。
+    # 時刻は 1 人目 (slot 0) の時刻 (mode="auto" では補正後)。2 人目のコースの補正が
+    # 物理不可能なら作らない (2 人目がその時刻に行けない)。保護 visit と衝突なら作らない.
     # 片方の枠しか無い曜日は作らず警告を出す (保留プールで 2 人目が足りないと分かる).
-    # 1 名の方・slot_index 2 以降は従来どおり (visit_group_id=None・required_staff_count=1).
+    # 1 名の方・slot_index 2 以降は従来どおり (required_staff_count=1).
     def _resolve_reset_times(meta: dict[str, Any]) -> tuple[time, time] | None:
         """補正後の (開始, 終了). 補正で物理不可能なら None."""
         idx = meta["v2_index"]
@@ -10288,7 +10294,6 @@ async def reset_visits_to_fixed(
                 meta.get("slot_index") or 0, meta
             )
     pair_days = {k for k, slots in pair_slot_meta.items() if {0, 1} <= set(slots)}
-    pair_group_ids: dict[tuple[UUID, date], UUID] = {}
     pair_warned_days: set[tuple[UUID, int]] = set()
     protected_by_pds: dict[tuple[UUID, date, time], Visit] = {
         (k[0], k[1], k[2]): v for k, v in protected_existing_keys.items()
@@ -10314,8 +10319,11 @@ async def reset_visits_to_fixed(
                     )
                 visits_to_skip_conflict += 1
                 continue
-            is_pair_row = True
             slot_metas = pair_slot_meta[day_key]
+            if meta is not slot_metas[0]:
+                # 2 人目 (slot 1) の枠は 1 人目の 1 行の secondary_staff_id になる (行は作らない).
+                continue
+            is_pair_row = True
             times0 = _resolve_reset_times(slot_metas[0])
             times1 = _resolve_reset_times(slot_metas[1])
             if times0 is None or times1 is None:
@@ -10324,7 +10332,7 @@ async def reset_visits_to_fixed(
                     warnings.append(
                         f"{_reset_patient_label(meta['patient_id'])} 様 "
                         f"({_weekday_jp(meta['weekday'])}): 2 名の組の片方が補正で物理不可能と"
-                        "判定されたため、2 件とも reset INSERT スキップ"
+                        "判定されたため、訪問を reset INSERT スキップ"
                     )
                 visits_to_skip_conflict += 1
                 continue
@@ -10360,8 +10368,7 @@ async def reset_visits_to_fixed(
         # CareFlow 本番バグ修正 (Option A): 保護対象 active visit (status='confirmed' /
         # source='manual' / status='completed' 等) と unique key 衝突する場合は
         # INSERT スキップ + warning. PFV 由来 INSERT は visit_group_id=None 固定
-        # (2 名の組だけは下の pair_group_id. 2 件とも 1 人目の時刻なので、同じ患者・日・時刻の
-        # 保護 visit があれば 2 件とも作らない).
+        # (2 名の組も 1 行. 同じ患者・日・時刻の保護 visit があれば作らない).
         pds_key = (meta["patient_id"], visit_date, corrected_start_r)
         protect_key: tuple[UUID, date, time, UUID | None] = (*pds_key, None)
         existing_protected = (
@@ -10389,11 +10396,21 @@ async def reset_visits_to_fixed(
             inserted_visits += 1
             continue
         course_for_meta: Course | None = meta["course"]
-        pair_group_id = (
-            pair_group_ids.setdefault((meta["patient_id"], visit_date), uuid.uuid4())
-            if is_pair_row
-            else None
-        )
+        pair_secondary: UUID | None = None
+        if is_pair_row:
+            _p1_staff = pair_slot_meta[day_key][1]["staff_id"]
+            pair_secondary = pair_secondary_staff(meta["staff_id"], _p1_staff)
+            if pair_secondary is None:
+                _why = (
+                    "2 人目のコースの担当が 1 人目と同じ"
+                    if _p1_staff is not None and _p1_staff == meta["staff_id"]
+                    else "2 人目のコースの担当が決まっていない"
+                )
+                warnings.append(
+                    f"{_reset_patient_label(meta['patient_id'])} 様 "
+                    f"({_weekday_jp(meta['weekday'])} {_fmt_hhmm(corrected_start_r)}): "
+                    f"2 名で訪問ですが、{_why}ため 2 人目が足りません"
+                )
         new_visit = Visit(
             patient_id=meta["patient_id"],
             visit_date=visit_date,
@@ -10403,7 +10420,7 @@ async def reset_visits_to_fixed(
             status="planned",
             source="reset_v2",
             required_staff_count=2 if is_pair_row else 1,
-            visit_group_id=pair_group_id,
+            visit_group_id=None,
             course_id=(course_for_meta.id if course_for_meta is not None else None),
             note=f"reset_to_fixed_v2 iso_year={iso_year} iso_week={iso_week}",
         )
@@ -10411,6 +10428,8 @@ async def reset_visits_to_fixed(
         inserted_visits += 1
         if meta["staff_id"] is not None:
             new_visits_with_staff.append((new_visit, meta["staff_id"]))
+        if pair_secondary is not None:
+            new_visits_with_secondary.append((new_visit, pair_secondary))
 
     # Phase G-21 T3-5: dry_run=True の場合は DB INSERT/flush をスキップして件数だけ返す.
     if dry_run:
@@ -10433,6 +10452,10 @@ async def reset_visits_to_fixed(
         db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=sid))
         # レガシー互換: visits.primary_staff_id も同期 (モニター/モバイル等が参照)。
         visit.primary_staff_id = sid
+    # 2 名で訪問の 2 人目 (カイポケ取込と同じく VSA にも入れる・カイポケの職員名2)。
+    for visit, sec in new_visits_with_secondary:
+        db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=sec))
+        visit.secondary_staff_id = sec
     await db.flush()
 
     # 新人同行 (§5.1-2): 固定枠に戻した週へ既定を再展開する (孤立リンク掃除 S-1 込み)。

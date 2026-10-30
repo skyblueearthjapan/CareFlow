@@ -2,14 +2,17 @@
 
 検証観点:
   1. requires_multiple_staff=True + slot 0/1 両方あり
-     → 2 visit 生成、visit_group_id 共有、course_id 異なる、required_staff_count=2.
+     → 1 visit 生成 (2026-10-30 本番の形): required_staff_count=2・visit_group_id なし・
+       course_id は slot 0 のコース. slot 1 のコースも確保する.
   2. requires_multiple_staff=True + slot 1 欠け
      → 1 visit のみ生成 + 警告ログ.
   3. requires_multiple_staff=False
      → 既存挙動: slot 0 のみ 1 visit (slot 1 行があっても無視).
   4. manual visit が同 (patient, date, time) に存在
-     → 2 visit 共にスキップ (片方だけスキップは不可).
-  5. soft-delete ペア: 冪等再実行時に旧 2 visit が ペアごと soft-delete される.
+     → スキップ.
+  5. 冪等再実行時に旧 visit が soft-delete され、新しい 1 行ができる.
+
+本番と同じ partial UNIQUE (uq_visits_pds_group_active) を張って流す (2 行作ると落ちる).
 """
 
 from __future__ import annotations
@@ -32,6 +35,8 @@ TEST_ISO_YEAR = 2026
 TEST_ISO_WEEK = 19
 TEST_WEEK_MONDAY = date(2026, 5, 4)
 
+pytestmark = pytest.mark.usefixtures("visits_pds_unique_index")
+
 
 async def _make_patient(
     db,
@@ -53,13 +58,13 @@ async def _make_patient(
 
 
 # ---------------------------------------------------------------------------
-# 1) requires_multiple_staff=True + slot 0/1 両方あり → 2 visit
+# 1) requires_multiple_staff=True + slot 0/1 両方あり → 1 visit (2 名で 1 行)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_multi_staff_both_slots_generates_two_visits_with_shared_group_id(db) -> None:
-    """slot 0/1 両方ある複数スタッフ患者 → 2 visit 生成 + visit_group_id 共有."""
+async def test_multi_staff_both_slots_generates_one_pair_visit(db) -> None:
+    """slot 0/1 両方ある複数スタッフ患者 → 1 visit (required_staff_count=2・組 id なし)."""
     expander = Layer1Expander()
     patient = await _make_patient(db, code="W37-M01", requires_multiple_staff=True)
 
@@ -90,29 +95,26 @@ async def test_multi_staff_both_slots_generates_two_visits_with_shared_group_id(
     result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
     await db.commit()
 
-    assert result.visits_created_count == 2
+    assert result.visits_created_count == 1
     rows = list(
         await db.scalars(
             select(Visit).where(Visit.patient_id == patient.id, Visit.deleted_at.is_(None))
         )
     )
-    assert len(rows) == 2
-    # 同じ visit_date / start_time / end_time
-    assert {r.visit_date for r in rows} == {TEST_WEEK_MONDAY}
-    assert {r.start_time for r in rows} == {time(9, 0)}
-    assert {r.end_time for r in rows} == {time(10, 0)}
-    # visit_group_id 共有
-    group_ids = {r.visit_group_id for r in rows}
-    assert len(group_ids) == 1
-    assert next(iter(group_ids)) is not None
-    # required_staff_count=2
-    assert all(r.required_staff_count == 2 for r in rows)
+    assert len(rows) == 1
+    v = rows[0]
+    assert (v.visit_date, v.start_time, v.end_time) == (TEST_WEEK_MONDAY, time(9, 0), time(10, 0))
+    assert v.visit_group_id is None
+    assert v.required_staff_count == 2
+    # 担当は Layer 3 が付ける (ここでは付けない)
+    assert v.primary_staff_id is None
+    assert v.secondary_staff_id is None
 
 
 @pytest.mark.asyncio
-async def test_multi_staff_both_slots_have_distinct_course_ids(db) -> None:
-    """slot 0/1 で異なる course_template_id を指定すると、生成される 2 visit は
-    異なる course_id を持つ (= 別コースに紐付く)."""
+async def test_multi_staff_both_slots_visit_in_slot0_course_and_slot1_course_exists(db) -> None:
+    """slot 0/1 で異なる course_template_id を指定すると、訪問は slot 0 のコースに入り、
+    slot 1 のコース (2 人目のコース) もその週に確保される."""
     from app.models.course import Course
     from app.models.course_template import CourseTemplate
     from app.models.office import Office
@@ -164,20 +166,33 @@ async def test_multi_staff_both_slots_have_distinct_course_ids(db) -> None:
     result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
     await db.commit()
 
-    assert result.visits_created_count == 2
+    assert result.visits_created_count == 1
     rows = list(
         await db.scalars(
             select(Visit).where(Visit.patient_id == patient.id, Visit.deleted_at.is_(None))
         )
     )
-    course_ids = [r.course_id for r in rows]
-    assert all(cid is not None for cid in course_ids)
-    assert len(set(course_ids)) == 2, f"2 visit は異なる course_id を持つはず, got {course_ids}"
+    assert len(rows) == 1
+    course = await db.scalar(select(Course).where(Course.id == rows[0].course_id))
+    assert course is not None and course.template_id == tpl_a.id
 
-    # 各 course は対応する template にひもづく
-    courses = list(await db.scalars(select(Course).where(Course.id.in_(course_ids))))
-    template_ids = {c.template_id for c in courses}
-    assert template_ids == {tpl_a.id, tpl_b.id}
+    # 2 人目のコース (tpl_b の同じ週・曜日) も確保されている
+    week_courses = list(
+        await db.scalars(
+            select(Course).where(
+                Course.iso_year == TEST_ISO_YEAR,
+                Course.iso_week == TEST_ISO_WEEK,
+                Course.weekday == 2,
+            )
+        )
+    )
+    assert {c.template_id for c in week_courses} >= {tpl_a.id, tpl_b.id}
+
+    # 2 人目のコースは pair_visit で引ける (Layer 3 が secondary の担当を引く道)
+    from app.services.scheduling.pair_visit import load_pair_partner_courses
+
+    partners = await load_pair_partner_courses(db, rows)
+    assert partners[rows[0].id].template_id == tpl_b.id
 
 
 # ---------------------------------------------------------------------------
@@ -337,14 +352,13 @@ async def test_single_staff_uses_only_slot0_ignores_slot1(db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4) manual visit 衝突 → 2 visit 共にスキップ
+# 4) manual visit 衝突 → スキップ
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_multi_staff_manual_conflict_skips_both_visits(db) -> None:
-    """manual visit が同 (patient, date, time) に存在する場合、
-    2 visit ペアの両方ともスキップする (片方残しは禁止)."""
+    """manual visit が同 (patient, date, time) に存在する場合、2 名の訪問を作らない."""
     expander = Layer1Expander()
     patient = await _make_patient(db, code="W37-M06", requires_multiple_staff=True)
 
@@ -387,7 +401,7 @@ async def test_multi_staff_manual_conflict_skips_both_visits(db) -> None:
     result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
     await db.commit()
 
-    # auto 2 visit 共にスキップ → visits_created は 0
+    # auto はスキップ → visits_created は 0
     assert result.visits_created_count == 0
 
     # active な visit は manual のみ
@@ -405,13 +419,13 @@ async def test_multi_staff_manual_conflict_skips_both_visits(db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5) 冪等性: 旧 2 visit ペアが soft-delete されてから新 2 visit が INSERT される
+# 5) 冪等性: 旧 visit が soft-delete されてから新しい 1 行が INSERT される
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_multi_staff_idempotent_re_run_soft_deletes_pair(db) -> None:
-    """冪等再実行時に旧 2 visit (ペア) が両方とも soft-delete され, 新 2 visit が INSERT される."""
+    """冪等再実行時に旧 visit が soft-delete され, 新しい 1 行が INSERT される."""
     expander = Layer1Expander()
     patient = await _make_patient(db, code="W37-M07", requires_multiple_staff=True)
 
@@ -440,42 +454,31 @@ async def test_multi_staff_idempotent_re_run_soft_deletes_pair(db) -> None:
     # 1 回目
     res1 = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
     await db.commit()
-    assert res1.visits_created_count == 2
+    assert res1.visits_created_count == 1
     first_ids = {vc.visit_id for vc in res1.visits_created}
 
-    # 2 回目 — 旧 2 行は soft-delete, 新 2 行が INSERT される
+    # 2 回目 — 旧 1 行は soft-delete, 新 1 行が INSERT される (UNIQUE に当たらない)
     res2 = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
     await db.commit()
-    assert res2.visits_created_count == 2
+    assert res2.visits_created_count == 1
     second_ids = {vc.visit_id for vc in res2.visits_created}
 
     # 新旧で ID 集合は完全に分離する (重複しない)
     assert first_ids.isdisjoint(second_ids)
 
-    # 全行 (含 deleted) を確認: 4 行存在 (2 つは deleted, 2 つは active)
     all_rows = list(await db.scalars(select(Visit).where(Visit.patient_id == patient.id)))
-    assert len(all_rows) == 4
+    assert len(all_rows) == 2
     deleted = [v for v in all_rows if v.deleted_at is not None]
     active = [v for v in all_rows if v.deleted_at is None]
-    assert len(deleted) == 2
-    assert len(active) == 2
-
-    # active な 2 行は同じ visit_group_id を共有する (新ペア)
-    active_groups = {v.visit_group_id for v in active}
-    assert len(active_groups) == 1
-    assert next(iter(active_groups)) is not None
-
-    # deleted 側の 2 行も同じ visit_group_id を共有する (旧ペアが両方とも soft-deleted)
-    deleted_groups = {v.visit_group_id for v in deleted}
-    assert len(deleted_groups) == 1
-    assert next(iter(deleted_groups)) is not None
-    # 新旧 group_id は別 UUID
-    assert next(iter(active_groups)) != next(iter(deleted_groups))
+    assert len(deleted) == 1
+    assert len(active) == 1
+    assert active[0].required_staff_count == 2
+    assert active[0].visit_group_id is None
 
 
 @pytest.mark.asyncio
 async def test_multi_staff_active_visits_have_auto_source(db) -> None:
-    """生成された 2 visit は source=auto の標準仕様."""
+    """生成された 2 名の訪問 (1 行) は source=auto の標準仕様."""
     expander = Layer1Expander()
     patient = await _make_patient(db, code="W37-M08", requires_multiple_staff=True)
 
@@ -504,12 +507,45 @@ async def test_multi_staff_active_visits_have_auto_source(db) -> None:
     result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
     await db.commit()
 
-    assert result.visits_created_count == 2
+    assert result.visits_created_count == 1
     rows = list(
         await db.scalars(
             select(Visit).where(Visit.patient_id == patient.id, Visit.deleted_at.is_(None))
         )
     )
-    assert len(rows) == 2
+    assert len(rows) == 1
     assert all(r.source == LAYER1_VISIT_SOURCE for r in rows)
     assert all(r.status == VISIT_STATUS_PLANNED for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# 6) 試験の DB にも本番の partial UNIQUE が効いている (2 行の組を作ると落ちる)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pds_unique_index_rejects_two_rows_sharing_group_id(db) -> None:
+    """本番 (0027) と同じ索引: 同じ患者・日・時刻・組 id の 2 行は IntegrityError."""
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    patient = await _make_patient(db, code="W37-M09", requires_multiple_staff=True)
+    gid = uuid.uuid4()
+    for _ in range(2):
+        db.add(
+            Visit(
+                patient_id=patient.id,
+                visit_date=TEST_WEEK_MONDAY,
+                start_time=time(9, 0),
+                end_time=time(10, 0),
+                type="regular",
+                status=VISIT_STATUS_PLANNED,
+                source="auto",
+                required_staff_count=2,
+                visit_group_id=gid,
+            )
+        )
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()

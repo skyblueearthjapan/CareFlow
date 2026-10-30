@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
 from typing import Any
@@ -1046,18 +1045,17 @@ class Layer1Expander:
             ``required_staff_count = 1``.
 
         - ``requires_multiple_staff = True``:
-            slot_index=0 / slot_index=1 を **同 weekday** で組み合わせて 2 visit
-            INSERT する. 各 visit は同一 (patient_id, visit_date, start_time,
-            end_time) だが **異なる course_id** を持ち、同一 ``visit_group_id``
-            で連結される (Layer 3 の 2 名体制判定用).
+            slot_index=0 / slot_index=1 を **同 weekday** で組み合わせて **1 visit**
+            INSERT する (2026-10-30: 本番の形・カイポケ取込と同じ). course_id は
+            slot 0 のコース・required_staff_count=2・visit_group_id=NULL. slot 1 の
+            コースも確保し、Layer 3 がその担当を secondary_staff_id に書く
+            (``pair_visit.load_pair_partner_courses``). 時刻は slot 0.
 
-            slot 1 が欠けている場合は警告ログを出し、slot 0 のみで 1 visit
-            生成 (案 X 違反だが Layer 1 は寛容. ユーザーが UI で補完するまで
-            動作可能). slot 0 が欠けて slot 1 のみあるという異常ケースも
-            警告して slot 1 のみ 1 visit 生成.
+            slot 0 / slot 1 の片方しか無い曜日は作らず、警告ログを出して
+            ``unplaced_multi_staff_patients`` に記録する (W37 hotfix C-2).
 
             manual visit との衝突 (W35): 同 (patient, date, start_time) の
-            manual がある場合は 2 visit 共にスキップ (片方だけ残すと整合崩壊).
+            manual がある場合はスキップ.
         """
         created: list[VisitCreated] = []
 
@@ -1282,52 +1280,47 @@ class Layer1Expander:
                     course_id = course.id
                 slot_course_ids.append(course_id)
 
-            # ----- 2 visit 体制なら visit_group_id を共有 -----
-            num_visits = len(slots_to_use)
-            visit_group_id: UUID | None = None
-            if requires_multi and num_visits >= 1:
-                # 警告経路 (片方欠け = 1 visit) でも visit_group_id を割り当てるかは
-                # 議論の余地があるが, 1 visit のみの場合は group_id 不要 (Layer 3 で
-                # required_staff_count == 2 だけでも 2 名体制と判定されうるが
-                # partner が存在しないので結局 1 名割当になる).
-                # → Phase 2-B 設計指針: 2 visit 揃ったときのみ group_id 共有.
-                if num_visits == 2:
-                    visit_group_id = uuid.uuid4()
+            # ----- 2 名で訪問は 1 行 (本番の形・カイポケ取込と同じ) -----
+            # 本番の partial UNIQUE ``uq_visits_pds_group_active`` (patient, date, start,
+            # COALESCE(visit_group_id, NIL)) は同じ組 id の 2 行を許さないため、2 名でも
+            # visits は 1 行にする: course_id = 1 人目 (slot 0) のコース・
+            # required_staff_count=2・visit_group_id=NULL。2 人目 (slot 1) のコースは上で
+            # 確保済み (担当の決定 Layer 3 が 2 人目のコースの担当を secondary_staff_id へ書く).
+            # 担当はここでは付けない (1 名の訪問と同じく Layer 3 が付ける).
+            course_id = slot_course_ids[0]
+            visit = Visit(
+                patient_id=patient.id,
+                visit_date=visit_date,
+                start_time=start_t,
+                end_time=end_t,
+                type=LAYER1_VISIT_TYPE,
+                status=LAYER1_VISIT_STATUS,
+                source=LAYER1_VISIT_SOURCE,
+                required_staff_count=staff_count,
+                course_id=course_id,
+                visit_group_id=None,
+                note=(
+                    "Layer1: fixed pattern (special_week)"
+                    if special_applied
+                    else "Layer1: fixed pattern"
+                ),
+            )
+            db.add(visit)
+            await db.flush()
 
-            for _fe, course_id in zip(slots_to_use, slot_course_ids, strict=True):
-                visit = Visit(
+            created.append(
+                VisitCreated(
+                    visit_id=visit.id,
                     patient_id=patient.id,
-                    visit_date=visit_date,
-                    start_time=start_t,
-                    end_time=end_t,
-                    type=LAYER1_VISIT_TYPE,
-                    status=LAYER1_VISIT_STATUS,
-                    source=LAYER1_VISIT_SOURCE,
-                    required_staff_count=staff_count,
                     course_id=course_id,
-                    visit_group_id=visit_group_id,
-                    note=(
-                        "Layer1: fixed pattern (special_week)"
-                        if special_applied
-                        else "Layer1: fixed pattern"
-                    ),
+                    weekday=weekday,
+                    visit_date=visit_date,
+                    start_time=start_t.strftime("%H:%M"),
+                    end_time=end_t.strftime("%H:%M"),
+                    staff_count=staff_count,
+                    special_week_applied=special_applied,
                 )
-                db.add(visit)
-                await db.flush()
-
-                created.append(
-                    VisitCreated(
-                        visit_id=visit.id,
-                        patient_id=patient.id,
-                        course_id=course_id,
-                        weekday=weekday,
-                        visit_date=visit_date,
-                        start_time=start_t.strftime("%H:%M"),
-                        end_time=end_t.strftime("%H:%M"),
-                        staff_count=staff_count,
-                        special_week_applied=special_applied,
-                    )
-                )
+            )
 
         return created
 
@@ -1421,8 +1414,8 @@ class Layer1Expander:
         W16 codex fix (重大 1): ``template`` が渡された場合は (template, year, week, weekday)
         の Course を find/create して visit.course_id を埋める。
 
-        2 名体制 (staff_count=2) のときは ``visit_group_id`` を共有する 2 行を
-        INSERT する (§3.3 / §4.5)。Layer 3 (W4-BE9) が後から
+        2 名体制 (staff_count=2) も 1 行 (required_staff_count=2・visit_group_id=NULL)
+        を INSERT する (2026-10-30: 本番の形)。Layer 3 (W4-BE9) が後から
         ``visit_staff_assignments`` を埋める想定。
         """
         created: list[VisitCreated] = []
@@ -1536,46 +1529,43 @@ class Layer1Expander:
                 )
                 course_id = course.id
 
-            # 2 名体制は同じ visit_group_id を持つ visit を 2 行 (§3.3)
-            visit_group_id: UUID | None = None
-            if staff_count == 2:
-                visit_group_id = uuid.uuid4()
+            # 2 名体制も visits は 1 行 (required_staff_count=2・visit_group_id=NULL)。
+            # 本番の partial UNIQUE (patient, date, start, COALESCE(visit_group_id)) が
+            # 同じ組 id の 2 行を許さないため (固定訪問の経路と同じ).
+            visit = Visit(
+                patient_id=patient.id,
+                visit_date=visit_date,
+                start_time=start_t,
+                end_time=end_t,
+                type=LAYER1_VISIT_TYPE,
+                status=LAYER1_VISIT_STATUS,
+                source=LAYER1_VISIT_SOURCE,
+                required_staff_count=staff_count,
+                course_id=course_id,
+                visit_group_id=None,
+                note=(
+                    f"Layer1: {time_type} pattern (special_week)"
+                    if special_applied
+                    else f"Layer1: {time_type} pattern"
+                ),
+            )
+            db.add(visit)
+            # 個別 ID を確定させ、レスポンスに渡す
+            await db.flush()
 
-            for _slot_idx in range(staff_count):
-                visit = Visit(
+            created.append(
+                VisitCreated(
+                    visit_id=visit.id,
                     patient_id=patient.id,
-                    visit_date=visit_date,
-                    start_time=start_t,
-                    end_time=end_t,
-                    type=LAYER1_VISIT_TYPE,
-                    status=LAYER1_VISIT_STATUS,
-                    source=LAYER1_VISIT_SOURCE,
-                    required_staff_count=staff_count,
                     course_id=course_id,
-                    visit_group_id=visit_group_id,
-                    note=(
-                        f"Layer1: {time_type} pattern (special_week)"
-                        if special_applied
-                        else f"Layer1: {time_type} pattern"
-                    ),
+                    weekday=weekday,
+                    visit_date=visit_date,
+                    start_time=start_t.strftime("%H:%M"),
+                    end_time=end_t.strftime("%H:%M"),
+                    staff_count=staff_count,
+                    special_week_applied=special_applied,
                 )
-                db.add(visit)
-                # 個別 ID を確定させ、レスポンスに渡す
-                await db.flush()
-
-                created.append(
-                    VisitCreated(
-                        visit_id=visit.id,
-                        patient_id=patient.id,
-                        course_id=course_id,
-                        weekday=weekday,
-                        visit_date=visit_date,
-                        start_time=start_t.strftime("%H:%M"),
-                        end_time=end_t.strftime("%H:%M"),
-                        staff_count=staff_count,
-                        special_week_applied=special_applied,
-                    )
-                )
+            )
 
         return created
 

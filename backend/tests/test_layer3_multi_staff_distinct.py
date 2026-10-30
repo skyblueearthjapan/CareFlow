@@ -289,3 +289,151 @@ async def test_persist_with_deleted_partner_falls_back_to_primary_only(db) -> No
         )
     )
     assert rows_b == []
+
+
+# ---------------------------------------------------------------------------
+# 4) 2 名で訪問の 1 行 (本番の形・visit_group_id なし): 2 人目 = slot 1 のコースの担当
+# ---------------------------------------------------------------------------
+
+
+async def _single_row_pair_setup(db, code: str):
+    """A/B コース (ひな形つき)・固定訪問 slot 0=A / slot 1=B・A に 2 名の訪問 1 行."""
+    from app.models.course_template import CourseTemplate
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    office, staffs = await _make_office_and_staff(db, n_staff=2)
+    courses: list[Course] = []
+    for label in ("A", "B"):
+        tpl = CourseTemplate(office_id=office.id, label=label)
+        db.add(tpl)
+        await db.flush()
+        c = await _make_course(db, weekday=0, code=label, office_id=office.id)
+        c.template_id = tpl.id
+        courses.append(c)
+    patient = await _make_patient(db, code=code)
+    for slot, c in enumerate(courses):
+        db.add(
+            PatientFixedVisit(
+                patient_id=patient.id,
+                mode="normal",
+                weekday=0,
+                start_time=time(9, 0),
+                duration_min=60,
+                slot_index=slot,
+                course_template_id=c.template_id,
+            )
+        )
+    visit = await _make_visit(
+        db, patient_id=patient.id, course_id=courses[0].id, visit_group_id=None
+    )
+    await db.commit()
+    return staffs, courses, visit
+
+
+async def _vsa_staff(db, visit_id: UUID) -> set[UUID]:
+    return set(
+        (
+            await db.scalars(
+                select(VisitStaffAssignment.staff_id).where(
+                    VisitStaffAssignment.visit_id == visit_id
+                )
+            )
+        ).all()
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_single_row_pair_secondary_from_slot1_course(db) -> None:
+    """1 行の 2 名で訪問: primary = A の担当・secondary = B (slot 1) の担当・VSA も 2 人."""
+    (s1, s2), (ca, cb), visit = await _single_row_pair_setup(db, "W37-L3-R1")
+
+    await Layer3Assigner()._persist(
+        db,
+        [
+            StaffAssignment(weekday=0, course_code="A", course_id=ca.id, staff_id=s1.id),
+            StaffAssignment(weekday=0, course_code="B", course_id=cb.id, staff_id=s2.id),
+        ],
+    )
+    await db.commit()
+    await db.refresh(visit)
+
+    assert visit.primary_staff_id == s1.id
+    assert visit.secondary_staff_id == s2.id
+    assert await _vsa_staff(db, visit.id) == {s1.id, s2.id}
+
+
+@pytest.mark.asyncio
+async def test_persist_partner_course_only_updates_secondary(db) -> None:
+    """2 人目のコース (B) だけ担当が決まった → 訪問の 2 人目と VSA だけそろう (1 人目は不変)."""
+    (s1, s2), (ca, cb), visit = await _single_row_pair_setup(db, "W37-L3-R2")
+    visit.primary_staff_id = s1.id
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=s1.id))
+    await db.commit()
+
+    await Layer3Assigner()._persist(
+        db, [StaffAssignment(weekday=0, course_code="B", course_id=cb.id, staff_id=s2.id)]
+    )
+    await db.commit()
+    await db.refresh(visit)
+
+    assert visit.primary_staff_id == s1.id
+    assert visit.secondary_staff_id == s2.id
+    assert await _vsa_staff(db, visit.id) == {s1.id, s2.id}
+
+
+@pytest.mark.asyncio
+async def test_persist_single_row_pair_same_staff_leaves_secondary_empty(db) -> None:
+    """2 人目のコースの担当が 1 人目と同じ人 → 2 人目は空 (足りない扱い)."""
+    (s1, _s2), (ca, cb), visit = await _single_row_pair_setup(db, "W37-L3-R3")
+
+    await Layer3Assigner()._persist(
+        db,
+        [
+            StaffAssignment(weekday=0, course_code="A", course_id=ca.id, staff_id=s1.id),
+            StaffAssignment(weekday=0, course_code="B", course_id=cb.id, staff_id=s1.id),
+        ],
+    )
+    await db.commit()
+    await db.refresh(visit)
+
+    assert visit.primary_staff_id == s1.id
+    assert visit.secondary_staff_id is None
+    assert await _vsa_staff(db, visit.id) == {s1.id}
+
+
+@pytest.mark.asyncio
+async def test_persist_single_row_pair_without_slot1_keeps_secondary(db) -> None:
+    """固定訪問に slot 1 が無い 1 行 (カイポケ取込など) は今の 2 人目を残す."""
+    office, (s1, s2) = await _make_office_and_staff(db, n_staff=2)
+    ca = await _make_course(db, weekday=0, code="A", office_id=office.id)
+    patient = await _make_patient(db, code="W37-L3-R4")
+    visit = await _make_visit(db, patient_id=patient.id, course_id=ca.id, visit_group_id=None)
+    visit.secondary_staff_id = s2.id
+    await db.commit()
+
+    await Layer3Assigner()._persist(
+        db, [StaffAssignment(weekday=0, course_code="A", course_id=ca.id, staff_id=s1.id)]
+    )
+    await db.commit()
+    await db.refresh(visit)
+
+    assert visit.primary_staff_id == s1.id
+    assert visit.secondary_staff_id == s2.id
+    assert await _vsa_staff(db, visit.id) == {s1.id, s2.id}
+
+
+@pytest.mark.asyncio
+async def test_course_targets_count_single_row_pair_in_partner_course(db) -> None:
+    """担当決め (Layer 3) の対象: 2 人目のコース B にも 1 行の 2 名で訪問を数える.
+
+    B に自分の訪問が無くても空コースとして落とさない (2 人目の担当が決まらなくなる).
+    """
+    _staffs, (ca, cb), visit = await _single_row_pair_setup(db, "W37-L3-R5")
+
+    targets = await Layer3Assigner()._load_course_targets(
+        db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK
+    )
+    by_id = {t.course_id: t for t in targets}
+    assert ca.id in by_id and cb.id in by_id
+    assert by_id[cb.id].patient_ids == [visit.patient_id]
+    assert len(by_id[cb.id].visits) == 1

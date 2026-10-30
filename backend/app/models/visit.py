@@ -5,9 +5,12 @@ W2-BE4 (`docs/plans/v2-allocation-redesign.md` v0.9 §3.3 / §4.5):
   - ``required_staff_count`` (1 or 2) — 2 名体制対応
   - ``visit_group_id`` UUID NULL — 2 名体制の訪問グルーピング
 
-2 名体制の場合は **同じ ``visit_group_id`` を持つ visit が 2 行存在** し、
-``visit_staff_assignments`` 経由で計 2 スタッフが割り当てられる
-(各 visit 行に 1 人ずつ)。
+2 名体制は **1 行** (2026-10-30・本番の形・カイポケ取込と同じ):
+``required_staff_count=2``・``primary_staff_id`` = 1 人目・``secondary_staff_id`` =
+2 人目・``visit_group_id`` は NULL。``visit_staff_assignments`` にも 2 人。
+本番の partial UNIQUE ``uq_visits_pds_group_active`` (patient_id, visit_date, start_time,
+COALESCE(visit_group_id, NIL)) は同じ組 id の 2 行を許さない。
+旧設計の「同じ ``visit_group_id`` の 2 行」は読む側の互換としてだけ残す。
 
 primary_staff_id / secondary_staff_id は v1 互換のため残置 (Wave 6 まで併用)。
 v2 正規のスタッフ割当は ``app.models.visit_staff_assignment.VisitStaffAssignment``。
@@ -181,7 +184,8 @@ class Visit(Base, TimestampMixin):
     )
     # 2 名体制グルーピングキー (§3.3).
     # 通常 (required_staff_count=1) は NULL.
-    # 2 名体制 (required_staff_count=2) では同じ UUID を持つ visit が 2 行。
+    # 旧設計: 2 名体制で同じ UUID を持つ visit が 2 行. 2026-10-30 から 2 名体制も 1 行
+    # (visit_group_id=NULL・2 人目は secondary_staff_id). 読む側の互換だけ残す.
     visit_group_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
     # ---- P3-① 当日欠勤の代替スタッフ提案 (migration 0048) --------------------

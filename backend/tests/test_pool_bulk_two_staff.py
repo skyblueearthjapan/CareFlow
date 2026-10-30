@@ -6,7 +6,8 @@ PO 決定 2026-10-30: 2 名で訪問の方 (requires_multiple_staff) も、保�
 検証内容:
     - 2 人とも空いている時刻に、2 コースの組で 1 件として置かれる (担当 2 人の名前つき).
     - apply で固定訪問が 2 行 (slot_index 0/1・別のコースのひな形) になり、今週の訪問が
-      同じ visit_group_id の 2 件 (required_staff_count=2) になる.
+      1 件 (required_staff_count=2・visit_group_id なし・2 人目は secondary_staff_id =
+      本番の形) になる. 本番と同じ partial UNIQUE を張って流す.
     - どちらかの人が NG スタッフ / 性別の決まりに合わない / 休み → その人の組は使わない.
     - NG 曜日・隔週のお休みの週 → 置かない.
     - 組ができない → 保留プールに残り、理由は no_pair.
@@ -33,6 +34,9 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff, StaffEvent, StaffShift
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit_staff_assignment import VisitStaffAssignment
+
+pytestmark = pytest.mark.usefixtures("visits_pds_unique_index")
 
 ISO_YEAR = 2026
 ISO_WEEK = 23
@@ -258,13 +262,24 @@ async def test_pair_placed_and_applied_as_grouped_visits(client, db) -> None:
     visits = (
         await db.scalars(select(Visit).where(Visit.patient_id == p.id, Visit.deleted_at.is_(None)))
     ).all()
-    assert len(visits) == 2, visits
-    assert visits[0].visit_group_id is not None
-    assert visits[0].visit_group_id == visits[1].visit_group_id
-    assert {v.required_staff_count for v in visits} == {2}
-    assert {v.course_id for v in visits} == {course_a.id, course_b.id}
-    assert {v.primary_staff_id for v in visits} == {staff_a.id, staff_b.id}
-    assert {v.start_time.strftime("%H:%M:%S") for v in visits} == {pl["start_time"]}
+    assert len(visits) == 1, visits
+    v = visits[0]
+    course_by_code = {course_a.code: course_a, course_b.code: course_b}
+    staff_by_code = {course_a.code: staff_a, course_b.code: staff_b}
+    assert v.visit_group_id is None
+    assert v.required_staff_count == 2
+    assert v.course_id == course_by_code[pl["course_code"]].id
+    assert v.primary_staff_id == staff_by_code[pl["course_code"]].id
+    assert v.secondary_staff_id == staff_by_code[pl["partner_course_code"]].id
+    assert v.start_time.strftime("%H:%M:%S") == pl["start_time"]
+    vsa = set(
+        (
+            await db.scalars(
+                select(VisitStaffAssignment.staff_id).where(VisitStaffAssignment.visit_id == v.id)
+            )
+        ).all()
+    )
+    assert vsa == {staff_a.id, staff_b.id}
 
 
 @pytest.mark.asyncio
@@ -610,9 +625,8 @@ async def test_partial_when_only_one_weekday_has_pair(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_existing_pair_counts_as_one_visit_for_shortage(client, db) -> None:
-    """週 2 回の方で月曜に 2 名の組 (2 行) が既にある → 足りないのは 1 回. 火曜に組を置く.
-
-    2 行を 2 回と数えると「足りている」になり、火曜が置かれない.
+    """週 2 回の方で月曜に 2 名の訪問 (1 行・本番の形) が既にある → 足りないのは 1 回.
+    火曜に組を置く.
     """
     admin = await _admin(db, "2s-bulk-existing@example.com")
     office = await _office(db, "TS17")
@@ -625,23 +639,21 @@ async def test_existing_pair_counts_as_one_visit_for_shortage(client, db) -> Non
     p = await _patient(
         db, office, "TS-EXIST", wp=_wp(preferred_weekdays=["Mon", "Tue"], frequency_per_week=2)
     )
-    group = uuid4()
-    for c, st in ((course_a, staff_a), (course_b, staff_b)):
-        db.add(
-            Visit(
-                patient_id=p.id,
-                visit_date=WEEK_MONDAY,
-                start_time=time(11, 0),
-                end_time=time(11, 30),
-                type="regular",
-                status=VISIT_STATUS_PLANNED,
-                source="auto",
-                required_staff_count=2,
-                visit_group_id=group,
-                course_id=c.id,
-                primary_staff_id=st.id,
-            )
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=WEEK_MONDAY,
+            start_time=time(11, 0),
+            end_time=time(11, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto",
+            required_staff_count=2,
+            course_id=course_a.id,
+            primary_staff_id=staff_a.id,
+            secondary_staff_id=staff_b.id,
         )
+    )
     await db.commit()
 
     body = await _simulate(client, admin, office, [p])
@@ -684,3 +696,58 @@ async def test_single_patient_avoids_course_whose_staff_has_event(client, db) ->
     assert [(pl["patient_id"], pl["course_code"]) for pl in body["placements"]] == [
         (str(single.id), "B")
     ], body
+
+
+# ---------------------------------------------------------------------------
+# 2 名で訪問の 1 行は 2 人目のコースの時間もふさぐ (模擬バケット)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_single_row_pair_visit_occupies_partner_course_bucket(db) -> None:
+    """1 行の 2 名で訪問 (A コース) は、固定訪問 slot 1 の B コースのバケットにも入る.
+
+    2 行で持っていたときは B コースにも 1 行あった. 1 行にした後も 2 人目の時間を
+    ふさがないと、2 人目の担当に同じ時刻の別の方を置いてしまう.
+    """
+    from app.services.scheduling.propose_slots_service import load_week_course_buckets
+
+    office = await _office(db, "TS30")
+    course_a, staff_a = await _course(db, office, "A")
+    course_b, staff_b = await _course(db, office, "B")
+    p = await _patient(db, office, "TS-ROW")
+    for slot, c in ((0, course_a), (1, course_b)):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=0,
+                start_time=time(11, 0),
+                duration_min=30,
+                slot_index=slot,
+                course_template_id=c.template_id,
+            )
+        )
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=WEEK_MONDAY,
+            start_time=time(11, 0),
+            end_time=time(11, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="reset_v2",
+            required_staff_count=2,
+            course_id=course_a.id,
+            primary_staff_id=staff_a.id,
+            secondary_staff_id=staff_b.id,
+        )
+    )
+    await db.commit()
+
+    buckets, _names, _codes = await load_week_course_buckets(
+        db, iso_year=ISO_YEAR, iso_week=ISO_WEEK, office_ids=[office.id]
+    )
+    for code in ("A", "B"):
+        pids = [v.patient_id for v in buckets[(office.id, 0, code)].visits]
+        assert pids.count(p.id) == 1, (code, pids)

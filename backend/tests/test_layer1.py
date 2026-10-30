@@ -511,7 +511,8 @@ async def test_generate_week_manager_allowed(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_staff_count_two_creates_visit_group(client, db) -> None:
+async def test_staff_count_two_creates_visit_group(client, db, visits_pds_unique_index) -> None:
+    """2 名体制 (entries の staff_count=2) も訪問は 1 行 (本番の形・visit_group_id なし)."""
     admin = await _make_user(db, "l1-7-admin@example.com", "admin")
     patient = await _make_patient(
         db,
@@ -529,22 +530,18 @@ async def test_staff_count_two_creates_visit_group(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
 
-    # 2 名体制 → 2 行生成
-    assert body["summary"]["visits_created"] == 2
+    # 2 名体制 → 1 行 (required_staff_count=2)
+    assert body["summary"]["visits_created"] == 1
     visits = body["visits_created"]
-    assert len(visits) == 2
-    assert all(v["staff_count"] == 2 for v in visits)
+    assert len(visits) == 1
+    assert visits[0]["staff_count"] == 2
     assert visits[0]["weekday"] == 2  # Wed
     assert visits[0]["start_time"] == "10:00"
 
-    # DB 側で visit_group_id が共有されていること
     rows = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
-    assert len(rows) == 2
-    group_ids = {v.visit_group_id for v in rows}
-    assert len(group_ids) == 1
-    assert next(iter(group_ids)) is not None
-    for v in rows:
-        assert v.required_staff_count == 2
+    assert len(rows) == 1
+    assert rows[0].visit_group_id is None
+    assert rows[0].required_staff_count == 2
 
 
 # ---------------------------------------------------------------------------

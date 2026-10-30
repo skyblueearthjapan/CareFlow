@@ -3914,7 +3914,8 @@ async def pool_bulk_apply_endpoint(
       ``acknowledge_constraint_warnings`` 付きの再送で全適用 + 管理者へお知らせ。
     - **2 名で訪問の方** (PO 決定 2026-10-30): ``partner_course_code`` 付きの placement は
       固定訪問を slot_index 0/1 の 2 行 (別のコースのひな形・同じ時刻) にし、週の作り直しで
-      同じ visit_group_id の 2 件 (required_staff_count=2) になる. 2 人目のコースも
+      1 件の訪問 (required_staff_count=2・2 人目は secondary_staff_id・visit_group_id なし =
+      本番の形) になる. 2 人目のコースも
       NG スタッフ / 性別の事前検査に入れる. 片方だけの placement は 422.
     """
     config = await load_scheduling_config(db)
@@ -4130,8 +4131,8 @@ async def pool_bulk_apply_endpoint(
 
             # 2 名で訪問の方: 個別提案の 2 名の組の採用 (PoolCandidateList の A 経路) と同じ形で
             # 固定訪問を 2 行にする = 同じ曜日・時刻・長さで slot_index=0 (1 人目のコース) と
-            # slot_index=1 (2 人目のコース). 週の作り直しが 2 行を同じ visit_group_id の
-            # 2 件の訪問 (required_staff_count=2) にする.
+            # slot_index=1 (2 人目のコース). 週の作り直しが 1 件の訪問
+            # (required_staff_count=2・secondary_staff_id = 2 人目のコースの担当) にする.
             pair_pls = [pl for pl in pls if pl.partner_course_code]
             if pair_pls:
                 await _write_pool_bulk_pair_slots(

@@ -726,7 +726,8 @@ async def simulate_pool_bulk_insert(
 
         desired = _desired(patient)
         if is_pair:
-            # 2 名の方は 1 回の訪問が 2 行 (2 コース) になるので、曜日の数で数える.
+            # 2 名の方は 1 回の訪問が 2 コースのバケットに入る (1 行の訪問を 2 人目の
+            # コースにも入れる / 模擬の組) ので、曜日の数で数える.
             current_placed = len(already_placed_weekdays)
         else:
             current_placed = sum(1 for b in sim.values() for v in b.visits if v.patient_id == pid)

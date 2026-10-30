@@ -95,7 +95,7 @@ class CopyWeekResponse(BaseModel):
 
 def _counts(plan: CopyPlan) -> CopyCounts:
     return CopyCounts(
-        copy_count=len(plan.items),
+        copy_count=plan.copy_count,
         fill_count=plan.fill_count,
         replace_count=len(plan.replace_visits),
         needs_manual_count=len(plan.needs_manual_staff),
@@ -136,7 +136,7 @@ def _holidays(monday: date) -> list[HolidayRead]:
 
 def _preview_from_plan(plan: CopyPlan) -> CopyWeekPreviewResponse:
     counts: dict[int, int] = {}
-    for it in [*plan.items, *plan.fill_items]:
+    for it in plan.visit_items:
         counts[it.weekday] = counts.get(it.weekday, 0) + 1
     by_weekday = [
         WeekdayCount(weekday=wd, date=plan.target_monday + timedelta(days=wd), count=counts[wd])
@@ -147,7 +147,7 @@ def _preview_from_plan(plan: CopyPlan) -> CopyWeekPreviewResponse:
         source_week_start=plan.source_monday,
         target_week_start=plan.target_monday,
         mode=plan.mode,  # type: ignore[arg-type]
-        copy_count=len(plan.items),
+        copy_count=plan.copy_count,
         fill_count=plan.fill_count,
         patients=len(patients),
         by_weekday=by_weekday,
@@ -166,7 +166,8 @@ def _preview_from_plan(plan: CopyPlan) -> CopyWeekPreviewResponse:
             )
             for m in plan.missing_fixed
         ],
-        missing_fixed_count=sum(m.visits for m in plan.missing_fixed),
+        # 2 名で訪問も訪問は 1 件 (1 行) と数える.
+        missing_fixed_count=len(plan.missing_fixed),
         missing_patients_without_visits=plan.missing_patients_without_visits,
         existing=ExistingCounts(**plan.existing),
         needs_manual_staff=_needs_manual(plan),

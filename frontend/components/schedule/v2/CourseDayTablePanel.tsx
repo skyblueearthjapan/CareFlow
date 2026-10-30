@@ -435,6 +435,19 @@ function parseSpecialMarkCellConflict(err: unknown): { existingMarkId: string | 
 }
 
 /** Wave 39: 通算分 (= H*60+M) → "HH:MM". 範囲外チェックはしない (clamp は呼出側). */
+/**
+ * 2 名で訪問を 1 行で持つ訪問 (本番の形: required_staff_count=2・visit_group_id なし・
+ * 2 人目は secondary_staff_id) の 2 人目。1 行でない・2 人目がいなければ null。
+ */
+function pairSecondaryOf(v: {
+  required_staff_count?: number | null;
+  visit_group_id?: string | null;
+  secondary_staff_id?: string | null;
+}): string | null {
+  if ((v.required_staff_count ?? 1) < 2 || v.visit_group_id) return null;
+  return v.secondary_staff_id ?? null;
+}
+
 function formatHHMM(totalMinutes: number): string {
   const m = Math.max(0, totalMinutes);
   const hh = Math.floor(m / 60);
@@ -1177,6 +1190,7 @@ export function CourseDayTablePanel({
       if (!multiStaffPatientIds.has(v.patient_id)) continue;
       const gid = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
       if (gid) continue; // group 持ちは partnerLocationByVisit 側で処理 (= 両方配置済み)
+      if (pairSecondaryOf(v)) continue; // 2 名で 1 行・2 人目あり = 両方配置済み
       // 単独 visit = 片側のみ配置. assignedSlotsByPatient と同様に slot 0 とみなす.
       const loc = resolveCellLocationForVisit(v);
       if (!loc) continue;
@@ -1309,8 +1323,9 @@ export function CourseDayTablePanel({
           partnerMissing = requiresMulti;
         }
       } else if (requiresMulti) {
-        // 2 名体制患者なのに visit_group_id が無い = slot 1 が未配置の片割れ
-        partnerMissing = true;
+        // 2 名体制患者で visit_group_id が無い: 2 名で 1 行 (本番の形・2 人目は
+        // secondary_staff_id) なら 2 人目がいれば足りている。いなければ 2 人目が未配置。
+        partnerMissing = !pairSecondaryOf(v);
       }
 
       // Wave 38: 相方の現在地を導出.
@@ -1320,7 +1335,7 @@ export function CourseDayTablePanel({
       let partnerLocation: PartnerLocation | null = null;
       if (groupId) {
         partnerLocation = partnerLocationByVisit.get(v.id) ?? null;
-      } else if (requiresMulti) {
+      } else if (requiresMulti && !pairSecondaryOf(v)) {
         partnerLocation = { kind: 'pool' };
       }
 
@@ -1511,6 +1526,8 @@ export function CourseDayTablePanel({
       } else {
         // 単独 visit は slot 0 を埋める (2 名体制の片割れ初期配置)。
         set.add(0);
+        // 2 名で 1 行 (本番の形): 2 人目 (secondary_staff_id) がいれば slot 1 も埋まっている。
+        if (pairSecondaryOf(v)) set.add(1);
       }
       m.set(v.patient_id, set);
     }

@@ -513,7 +513,12 @@ async def test_two_staff_target_pair_unblock(client, db) -> None:
     ct_a = await _mk_template(db, office, "A")
     ct_b = await _mk_template(db, office, "B")
     mon_a = await _mk_course(db, office, staff, 0, "A", ct_a)
-    mon_b = await _mk_course(db, office, staff, 0, "B", ct_b)
+    # 2 名の組は担当が別の人のコース 2 つ (同じ人の 2 コースは組にしない・7325ed87).
+    staff_b = Staff(name="S2", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(staff_b)
+    await db.flush()
+    db.add(StaffShift(staff_id=staff_b.id, weekday=0, is_on=True))
+    mon_b = await _mk_course(db, office, staff_b, 0, "B", ct_b)
     tue_a = await _mk_course(db, office, staff, 1, "A", ct_a)
 
     blocker = _patient("BLK", V_COORD, office.id)
@@ -524,7 +529,7 @@ async def test_two_staff_target_pair_unblock(client, db) -> None:
     await db.flush()
     await _add_visit_and_pfv(db, blocker, mon_a, staff, weekday=0, start=time(10, 0))
     await _add_visit_and_pfv(
-        db, b_fill, mon_b, staff, weekday=0, start=time(8, 30), movability="locked"
+        db, b_fill, mon_b, staff_b, weekday=0, start=time(8, 30), movability="locked"
     )
     await _add_visit_and_pfv(
         db, tue_fill, tue_a, staff, weekday=1, start=time(9, 30), movability="locked"
@@ -1085,7 +1090,12 @@ async def test_w13b_two_staff_partner_course_included(client, db) -> None:
     ct_a = await _mk_template(db, office, "A")
     ct_b = await _mk_template(db, office, "B")
     mon_a = await _mk_course(db, office, staff, 0, "A", ct_a)
-    mon_b = await _mk_course(db, office, staff, 0, "B", ct_b)
+    # 2 名の組は担当が別の人のコース 2 つ (同じ人の 2 コースは組にしない・7325ed87).
+    staff_b = Staff(name="S2", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(staff_b)
+    await db.flush()
+    db.add(StaffShift(staff_id=staff_b.id, weekday=0, is_on=True))
+    mon_b = await _mk_course(db, office, staff_b, 0, "B", ct_b)
     tue_a = await _mk_course(db, office, staff, 1, "A", ct_a)
 
     blocker = _patient("BLK", V_COORD, office.id)
@@ -1096,7 +1106,7 @@ async def test_w13b_two_staff_partner_course_included(client, db) -> None:
     await db.flush()
     await _add_visit_and_pfv(db, blocker, mon_a, staff, weekday=0, start=time(10, 0))
     await _add_visit_and_pfv(
-        db, b_fill, mon_b, staff, weekday=0, start=time(8, 30), movability="locked"
+        db, b_fill, mon_b, staff_b, weekday=0, start=time(8, 30), movability="locked"
     )
     await _add_visit_and_pfv(
         db, tue_fill, tue_a, staff, weekday=1, start=time(9, 30), movability="locked"

@@ -1039,3 +1039,80 @@ async def test_from_week_bulk_skips_invalid_duplicate(client, db) -> None:
     assert str(p1.id) in data["patients"]
     # p2 は skip される
     assert str(p2.id) not in data["patients"]
+
+
+# ---------------------------------------------------------------------------
+# 2 名で訪問の 1 行 (本番の形・visit_group_id なし) からの書き戻し
+# ---------------------------------------------------------------------------
+
+
+async def _single_row_pair_world(db, code: str, *, with_slot1_pfv: bool):
+    """A/B コース (A=1 人目・B=2 人目の担当) と、A に 2 名で訪問の 1 行."""
+    patient = await _make_multi_staff_patient(db, code)
+    office = await _make_office(db, f"FW-{code}")
+    tpl_a = await _make_course_template(db, office.id, label="A")
+    tpl_b = await _make_course_template(db, office.id, label="B")
+    s1 = await _make_staff(db, f"{code}-1")
+    s2 = await _make_staff(db, f"{code}-2")
+    courses = {}
+    for tpl, st in ((tpl_a, s1), (tpl_b, s2)):
+        c = Course(
+            iso_year=TEST_ISO_YEAR,
+            iso_week=TEST_ISO_WEEK,
+            weekday=0,
+            code=tpl.label,
+            office_id=office.id,
+            template_id=tpl.id,
+            assigned_staff_id=st.id,
+        )
+        db.add(c)
+        courses[tpl.label] = c
+    await db.flush()
+    if with_slot1_pfv:
+        db.add(
+            PatientFixedVisit(
+                patient_id=patient.id,
+                mode="normal",
+                weekday=0,
+                start_time=time(8, 0),
+                duration_min=30,
+                slot_index=1,
+                course_template_id=tpl_b.id,
+            )
+        )
+    v = await _make_visit(db, patient=patient, visit_date=TEST_WEEK_MONDAY)
+    v.course_id = courses["A"].id
+    v.required_staff_count = 2
+    v.primary_staff_id = s1.id
+    v.secondary_staff_id = s2.id
+    await db.commit()
+    return patient, tpl_a, tpl_b
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_slot1_pfv", [True, False])
+async def test_from_week_single_row_pair_writes_slot0_and_slot1(
+    client, db, with_slot1_pfv: bool
+) -> None:
+    """1 行の 2 名で訪問 → slot 0 (訪問のコース) と slot 1 (2 人目のコース) の 2 行.
+
+    2 人目のひな形は、今の固定枠の slot 1 (あれば)、無ければ 2 人目の担当のコース.
+    時刻・長さは訪問にそろえる.
+    """
+    admin = await _make_user(db, f"fw-row-{with_slot1_pfv}@example.com", "admin")
+    patient, tpl_a, tpl_b = await _single_row_pair_world(
+        db, f"FW-ROW-{int(with_slot1_pfv)}", with_slot1_pfv=with_slot1_pfv
+    )
+
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/fixed-visits/from-week"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    rows = sorted(res.json(), key=lambda r: r["slot_index"])
+    assert [r["slot_index"] for r in rows] == [0, 1]
+    assert rows[0]["course_template_id"] == str(tpl_a.id)
+    assert rows[1]["course_template_id"] == str(tpl_b.id)
+    assert {r["start_time"] for r in rows} == {"09:00:00"}
+    assert {r["duration_min"] for r in rows} == {60}

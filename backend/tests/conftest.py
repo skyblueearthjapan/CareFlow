@@ -68,6 +68,25 @@ async def _engine():
         await db_session.dispose_engine()
 
 
+#: 本番 (migration 0027) の partial UNIQUE と同じ式. 試験の DB は create_all で作るため
+#: この索引が無く、同じ患者・日・時刻・組 id の 2 行を作っても落ちなかった (2026-10-30)。
+VISITS_PDS_UNIQUE_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_visits_pds_group_active ON visits "
+    "(patient_id, visit_date, start_time, "
+    "COALESCE(visit_group_id, '00000000-0000-0000-0000-000000000000')) "
+    "WHERE deleted_at IS NULL"
+)
+
+
+@pytest_asyncio.fixture(scope="function")
+async def visits_pds_unique_index(_engine) -> None:
+    """visits に本番と同じ partial UNIQUE ``uq_visits_pds_group_active`` を張る (使う試験だけ)."""
+    from sqlalchemy import text
+
+    async with _engine.begin() as conn:
+        await conn.execute(text(VISITS_PDS_UNIQUE_INDEX_SQL))
+
+
 @pytest_asyncio.fixture(scope="function")
 async def db(_engine) -> AsyncIterator:
     """Yield an async DB session."""

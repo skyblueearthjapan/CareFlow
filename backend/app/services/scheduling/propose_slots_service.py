@@ -71,6 +71,7 @@ from app.services.scheduling.constants import (
 from app.services.scheduling.layer3_assignment import (
     sex_satisfies_restrictions as _sex_satisfies_restrictions,
 )
+from app.services.scheduling.pair_visit import load_pair_partner_courses
 from app.services.scheduling.proposal_solver import (
     Candidate,
     EventWindow,
@@ -302,7 +303,28 @@ async def load_week_course_buckets(
     if office_ids:
         stmt = stmt.where(Course.office_id.in_(office_ids))
 
-    rows = (await db.execute(stmt)).all()
+    rows = list((await db.execute(stmt)).all())
+
+    # 2 名で訪問 (1 行・本番の形): 訪問は 1 人目のコースに属するが、2 人目
+    # (固定訪問 slot_index=1) のコースのバケットにも入れる (2 人目の時間をふさぐ).
+    _partners = await load_pair_partner_courses(db, [v for (v, _c, _s) in rows])
+    if _partners:
+        _pstaff_ids = {c.assigned_staff_id for c in _partners.values() if c.assigned_staff_id}
+        _pstaff: dict[UUID, Staff] = {}
+        if _pstaff_ids:
+            _pstaff = {
+                st.id: st
+                for st in (
+                    await db.scalars(select(Staff).where(Staff.id.in_(list(_pstaff_ids))))
+                ).all()
+            }
+        for v, _c, _s in list(rows):
+            pc = _partners.get(v.id)
+            if pc is None or (office_ids and pc.office_id not in office_ids):
+                continue
+            rows.append(
+                (v, pc, _pstaff.get(pc.assigned_staff_id) if pc.assigned_staff_id else None)
+            )
 
     # patient 座標を 1 回でまとめてロード.
     patient_ids = {v.patient_id for (v, _c, _s) in rows}

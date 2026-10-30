@@ -66,6 +66,7 @@ from app.services.scheduling.auto_allocator_v2 import (
 from app.services.scheduling.config import load_scheduling_config
 from app.services.scheduling.guards import patient_not_active_detail
 from app.services.scheduling.layer1_expander import _is_special_week_active
+from app.services.scheduling.pair_visit import is_single_row_pair
 from app.services.scheduling.pfv_validator import errors_detail, validate_pfv_changes
 from app.services.scheduling.visit_frequency import frequency_rule_active, pfv_visits_in_week
 from app.services.scheduling.visit_week_carry import (
@@ -353,10 +354,15 @@ async def _insert_pfv_from_visits(
     pinned_slots: set[tuple[int, int]] | None = None,
     movability_by_wd_start: dict[tuple[int, time], str] | None = None,
     visit_week_by_slot: dict[tuple[int, int], str] | None = None,
+    pair_partner_templates: dict[int, UUID] | None = None,
 ) -> None:
     """visits を PatientFixedVisit に書き戻す (slot_index を決定論的に割当).
 
     - 単独 visit (1 件) → slot_index=0 で 1 行 INSERT (regression 維持).
+    - 2 名で訪問の 1 行 (requires_multiple_staff=true・required_staff_count=2・
+      visit_group_id なし = 本番の形) → slot_index=0 (訪問のコース) と slot_index=1
+      (``pair_partner_templates`` の 2 人目のコースのひな形・同じ時刻) の 2 行.
+      2 人目のひな形が分からない曜日は slot_index=0 だけ (週の生成が警告を出す).
     - multi-staff ペア (2 件 + visit_group_id 共有 + requires_multiple_staff=true) →
       visit.id 昇順で sort して slot 0/1 を決定論的に割当てて 2 行 INSERT.
     - その他 (異常重複) は呼び出し前段で弾かれている前提.
@@ -398,18 +404,91 @@ async def _insert_pfv_from_visits(
         else:
             # 1 visit (通常パターン) — slot_index=0 で 1 行
             v = visits[0]
-            if (wd, 0) in pinned_slots:
-                continue
             mov = movability_by_wd_start.get((wd, v.start_time), "unknown")
-            await _add_one_pfv(
-                db,
-                patient=patient,
-                mode=mode,
-                visit=v,
-                slot_index=0,
-                movability=mov,
-                visit_week=visit_week_by_slot.get((wd, 0), "every"),
+            if (wd, 0) not in pinned_slots:
+                await _add_one_pfv(
+                    db,
+                    patient=patient,
+                    mode=mode,
+                    visit=v,
+                    slot_index=0,
+                    movability=mov,
+                    visit_week=visit_week_by_slot.get((wd, 0), "every"),
+                )
+            # 2 名で訪問の 1 行: 2 人目のコースのひな形で slot_index=1 も書く.
+            partner_tpl = (pair_partner_templates or {}).get(wd)
+            if (
+                requires_multi
+                and is_single_row_pair(v)
+                and partner_tpl is not None
+                and (wd, 1) not in pinned_slots
+            ):
+                await _add_one_pfv(
+                    db,
+                    patient=patient,
+                    mode=mode,
+                    visit=v,
+                    slot_index=1,
+                    movability=mov,
+                    visit_week=visit_week_by_slot.get(
+                        (wd, 1), visit_week_by_slot.get((wd, 0), "every")
+                    ),
+                    course_template_id_override=partner_tpl,
+                )
+
+
+async def _load_pair_partner_templates(
+    db: AsyncSession, *, patient: Patient, mode: str, visit_rows
+) -> dict[int, UUID]:
+    """2 名で訪問の 1 行 → 曜日ごとの 2 人目のコースのひな形 (固定枠を消す前に読む).
+
+    1) 今の固定枠の slot_index=1 のひな形 (同じ mode・曜日)。
+    2) 無ければ、その日に 2 人目 (secondary_staff_id) が担当するコースのひな形
+       (1 つに決まり、訪問のコースと別のひな形のときだけ)。
+    """
+    if not patient.requires_multiple_staff:
+        return {}
+    pairs = [v for v in visit_rows if is_single_row_pair(v)]
+    if not pairs:
+        return {}
+    out: dict[int, UUID] = {}
+    for r in (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient.id,
+                PatientFixedVisit.mode == mode,
+                PatientFixedVisit.slot_index == 1,
+                PatientFixedVisit.course_template_id.is_not(None),
             )
+        )
+    ).all():
+        out[r.weekday] = r.course_template_id
+    for v in pairs:
+        wd = v.visit_date.weekday()
+        if wd in out or v.secondary_staff_id is None:
+            continue
+        iso = v.visit_date.isocalendar()
+        own_tpl = None
+        if v.course_id is not None:
+            own_tpl = await db.scalar(select(Course.template_id).where(Course.id == v.course_id))
+        tpls = {
+            t
+            for t in (
+                await db.scalars(
+                    select(Course.template_id).where(
+                        Course.assigned_staff_id == v.secondary_staff_id,
+                        Course.iso_year == iso.year,
+                        Course.iso_week == iso.week,
+                        Course.weekday == wd,
+                        Course.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+            if t is not None and t != own_tpl
+        }
+        if len(tpls) == 1:
+            out[wd] = next(iter(tpls))
+    return out
 
 
 async def _add_one_pfv(
@@ -421,6 +500,7 @@ async def _add_one_pfv(
     slot_index: int,
     movability: str = "unknown",
     visit_week: str = "every",
+    course_template_id_override: UUID | None = None,
 ) -> None:
     """visit から 1 行の PatientFixedVisit を組み立てて add する.
 
@@ -434,8 +514,8 @@ async def _add_one_pfv(
     if duration_min <= 0:
         duration_min = 30
     # W22: visit.course_id → course.template_id を逆引き
-    visit_course_template_id = None
-    if visit.course_id is not None:
+    visit_course_template_id = course_template_id_override
+    if visit_course_template_id is None and visit.course_id is not None:
         course = await db.scalar(select(Course).where(Course.id == visit.course_id))
         if course is not None:
             visit_course_template_id = course.template_id
@@ -977,6 +1057,9 @@ async def from_week_bulk(
         visit_week_by_slot = await _load_visit_week_by_slot(
             db, patient_id=patient.id, mode=effective_mode
         )
+        pair_partner_templates = await _load_pair_partner_templates(
+            db, patient=patient, mode=effective_mode, visit_rows=visit_rows
+        )
         # 訪問頻度: その週に訪問しない枠 (隔週の B の枠など) は消さずに残す.
         keep_ids, keep_slots = await _load_off_week_slots_to_keep(
             db, patient=patient, mode=effective_mode, week_monday=week_monday
@@ -1001,6 +1084,7 @@ async def from_week_bulk(
             pinned_slots=pinned_slots | keep_slots,
             movability_by_wd_start=movability_by_wd_start,
             visit_week_by_slot=visit_week_by_slot,
+            pair_partner_templates=pair_partner_templates,
         )
 
         updated_patient_ids.append(patient.id)
@@ -1097,6 +1181,9 @@ async def from_week(
     visit_week_by_slot = await _load_visit_week_by_slot(
         db, patient_id=patient_id, mode=effective_mode
     )
+    pair_partner_templates = await _load_pair_partner_templates(
+        db, patient=patient, mode=effective_mode, visit_rows=visit_rows
+    )
     # 訪問頻度: その週に訪問しない枠 (隔週の B の枠など) は消さずに残す.
     keep_ids, keep_slots = await _load_off_week_slots_to_keep(
         db, patient=patient, mode=effective_mode, week_monday=week_monday
@@ -1121,6 +1208,7 @@ async def from_week(
         pinned_slots=pinned_slots | keep_slots,
         movability_by_wd_start=movability_by_wd_start,
         visit_week_by_slot=visit_week_by_slot,
+        pair_partner_templates=pair_partner_templates,
     )
 
     await _commit_or_409(db)

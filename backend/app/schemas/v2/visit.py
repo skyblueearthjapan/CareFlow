@@ -68,7 +68,8 @@ class VisitV2Base(BaseModel):
         default=None,
         description=(
             "2 名体制の訪問をグルーピングする論理キー (§3.3). "
-            "required_staff_count=2 のとき、同じ visit_group_id を持つ visit が 2 行存在する"
+            "旧設計の 2 行の組用. 2 名体制も 1 行 (visit_group_id=NULL・2 人目は "
+            "secondary_staff_id) にした (2026-10-30)"
         ),
     )
 

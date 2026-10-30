@@ -2,7 +2,8 @@
 
 検証観点:
   1. staff_count=2 + course_template_ids 2 件 + fix_pattern=true
-     → 2 visit + 2 fixed_visit が visit_group_id 共有で作成される.
+     → 1 visit (required_staff_count=2・visit_group_id なし・2 人目 = 2 つ目のコースの
+       担当) + 2 fixed_visit (slot 0/1) が作成される (2026-10-30 本番の形).
   2. staff_count=2 で同一 course_template_id 2 つ → 422 (= 同コース 2 visit 不可).
   3. staff_count=2 で course_template_ids 1 件 → 422 (件数不一致).
   4. staff_count=1 で course_template_ids 2 件 → 422 (件数不一致).
@@ -10,13 +11,12 @@
   6. course_template_id と course_template_ids 両方指定 → 422.
   7. どちらも未指定 → 422.
   8. patient.requires_multiple_staff=true で staff_count=1 → 422 (整合性).
-  9. staff_count=2 + fix_pattern=false → 2 visit 作成、固定枠なし.
+  9. staff_count=2 + fix_pattern=false → 1 visit 作成、固定枠なし.
   10. staff_count=2 で同 (mode, weekday) を 2 回 call → upsert で slot 0/1 が
-      上書きされ計 2 行のまま (visits は毎回 +2 で増える).
+      上書きされ計 2 行のまま (visits は毎回 +1 で増える).
   11. staff_count=2 後方互換: response の visit/fixed_visit に 1 件目が入る.
-  12. partial UNIQUE: staff_count=2 配置後、両 visit の (patient, date, time)
-      が同じでも visit_group_id 違いで共存している (DB レベル整合性).
-  13. visit_group_id ≠ NULL かつ 2 visit に同じ UUID.
+  12. 作成系は本番と同じ partial UNIQUE (uq_visits_pds_group_active) を張って流す.
+  13. 旧データ (同じ visit_group_id の 2 行) の DELETE cascade_partner は従来どおり.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Patient, User, Visit
+from app.models import Course, Patient, Staff, User, Visit
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient_fixed_visit import PatientFixedVisit
@@ -103,6 +103,29 @@ async def _make_template(db, office_id, label: str = "A") -> CourseTemplate:
     return tpl
 
 
+async def _seed_legacy_pair(db, patient: Patient) -> list[str]:
+    """旧データ: 同じ visit_group_id の 2 行 (本番の索引では作れない形。DELETE の互換確認用)."""
+    gid = uuid4()
+    ids = []
+    for _ in range(2):
+        v = Visit(
+            patient_id=patient.id,
+            visit_date=TEST_WEEK_MONDAY,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            type="regular",
+            status="planned",
+            source="manual",
+            required_staff_count=2,
+            visit_group_id=gid,
+        )
+        db.add(v)
+        await db.flush()
+        ids.append(str(v.id))
+    await db.commit()
+    return sorted(ids)
+
+
 def _bearer(user: User) -> dict[str, str]:
     token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
     return {"Authorization": f"Bearer {token}"}
@@ -144,12 +167,34 @@ def _multi_payload(
 
 
 @pytest.mark.asyncio
-async def test_place_and_fix_multi_creates_two_visits_and_two_fixed_visits(client, db) -> None:
+async def test_place_and_fix_multi_creates_one_visit_and_two_fixed_visits(
+    client, db, visits_pds_unique_index
+) -> None:
     admin = await _make_user(db, "paf-multi-1@example.com")
     office = await _make_office(db, "事業所MULTI1")
     patient = await _make_patient(db, "PAF-MULTI-1", primary_office_id=office.id)
     tpl_a = await _make_template(db, office.id, label="A")
     tpl_b = await _make_template(db, office.id, label="B")
+    # その週の A / B コースに担当 (1 人目 / 2 人目) を置いておく
+    staff_ids = []
+    for tpl in (tpl_a, tpl_b):
+        st = Staff(name=f"担当{tpl.label}", role="staff", primary_office_id=office.id)
+        db.add(st)
+        await db.flush()
+        db.add(
+            Course(
+                iso_year=TEST_ISO_YEAR,
+                iso_week=TEST_ISO_WEEK,
+                weekday=0,
+                code=tpl.label,
+                course_status="staff_assigned",
+                template_id=tpl.id,
+                office_id=office.id,
+                assigned_staff_id=st.id,
+            )
+        )
+        staff_ids.append(st.id)
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -170,30 +215,22 @@ async def test_place_and_fix_multi_creates_two_visits_and_two_fixed_visits(clien
     # 後方互換: 単数フィールドにも 1 件目が入る
     assert data["visit"] is not None
     assert data["fixed_visit"] is not None
-    # 新形式: 配列 2 件
-    assert len(data["visits"]) == 2
+    # 新形式: visits は 1 件 (2 名で 1 行)・fixed_visits は 2 件
+    assert len(data["visits"]) == 1
     assert len(data["fixed_visits"]) == 2
-    # visit_group_id は非 NULL かつ 2 visit で共有
-    assert data["visit_group_id"] is not None
-    vg_id = data["visit_group_id"]
-    assert all(v["visit_group_id"] == vg_id for v in data["visits"])
-    # 2 visit の course_id は異なる (= 別 template から派生)
-    assert data["visits"][0]["course_id"] != data["visits"][1]["course_id"]
-    # required_staff_count=2
-    assert all(v["required_staff_count"] == 2 for v in data["visits"])
+    assert data["visit_group_id"] is None
+    assert data["visits"][0]["visit_group_id"] is None
+    assert data["visits"][0]["required_staff_count"] == 2
 
     # DB 確認
     visits = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
-    assert len(visits) == 2
-    assert visits[0].visit_group_id == visits[1].visit_group_id
-    assert visits[0].visit_group_id is not None
-    # 2 visit は同 visit_date / 同 start_time
-    assert visits[0].visit_date == TEST_WEEK_MONDAY
-    assert visits[1].visit_date == TEST_WEEK_MONDAY
-    assert visits[0].start_time == time(10, 0)
-    assert visits[1].start_time == time(10, 0)
-    # course_id は異なる
-    assert visits[0].course_id != visits[1].course_id
+    assert len(visits) == 1
+    v = visits[0]
+    assert (v.visit_date, v.start_time) == (TEST_WEEK_MONDAY, time(10, 0))
+    course_a = await db.get(Course, v.course_id)
+    assert course_a.template_id == tpl_a.id
+    assert v.primary_staff_id == staff_ids[0]
+    assert v.secondary_staff_id == staff_ids[1]
 
     # fixed visits: slot_index=0 と 1 の 2 行
     fvs = (
@@ -396,7 +433,7 @@ async def test_place_and_fix_requires_multiple_staff_mismatch_returns_422(client
 
 
 @pytest.mark.asyncio
-async def test_place_and_fix_multi_no_pattern(client, db) -> None:
+async def test_place_and_fix_multi_no_pattern(client, db, visits_pds_unique_index) -> None:
     admin = await _make_user(db, "paf-multi-9@example.com")
     office = await _make_office(db, "事業所MULTI9")
     patient = await _make_patient(db, "PAF-MULTI-9", primary_office_id=office.id)
@@ -415,13 +452,16 @@ async def test_place_and_fix_multi_no_pattern(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     data = res.json()
-    assert len(data["visits"]) == 2
+    assert len(data["visits"]) == 1
     assert len(data["fixed_visits"]) == 0
     assert data["fixed_visit"] is None
 
     # DB
     visits = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
-    assert len(visits) == 2
+    assert len(visits) == 1
+    assert visits[0].required_staff_count == 2
+    # 2 つ目のコースに担当がいない → 2 人目は空 (足りない)
+    assert visits[0].secondary_staff_id is None
     fvs = (
         await db.scalars(
             select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
@@ -436,7 +476,9 @@ async def test_place_and_fix_multi_no_pattern(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_place_and_fix_multi_upserts_existing_slots(client, db) -> None:
+async def test_place_and_fix_multi_upserts_existing_slots(
+    client, db, visits_pds_unique_index
+) -> None:
     admin = await _make_user(db, "paf-multi-10@example.com")
     office = await _make_office(db, "事業所MULTI10")
     patient = await _make_patient(db, "PAF-MULTI-10", primary_office_id=office.id)
@@ -493,13 +535,11 @@ async def test_place_and_fix_multi_upserts_existing_slots(client, db) -> None:
     assert fvs[0].start_time == time(14, 0)
     assert fvs[0].duration_min == 60
 
-    # visits は 4 行 (1 回目 2 + 2 回目 2). visit_group_id はそれぞれ別.
+    # visits は 2 行 (1 回目 1 + 2 回目 1). どちらも 2 名で 1 行.
     visits = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
-    assert len(visits) == 4
-    group_ids = {v.visit_group_id for v in visits}
-    # 2 回呼んだので 2 つの異なる UUID が出現
-    assert len(group_ids) == 2
-    assert None not in group_ids
+    assert len(visits) == 2
+    assert {v.visit_group_id for v in visits} == {None}
+    assert {v.required_staff_count for v in visits} == {2}
 
 
 # ---------------------------------------------------------------------------
@@ -593,27 +633,13 @@ async def test_place_and_fix_new_form_single_works(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_visit_delete_cascade_partner_default_removes_both(client, db) -> None:
-    """W37 Phase 2-A: visit_group_id を共有する 2 visit を 1 つの DELETE で
+    """W37 Phase 2-A: 旧データの visit_group_id を共有する 2 visit を 1 つの DELETE で
     両方 soft-delete する (cascade_partner=true がデフォルト)."""
     admin = await _make_user(db, "paf-multi-del-1@example.com")
     office = await _make_office(db, "事業所DEL1")
     patient = await _make_patient(db, "PAF-DEL-1", primary_office_id=office.id)
-    tpl_a = await _make_template(db, office.id, label="A")
-    tpl_b = await _make_template(db, office.id, label="B")
 
-    # 2 名体制で配置
-    r = await client.post(
-        "/api/v1/schedule/place-and-fix",
-        headers=_bearer(admin),
-        json=_multi_payload(
-            patient.id,
-            course_template_ids=[tpl_a.id, tpl_b.id],
-            staff_count=2,
-            fix_pattern=False,  # 固定枠は今回スコープ外
-        ),
-    )
-    assert r.status_code == 200, r.text
-    visit_ids = [v["id"] for v in r.json()["visits"]]
+    visit_ids = await _seed_legacy_pair(db, patient)
     assert len(visit_ids) == 2
 
     # 片方 (1 件目) を DELETE — partner も巻き込まれて両方 soft-delete されるはず.
@@ -643,25 +669,12 @@ async def test_visit_delete_cascade_partner_default_removes_both(client, db) -> 
 
 @pytest.mark.asyncio
 async def test_visit_delete_cascade_partner_false_removes_one(client, db) -> None:
-    """cascade_partner=false で当該 visit のみ soft-delete し、partner は残る."""
+    """旧データの組: cascade_partner=false で当該 visit のみ soft-delete し、partner は残る."""
     admin = await _make_user(db, "paf-multi-del-2@example.com")
     office = await _make_office(db, "事業所DEL2")
     patient = await _make_patient(db, "PAF-DEL-2", primary_office_id=office.id)
-    tpl_a = await _make_template(db, office.id, label="A")
-    tpl_b = await _make_template(db, office.id, label="B")
 
-    r = await client.post(
-        "/api/v1/schedule/place-and-fix",
-        headers=_bearer(admin),
-        json=_multi_payload(
-            patient.id,
-            course_template_ids=[tpl_a.id, tpl_b.id],
-            staff_count=2,
-            fix_pattern=False,
-        ),
-    )
-    assert r.status_code == 200, r.text
-    visit_ids = [v["id"] for v in r.json()["visits"]]
+    visit_ids = await _seed_legacy_pair(db, patient)
 
     # 片方を DELETE w/ cascade_partner=false
     res = await client.delete(
@@ -722,7 +735,7 @@ async def test_visit_delete_cascade_fixed_visit_sealed_even_with_partner(client,
     assert res.status_code == 422, res.text
     assert "廃止" in res.text
 
-    # DB: visits も固定枠も無傷 (2 visit active / 固定枠 2 件)
+    # DB: visits も固定枠も無傷 (2 名で 1 行の visit active / 固定枠 2 件)
     db.expunge_all()
     active_visits = (
         await db.scalars(
@@ -732,7 +745,7 @@ async def test_visit_delete_cascade_fixed_visit_sealed_even_with_partner(client,
             )
         )
     ).all()
-    assert len(active_visits) == 2
+    assert len(active_visits) == 1
     fvs = (
         await db.scalars(
             select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
@@ -747,7 +760,9 @@ async def test_visit_delete_cascade_fixed_visit_sealed_even_with_partner(client,
 
 
 @pytest.mark.asyncio
-async def test_place_and_fix_requires_multiple_staff_with_two_succeeds(client, db) -> None:
+async def test_place_and_fix_requires_multiple_staff_with_two_succeeds(
+    client, db, visits_pds_unique_index
+) -> None:
     admin = await _make_user(db, "paf-multi-16@example.com")
     office = await _make_office(db, "事業所MULTI16")
     patient = await _make_patient(
@@ -770,7 +785,8 @@ async def test_place_and_fix_requires_multiple_staff_with_two_succeeds(client, d
     )
     assert res.status_code == 200, res.text
     data = res.json()
-    assert len(data["visits"]) == 2
+    assert len(data["visits"]) == 1
+    assert data["visits"][0]["required_staff_count"] == 2
 
 
 # ---------------------------------------------------------------------------
