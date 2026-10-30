@@ -36,6 +36,10 @@ export type SlotIndex = (typeof SLOT_INDEX_VALUES)[number];
 export const MOVABILITY_VALUES = ['unknown', 'locked'] as const;
 export type Movability = (typeof MOVABILITY_VALUES)[number];
 
+/** 固定訪問の枠の「訪問する週」(0102)。 */
+export const PFV_VISIT_WEEK_VALUES = ['every', 'A', 'B'] as const;
+export type PfvVisitWeekValue = (typeof PFV_VISIT_WEEK_VALUES)[number];
+
 export const patientFixedVisitV2BaseSchema = z.object({
   weekday: z.number().int().min(0).max(6),
   start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/, 'HH:MM 形式'),
@@ -82,6 +86,13 @@ export const patientFixedVisitV2BaseSchema = z.object({
    *     壊すため使わない — is_pinned と同一方針).
    */
   movability: z.enum(MOVABILITY_VALUES).optional(),
+  /**
+   * 訪問する週 (migration 0102・biweekly-monthly-design-2026-10-30.md §3-2):
+   * every=毎回 / A=A の週 / B=B の週. 隔週の患者のときだけ効く.
+   * 省略すると BE が同じ (曜日, slot) の既存行の値を引き継ぐ (新しい枠は every).
+   * 2 名体制の方は同じ曜日の slot 0/1 をそろえる (ずれると 422).
+   */
+  visit_week: z.enum(PFV_VISIT_WEEK_VALUES).optional(),
 });
 
 export const patientFixedVisitV2ReadSchema = patientFixedVisitV2BaseSchema.extend({

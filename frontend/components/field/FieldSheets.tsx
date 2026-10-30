@@ -71,7 +71,16 @@ import {
   usePatient,
   usePatients,
   useUpdatePatient,
+  useVisitFrequencyPreview,
 } from '@/lib/queries/patients';
+import {
+  formatMonthDayDow,
+  formatVisitWeeks,
+  frequencyStatusOf,
+  frequencyWarningText,
+  parseVisitWeeks,
+  snapToMonday,
+} from '@/lib/scheduling/visit-frequency';
 import { PatientStatusChangeDialog } from '@/components/patients/PatientStatusChangeDialog';
 import { usePatientStatusGate } from '@/lib/hooks/usePatientStatusGate';
 import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
@@ -404,6 +413,31 @@ export function KarteSheet({
           {wp?.visit_frequency && (
             <KV k="訪問頻度" v={VISIT_FREQUENCY_LABELS[wp.visit_frequency]} />
           )}
+          {wp?.visit_frequency === 'biweekly' && (
+            <KV
+              k="起点の週"
+              v={
+                snapToMonday(wp.biweekly_anchor)
+                  ? `${formatMonthDayDow(snapToMonday(wp.biweekly_anchor) as string)}の週（A の週）`
+                  : '未設定（毎週の予定になります）'
+              }
+            />
+          )}
+          {wp?.visit_frequency === 'monthly' && (
+            <KV
+              k="訪問する週"
+              v={
+                parseVisitWeeks(wp.visit_weeks).length > 0
+                  ? `第${parseVisitWeeks(wp.visit_weeks).join('・')}週`
+                  : '未設定（毎週の予定になります）'
+              }
+            />
+          )}
+          {canEdit &&
+            p &&
+            (wp?.visit_frequency === 'biweekly' || wp?.visit_frequency === 'monthly') && (
+              <KarteNextVisits patientId={p.id} wp={wp} />
+            )}
           <KV k="サービス時間" v={`${serviceMin}分`} />
           {wp?.time_type && <KV k="時間タイプ" v={wp.time_type} />}
           {wp?.time_type === '時間帯' && (wp.preferred_start || wp.preferred_end) && (
@@ -538,6 +572,22 @@ const KV = ({ k, v }: { k: string; v: ReactNode }) => (
 // ============================ Karte edit sheet (manager/admin) ============================
 
 /**
+ * カルテの「次の訪問」(隔週・月の第何週の方だけ・設計 2026-10-30 §4)。
+ * 判定は backend と同じ関数 (visit-frequency-preview)。管理者以外 (403) は出さない。
+ */
+function KarteNextVisits({ patientId, wp }: { patientId: string; wp: WeeklyPattern }) {
+  const preview = useVisitFrequencyPreview(patientId, {
+    visit_frequency: wp.visit_frequency,
+    biweekly_anchor: wp.biweekly_anchor,
+    visit_weeks: wp.visit_weeks,
+  });
+  if (preview.isError || !preview.data) return null;
+  const dates = preview.data.upcoming_visit_dates;
+  if (dates.length === 0) return null;
+  return <KV k="次の訪問" v={dates.map(formatMonthDayDow).join('・')} />;
+}
+
+/**
  * カルテ編集 / 新規登録シート (マスタ主要項目) — 現場ボード `/m` の manager/admin 向け。
  *
  * Phase G-87: `mode` で edit / create を切り替える 1 コンポーネント。
@@ -602,9 +652,15 @@ function KarteEditSheet({
   // weekly_pattern 構造化値。
   const wp0 = initial.weekly_pattern;
   const [frequencyPerWeek, setFrequencyPerWeek] = useState(wp0.frequency_per_week);
-  const [visitFrequency, setVisitFrequency] = useState<(typeof VISIT_FREQUENCY_OPTIONS)[number]>(
-    wp0.visit_frequency ?? 'every',
+  // 空 (未設定) は空のまま保つ (開いて保存しただけで「毎週」を書かない・設計 2026-10-30 §2-1)。
+  const [visitFrequency, setVisitFrequency] = useState<
+    (typeof VISIT_FREQUENCY_OPTIONS)[number] | null
+  >(wp0.visit_frequency);
+  // 隔週の起点の週 (月曜) と 月の第何週 (設計 2026-10-30 §3-1)。
+  const [biweeklyAnchor, setBiweeklyAnchor] = useState<string | null>(
+    snapToMonday(wp0.biweekly_anchor) ?? wp0.biweekly_anchor,
   );
+  const [visitWeeks, setVisitWeeks] = useState<number[]>(() => parseVisitWeeks(wp0.visit_weeks));
   const [weekdays, setWeekdays] = useState<Record<WeekdayKey, boolean>>(() => {
     const m = {} as Record<WeekdayKey, boolean>;
     for (const d of WEEKDAY_KEYS) m[d] = wp0.preferred_weekdays.includes(d);
@@ -714,10 +770,17 @@ function KarteEditSheet({
     }
 
     const preferred_weekdays: WeekdayKey[] = WEEKDAY_KEYS.filter((d) => weekdays[d]);
+    // `...wp0` で `_source` (読んだときの元の dict) を引き継ぐ。送るときは元の dict に
+    // 変えた欄だけを重ねる (entries・未知のキーを消さない・prepareFormPayload)。
+    // 第何週は、元の文字と同じ週なら元の文字のまま (書き方だけの違いで書き換えない)。
+    const sameWeeks =
+      formatVisitWeeks(visitWeeks) === formatVisitWeeks(parseVisitWeeks(wp0.visit_weeks));
     const weekly_pattern: WeeklyPattern = {
       ...wp0,
       frequency_per_week: frequencyPerWeek,
       visit_frequency: visitFrequency,
+      biweekly_anchor: biweeklyAnchor,
+      visit_weeks: sameWeeks ? wp0.visit_weeks : formatVisitWeeks(visitWeeks),
       preferred_weekdays,
       service_minutes: serviceMinutes,
       time_type: timeType,
@@ -1026,12 +1089,17 @@ function KarteEditSheet({
           <Field label="訪問頻度" flex>
             <select
               style={cfInput}
-              value={visitFrequency}
+              value={visitFrequency ?? ''}
               aria-label="訪問頻度"
               onChange={(e) =>
-                setVisitFrequency(e.target.value as (typeof VISIT_FREQUENCY_OPTIONS)[number])
+                setVisitFrequency(
+                  e.target.value === ''
+                    ? null
+                    : (e.target.value as (typeof VISIT_FREQUENCY_OPTIONS)[number]),
+                )
               }
             >
+              <option value="">未設定（毎週）</option>
               {VISIT_FREQUENCY_OPTIONS.map((k) => (
                 <option key={k} value={k}>
                   {VISIT_FREQUENCY_LABELS[k]}
@@ -1040,6 +1108,77 @@ function KarteEditSheet({
             </select>
           </Field>
         </div>
+
+        {visitFrequency === 'biweekly' && (
+          <Field label="起点の週（A の週）">
+            <input
+              type="date"
+              style={cfInput}
+              aria-label="起点の週"
+              value={biweeklyAnchor ?? ''}
+              onChange={(e) => setBiweeklyAnchor(snapToMonday(e.target.value))}
+            />
+            <div style={{ fontSize: 10.5, color: _INK2, marginTop: 4, lineHeight: 1.5 }}>
+              {biweeklyAnchor && snapToMonday(biweeklyAnchor)
+                ? `${formatMonthDayDow(snapToMonday(biweeklyAnchor) as string)}の週から 2 週おき。`
+                : ''}
+              どの日を選んでもその週の月曜にそろえます。次の週が B の週です。
+            </div>
+          </Field>
+        )}
+
+        {visitFrequency === 'monthly' && (
+          <Field label="訪問する週（複数可）">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {[1, 2, 3, 4, 5].map((n) => {
+                const on = visitWeeks.includes(n);
+                return (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() =>
+                      setVisitWeeks((s) =>
+                        s.includes(n) ? s.filter((w) => w !== n) : [...s, n].sort((a, b) => a - b),
+                      )
+                    }
+                    aria-pressed={on}
+                    aria-label={`第${n}週`}
+                    style={{ ...chip, ...(on ? chipOn : {}) }}
+                  >
+                    第{n}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+        )}
+
+        {(() => {
+          const warn = frequencyWarningText(
+            frequencyStatusOf({
+              visit_frequency: visitFrequency,
+              biweekly_anchor: biweeklyAnchor,
+              visit_weeks: formatVisitWeeks(visitWeeks),
+            }),
+          );
+          return warn ? (
+            <div
+              role="alert"
+              style={{
+                fontSize: 11,
+                color: '#8a5a00',
+                background: '#FFF6E0',
+                border: '1px solid #F0D9A0',
+                borderRadius: 8,
+                padding: '6px 10px',
+                margin: '-4px 0 10px',
+                lineHeight: 1.5,
+              }}
+            >
+              ⚠ {warn}
+            </div>
+          ) : null;
+        })()}
 
         <Field label="希望曜日（複数可）">
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>

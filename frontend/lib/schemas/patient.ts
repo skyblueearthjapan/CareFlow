@@ -199,8 +199,8 @@ export const WEEKDAY_LABELS_JA: Record<WeekdayKey, string> = {
 export const VISIT_FREQUENCY_OPTIONS = ['every', 'biweekly', 'monthly'] as const;
 export const VISIT_FREQUENCY_LABELS: Record<(typeof VISIT_FREQUENCY_OPTIONS)[number], string> = {
   every: '毎週',
-  biweekly: '隔週',
-  monthly: '月次',
+  biweekly: '隔週（2 週おき）',
+  monthly: '月の第何週',
 };
 
 export const TIME_TYPE_OPTIONS = ['固定', '午前', '午後', '終日', '時間帯'] as const;
@@ -248,6 +248,12 @@ export function patientTimeOptionsWith(current: string | null | undefined): stri
 export interface WeeklyPattern {
   frequency_per_week: number;
   visit_frequency: (typeof VISIT_FREQUENCY_OPTIONS)[number] | null;
+  /**
+   * 隔週の起点の週 (月曜の日付 YYYY-MM-DD)。この週が A の週。
+   * 設計 docs/plans/biweekly-monthly-design-2026-10-30.md §3-1。
+   */
+  biweekly_anchor: string | null;
+  /** 月の第何週 (例 "1,3")。visit_frequency='monthly' のときだけ使う。 */
   visit_weeks: string | null;
   preferred_weekdays: WeekdayKey[];
   service_minutes: number;
@@ -255,11 +261,19 @@ export interface WeeklyPattern {
   preferred_start: string | null;
   preferred_end: string | null;
   ng_weekdays: WeekdayKey[] | null;
+  /**
+   * サーバーから読んだ元の weekly_pattern (フォームが編集しないキーを残すため)。
+   * `weeklyPatternFromServer` が付け、`weeklyPatternToWire` が送る前に外す。
+   * 送るときは元の dict に「変えた欄だけ」を重ねる (entries・biweekly_anchor・
+   * 未知のキーを保存で消さない。設計 §2-4)。
+   */
+  _source?: Record<string, unknown> | null;
 }
 
 export const emptyWeeklyPattern: WeeklyPattern = {
   frequency_per_week: 1,
   visit_frequency: null,
+  biweekly_anchor: null,
   visit_weeks: null,
   preferred_weekdays: [],
   service_minutes: DEFAULT_SERVICE_MINUTES,
@@ -656,6 +670,8 @@ export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
   return {
     frequency_per_week: Number.isFinite(freq) ? Math.min(7, Math.max(1, freq)) : 1,
     visit_frequency: visitFreq,
+    biweekly_anchor:
+      typeof r.biweekly_anchor === 'string' && r.biweekly_anchor ? r.biweekly_anchor : null,
     visit_weeks: typeof r.visit_weeks === 'string' ? r.visit_weeks : null,
     preferred_weekdays: filterWeekdays(r.preferred_weekdays),
     service_minutes: Number.isFinite(minutes)
@@ -667,6 +683,58 @@ export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
     preferred_end: typeof r.preferred_end === 'string' && r.preferred_end ? r.preferred_end : null,
     ng_weekdays: ngWeekdays,
   };
+}
+
+/** フォームが編集する weekly_pattern のキー (これ以外は元の値をそのまま送る)。 */
+const WEEKLY_PATTERN_FORM_KEYS = [
+  'frequency_per_week',
+  'visit_frequency',
+  'biweekly_anchor',
+  'visit_weeks',
+  'preferred_weekdays',
+  'service_minutes',
+  'time_type',
+  'preferred_start',
+  'preferred_end',
+  'ng_weekdays',
+] as const satisfies ReadonlyArray<keyof WeeklyPattern>;
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * サーバーの weekly_pattern をフォーム用に整え、元の dict を `_source` に持たせる。
+ * 保存は `weeklyPatternToWire` で元の dict に変えた欄だけを重ねる。
+ */
+export function weeklyPatternFromServer(raw: unknown): WeeklyPattern {
+  return {
+    ...coerceWeeklyPattern(raw),
+    _source: isPlainObject(raw) ? { ...raw } : null,
+  };
+}
+
+/**
+ * フォームの WeeklyPattern を送る dict にする (PATCH は weekly_pattern を丸ごと置き換える)。
+ *
+ * - `_source` (サーバーの元の dict) があるとき: 元の dict を土台にし、フォームの欄のうち
+ *   **元の値から変えたものだけ**を重ねる。entries・未知のキーは残り、空だった
+ *   frequency_per_week に既定の 1 を書かない (開いて保存しただけで値が増えない)。
+ * - 無いとき (新規作成): フォームの欄をそのまま送る。
+ * どちらも `_source` 自体は送らない。
+ */
+export function weeklyPatternToWire(wp: WeeklyPattern): Record<string, unknown> {
+  const { _source, ...fields } = wp;
+  if (!isPlainObject(_source)) return { ...fields };
+  const base = coerceWeeklyPattern(_source);
+  const out: Record<string, unknown> = { ..._source };
+  for (const key of WEEKLY_PATTERN_FORM_KEYS) {
+    const next = fields[key];
+    if (JSON.stringify(next ?? null) !== JSON.stringify(base[key] ?? null)) {
+      out[key] = next;
+    }
+  }
+  return out;
 }
 
 /**
@@ -706,7 +774,7 @@ export function patientReadToFormValues(p: PatientRead): PatientFormValues {
     requires_multiple_staff:
       (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true,
     note: p.note ?? '',
-    weekly_pattern: coerceWeeklyPattern(p.weekly_pattern),
+    weekly_pattern: weeklyPatternFromServer(p.weekly_pattern),
     special_week: !!p.special_weekly_pattern,
   };
 }

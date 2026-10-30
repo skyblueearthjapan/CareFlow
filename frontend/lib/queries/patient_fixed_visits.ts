@@ -182,6 +182,12 @@ export function useUpdateFixedVisits(
       void qc.invalidateQueries({
         queryKey: FIXED_VISITS_KEY(patientId),
       });
+      // 訪問頻度の「次の訪問」は枠の曜日と A/B から並べるため取り直す
+      // (キーは patients.ts の VISIT_FREQUENCY_PREVIEW_KEY と同じ。テストの
+      // vi.mock('@/lib/queries/patients') に引きずられないよう文字で持つ)。
+      void qc.invalidateQueries({
+        queryKey: ['visit-frequency-preview', patientId],
+      });
     },
   });
 }

@@ -24,17 +24,33 @@ import {
   type WeekdayKey,
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
+import { useVisitFrequencyPreview } from '@/lib/queries/patients';
+import {
+  formatMonthDayDow,
+  formatVisitWeeks,
+  frequencyStatusOf,
+  frequencyWarningText,
+  parseVisitWeeks,
+  snapToMonday,
+  toYmd,
+} from '@/lib/scheduling/visit-frequency';
 
 interface WeeklyPatternEditorProps {
   value: WeeklyPattern;
   onChange: (next: WeeklyPattern) => void;
   disabled?: boolean;
+  /**
+   * 編集中の患者の id。渡すと頻度の下に「次の訪問」を並べる
+   * (保存前の値で backend に試算してもらう)。新規作成では省略。
+   */
+  patientId?: string;
 }
 
 export function WeeklyPatternEditor({
   value,
   onChange,
   disabled = false,
+  patientId,
 }: WeeklyPatternEditorProps) {
   const update = React.useCallback(
     <K extends keyof WeeklyPattern>(key: K, next: WeeklyPattern[K]) => {
@@ -85,7 +101,7 @@ export function WeeklyPatternEditor({
           />
         </Field>
 
-        <Field label="訪問頻度">
+        <Field label="訪問頻度" hint="空は毎週と同じ">
           <Select
             disabled={disabled}
             value={value.visit_frequency ?? ''}
@@ -99,22 +115,17 @@ export function WeeklyPatternEditor({
               ['', '--'],
               ...VISIT_FREQUENCY_OPTIONS.map((k) => [k, VISIT_FREQUENCY_LABELS[k]] as const),
             ]}
-          />
-        </Field>
-
-        <Field label="訪問週" hint='例: "1,3"'>
-          <Input
-            type="text"
-            disabled={disabled}
-            value={value.visit_weeks ?? ''}
-            placeholder="1,3"
-            onChange={(e) => {
-              const v = e.target.value.trim();
-              update('visit_weeks', v === '' ? null : v);
-            }}
+            aria-label="訪問頻度"
           />
         </Field>
       </div>
+
+      <VisitFrequencyDetail
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        patientId={patientId}
+      />
 
       <Field label="希望曜日">
         <div className="flex flex-wrap gap-3 pt-1">
@@ -198,6 +209,181 @@ export function WeeklyPatternEditor({
       </div>
     </div>
   );
+}
+
+/**
+ * 訪問頻度の詳しい設定 (起点の週・第何週) と「次の訪問」の並び。
+ * 設計 docs/plans/biweekly-monthly-design-2026-10-30.md §3・§4。
+ */
+interface VisitFrequencyDetailProps {
+  value: WeeklyPattern;
+  onChange: (next: WeeklyPattern) => void;
+  disabled: boolean;
+  patientId?: string;
+}
+
+function VisitFrequencyDetail(props: VisitFrequencyDetailProps) {
+  // 毎週・未設定のときは何も出さない (問い合わせもしない)。
+  const freq = props.value.visit_frequency;
+  if (freq !== 'biweekly' && freq !== 'monthly') return null;
+  return <VisitFrequencyDetailBody {...props} />;
+}
+
+function VisitFrequencyDetailBody({
+  value,
+  onChange,
+  disabled,
+  patientId,
+}: VisitFrequencyDetailProps) {
+  const freq = value.visit_frequency;
+  const isBiweekly = freq === 'biweekly';
+  const isMonthly = freq === 'monthly';
+  const weeks = parseVisitWeeks(value.visit_weeks);
+  const warning = frequencyWarningText(frequencyStatusOf(value));
+
+  // 入力のたびに問い合わせないよう、少し待ってから保存前の値で試算する。
+  const previewParams = useDebounced(
+    {
+      visit_frequency: freq,
+      biweekly_anchor: snapToMonday(value.biweekly_anchor),
+      visit_weeks: formatVisitWeeks(weeks),
+    },
+    400,
+  );
+  const preview = useVisitFrequencyPreview(patientId, previewParams);
+
+  const toggleWeek = (n: number) => {
+    const next = weeks.includes(n) ? weeks.filter((w) => w !== n) : [...weeks, n];
+    onChange({ ...value, visit_weeks: formatVisitWeeks(next) });
+  };
+
+  const anchor = snapToMonday(value.biweekly_anchor);
+
+  return (
+    <div
+      className="space-y-3 rounded-md border border-border-default bg-bg-muted/40 p-3"
+      data-testid="visit-frequency-detail"
+    >
+      {isBiweekly ? (
+        <div className="space-y-1 text-sm">
+          <div className="font-medium text-text-secondary">起点の週</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              type="date"
+              className="w-auto"
+              disabled={disabled}
+              value={anchor ?? ''}
+              aria-label="起点の週"
+              onChange={(e) =>
+                onChange({ ...value, biweekly_anchor: snapToMonday(e.target.value) })
+              }
+            />
+            {anchor ? (
+              <span className="text-text-primary" data-testid="biweekly-anchor-label">
+                {formatMonthDayDow(anchor)}の週（A の週）
+              </span>
+            ) : null}
+            <button
+              type="button"
+              disabled={disabled}
+              className="rounded border border-border-default px-2 py-1 text-xs text-text-secondary hover:bg-bg-muted disabled:opacity-50"
+              onClick={() =>
+                onChange({ ...value, biweekly_anchor: snapToMonday(toYmd(new Date())) })
+              }
+            >
+              今週を起点にする
+            </button>
+          </div>
+          <p className="text-xs text-text-muted">
+            どの日を選んでも、その週の月曜にそろえます。起点の週を A の週、その次の週を B
+            の週として、2 週おきに訪問します。固定訪問の枠ごとに「A の週」「B
+            の週」を選ぶと、週ごとに違う曜日で訪問できます（例：火曜＝A、金曜＝B）。
+          </p>
+        </div>
+      ) : null}
+
+      {isMonthly ? (
+        <div className="space-y-1 text-sm" role="group" aria-label="訪問する週">
+          <div className="font-medium text-text-secondary">訪問する週</div>
+          <div className="flex flex-wrap gap-3 pt-1">
+            {[1, 2, 3, 4, 5].map((n) => {
+              const id = `visit-week-${n}`;
+              return (
+                <label
+                  key={n}
+                  htmlFor={id}
+                  className="inline-flex items-center gap-1.5 text-sm text-text-primary"
+                >
+                  <Checkbox
+                    id={id}
+                    disabled={disabled}
+                    checked={weeks.includes(n)}
+                    onCheckedChange={() => toggleWeek(n)}
+                  />
+                  第{n}週
+                </label>
+              );
+            })}
+          </div>
+          <p className="text-xs text-text-muted">
+            その曜日がその月で何回目かで数えます（第 3 木曜など）。第 5 週の無い月はお休みです。
+          </p>
+        </div>
+      ) : null}
+
+      {warning ? (
+        <p
+          className="rounded border border-amber-500/60 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900"
+          role="alert"
+          data-testid="visit-frequency-warning"
+        >
+          ⚠ {warning}
+        </p>
+      ) : null}
+
+      {patientId ? <UpcomingVisits preview={preview} /> : null}
+    </div>
+  );
+}
+
+function UpcomingVisits({ preview }: { preview: ReturnType<typeof useVisitFrequencyPreview> }) {
+  if (preview.isError) return null;
+  if (!preview.data) {
+    return <p className="text-xs text-text-muted">次の訪問を計算しています…</p>;
+  }
+  const { upcoming_visit_dates: dates, slots_source: source } = preview.data;
+  if (source === 'none' || dates.length === 0) {
+    return (
+      <p className="text-xs text-text-muted" data-testid="upcoming-visits">
+        固定訪問の枠も希望曜日も無いため、次の訪問は出せません。
+      </p>
+    );
+  }
+  return (
+    <p className="text-sm text-text-primary" data-testid="upcoming-visits">
+      次の訪問：{dates.map(formatMonthDayDow).join('・')}…
+      <span className="ml-1 text-xs text-text-muted">
+        {source === 'preferred_weekdays'
+          ? '（固定訪問の枠が無いため、希望曜日で並べています）'
+          : '（保存済みの固定訪問の枠で並べています）'}
+      </span>
+    </p>
+  );
+}
+
+/** 値が `delay` ミリ秒変わらなかったら返す (中身で比べるので毎回の新しい object でもよい)。 */
+function useDebounced<T>(value: T, delay: number): T {
+  const key = JSON.stringify(value);
+  const [debounced, setDebounced] = React.useState(value);
+  const latest = React.useRef(value);
+  React.useEffect(() => {
+    latest.current = value;
+  });
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebounced(latest.current), delay);
+    return () => clearTimeout(t);
+  }, [key, delay]);
+  return debounced;
 }
 
 interface FieldProps {

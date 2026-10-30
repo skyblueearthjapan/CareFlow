@@ -124,9 +124,15 @@ export const weeklyPatternV2Schema = z
   .object({
     /** 週あたり訪問回数 (§4.1 核項目) */
     frequency_per_week: z.number().int().min(1).max(7).nullable().optional(),
-    /** 訪問頻度 (§7.1 残置確定, 具体仕様 TBD) */
+    /**
+     * 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3): every=毎週 /
+     * biweekly=隔週 (biweekly_anchor の週から 0・2・4… 週目) / monthly=月の第何週 (visit_weeks)。
+     * null は毎週。
+     */
     visit_frequency: visitFrequencyV2Enum.nullable().optional(),
-    /** 訪問週 (例 "1,3", §7.1 残置確定, 具体仕様 TBD) */
+    /** 隔週の起点の週 (月曜 YYYY-MM-DD)。この週が A の週。 */
+    biweekly_anchor: z.string().nullable().optional(),
+    /** 月の第何週 (例 "1,3" = 第 1・第 3 週)。monthly のときだけ使う。 */
     visit_weeks: z.string().nullable().optional(),
     preferred_weekdays: z.array(weekdayV2Enum).nullable().optional(),
     service_minutes: z.number().int().min(0).max(300).nullable().optional(),
@@ -250,3 +256,27 @@ export const patientV2ReadSchema = patientV2BaseSchema.extend({
   special_week_active: z.array(z.record(z.unknown())).default([]),
 });
 export type PatientV2Read = z.infer<typeof patientV2ReadSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────
+// 訪問頻度の「次の訪問」(GET /patients/{id}/visit-frequency-preview)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 患者マスタの頻度の下に並べる「次の訪問」(biweekly-monthly-design-2026-10-30.md §4)。
+ * 判定は予定づくりと同じ backend の関数を通す (表示と計算をずらさない)。
+ */
+export const patientVisitFrequencyPreviewSchema = z
+  .object({
+    patient_id: z.string().uuid(),
+    visit_frequency: visitFrequencyV2Enum,
+    /** ok / missing_anchor=隔週なのに起点の週が無い / missing_weeks=第何週が空 (どちらも毎週作る) */
+    frequency_status: z.enum(['ok', 'missing_anchor', 'missing_weeks']),
+    biweekly_anchor: z.string().nullable().optional(),
+    visit_weeks: z.string().nullable().optional(),
+    /** 並べた曜日の出どころ (固定訪問の通常の枠 / 希望曜日 / なし) */
+    slots_source: z.enum(['fixed_visits', 'preferred_weekdays', 'none']),
+    from_date: z.string(),
+    upcoming_visit_dates: z.array(z.string()).default([]),
+  })
+  .passthrough();
+export type PatientVisitFrequencyPreview = z.infer<typeof patientVisitFrequencyPreviewSchema>;

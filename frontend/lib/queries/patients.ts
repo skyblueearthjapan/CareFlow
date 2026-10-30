@@ -37,6 +37,7 @@ import {
   type PatientRead,
   type PatientStatus,
   type PatientUpdate,
+  weeklyPatternToWire,
 } from '@/lib/schemas/patient';
 import {
   statusChangeRequestSchema,
@@ -46,6 +47,10 @@ import {
   type StatusChangeResult,
   type StatusImpact,
 } from '@/lib/schemas/patientStatus';
+import {
+  patientVisitFrequencyPreviewSchema,
+  type PatientVisitFrequencyPreview,
+} from '@/lib/schemas/v2/patient';
 import { compareByKana } from '@/lib/kana-sort';
 
 export interface PatientsListParams {
@@ -173,14 +178,20 @@ export function prepareFormPayload(
 
   // Treat the structured weekly_pattern as a JSONB dict. We always emit it
   // (it has sane defaults from `emptyWeeklyPattern`); on Create the schema
-  // accepts the dict, on Update it overwrites.
-  const weekly_pattern: Record<string, unknown> | null | undefined =
-    values.weekly_pattern as unknown as Record<string, unknown>;
+  // accepts the dict, on Update it overwrites **wholesale** (backend PATCH).
+  // そのため、読んだときの元の dict に「フォームで変えた欄だけ」を重ねて送る
+  // (entries・biweekly_anchor・未知のキーを消さない。設計 2026-10-30 §2-4)。
+  const weekly_pattern: Record<string, unknown> | null | undefined = values.weekly_pattern
+    ? weeklyPatternToWire(values.weekly_pattern)
+    : values.weekly_pattern;
 
   let special_weekly_pattern: Record<string, unknown> | null | undefined;
   if (values.special_week) {
     // チェック済み → 通常パターンと同じ shape を special にも適用
-    special_weekly_pattern = values.weekly_pattern as unknown as Record<string, unknown>;
+    // (フォームの欄だけ。内部の `_source` は送らない)。
+    const { _source: _ignored, ...specialFields } = values.weekly_pattern;
+    void _ignored;
+    special_weekly_pattern = specialFields as unknown as Record<string, unknown>;
   } else if (initial && initial.special_week) {
     // Was true, now unchecked → explicit null to clear the JSONB column.
     special_weekly_pattern = null;
@@ -373,6 +384,58 @@ export function useUpdatePatient(
     onSuccess: (data) => {
       void qc.invalidateQueries({ queryKey: PATIENTS_KEY });
       qc.setQueryData([...PATIENTS_KEY, id], data);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 訪問頻度の「次の訪問」(docs/plans/biweekly-monthly-design-2026-10-30.md §4)
+// ---------------------------------------------------------------------------
+
+/** 保存前の頻度で試すときの値 (どれも省略せず渡す: 空は「未設定」で試す)。 */
+export interface VisitFrequencyPreviewParams {
+  visit_frequency: 'every' | 'biweekly' | 'monthly' | null;
+  biweekly_anchor: string | null;
+  visit_weeks: string | null;
+}
+
+/** `['patients']` の下に置かない (患者の保存で無駄に取り直さない)。 */
+export const VISIT_FREQUENCY_PREVIEW_KEY = ['visit-frequency-preview'] as const;
+
+/**
+ * GET /api/v1/patients/{id}/visit-frequency-preview (admin・読み取りのみ)。
+ *
+ * 保存前の値をクエリで渡し、その値で「次の訪問」を並べてもらう (保存はしない)。
+ * 頻度が未設定 (null) のときは `every` で試す (未設定は毎週と同じ)。
+ * 権限が無い (403) などのときは表示を出さないだけにする (retry しない)。
+ */
+export function useVisitFrequencyPreview(
+  id: string | null | undefined,
+  params: VisitFrequencyPreviewParams,
+  opts?: { enabled?: boolean },
+): UseQueryResult<PatientVisitFrequencyPreview, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const gate = opts?.enabled ?? true;
+  const freq = params.visit_frequency ?? 'every';
+  const anchor = params.biweekly_anchor ?? '';
+  const weeks = params.visit_weeks ?? '';
+
+  return useQuery<PatientVisitFrequencyPreview, Error>({
+    queryKey: [...VISIT_FREQUENCY_PREVIEW_KEY, id ?? '__none__', freq, anchor, weeks],
+    enabled: status === 'authenticated' && !!id && gate,
+    retry: false,
+    queryFn: async () => {
+      const qs = new URLSearchParams({
+        visit_frequency: freq,
+        biweekly_anchor: anchor,
+        visit_weeks: weeks,
+      });
+      const raw = await fetcher<unknown>(
+        `/api/v1/patients/${id}/visit-frequency-preview?${qs.toString()}`,
+        { accessToken, refreshToken },
+      );
+      return patientVisitFrequencyPreviewSchema.parse(raw);
     },
   });
 }

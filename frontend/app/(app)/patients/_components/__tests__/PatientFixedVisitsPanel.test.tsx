@@ -98,6 +98,7 @@ import { useVisits } from '@/lib/queries/visits';
 import { useTogglePfvPin } from '@/lib/queries/g21';
 import { toast } from '@/components/ui/sonner';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
+import type { WeeklyPattern } from '@/lib/schemas/patient';
 
 import { PatientFixedVisitsPanel } from '../PatientFixedVisitsPanel';
 
@@ -1859,5 +1860,114 @@ describe('PatientFixedVisitsPanel', () => {
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
       expect(screen.queryByTestId('pfv-inactive-banner')).toBeNull();
     });
+  });
+});
+
+// ─── 訪問頻度: 枠の「訪問する週」(0102・biweekly-monthly-design-2026-10-30.md §3-2) ───
+
+describe('PatientFixedVisitsPanel — 訪問する週 (A/B)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const VW_OFFICE_ID = '00000000-0000-0000-0000-000000000010';
+  const VW_COURSE_TEMPLATES = [
+    'aaaaaaaa-0000-0000-0000-000000000001',
+    'bbbbbbbb-0000-0000-0000-000000000002',
+  ].map((id, i) => ({
+    id,
+    label: i === 0 ? 'A' : 'B',
+    office_id: VW_OFFICE_ID,
+    capacity_mon: 5,
+    capacity_tue: 5,
+    capacity_wed: 5,
+    capacity_thu: 5,
+    capacity_fri: 5,
+    capacity_sat: 0,
+    capacity_sun: 0,
+    notes: null,
+    created_at: '2026-01-01T00:00:00',
+    updated_at: '2026-01-01T00:00:00',
+  }));
+
+  const pfvRead = (slot: number, visitWeek: 'every' | 'A' | 'B') => ({
+    id: `read-vw-${slot}`,
+    patient_id: PATIENT_ID,
+    weekday: 1,
+    start_time: '10:00',
+    duration_min: 35,
+    mode: 'normal',
+    course_template_id: null,
+    slot_index: slot,
+    visit_week: visitWeek,
+    created_at: '2026-01-01T00:00:00',
+    updated_at: '2026-01-01T00:00:00',
+  });
+
+  it('VW-1. 毎週の方には出さないが、保存では今の値をそのまま送る', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({ reads: [pfvRead(0, 'B')], updateFn });
+
+    render(<PatientFixedVisitsPanel patientId={PATIENT_ID} weeklyPattern={null} />);
+
+    expect(screen.queryByTestId('pfv-visit-week-1')).toBeNull();
+    await saveAndConfirmScope();
+    await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+    const call = updateFn.mock.calls[0][0] as { items: { visit_week?: string }[] };
+    expect(call.items[0].visit_week).toBe('B');
+  });
+
+  it('VW-2. 隔週の方は枠ごとに選べ、選んだ値を送る', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({ reads: [pfvRead(0, 'every')], updateFn });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        weeklyPattern={
+          { visit_frequency: 'biweekly', biweekly_anchor: '2026-11-02' } as unknown as WeeklyPattern
+        }
+      />,
+    );
+
+    const select = (await screen.findByTestId('pfv-visit-week-1')) as HTMLSelectElement;
+    expect(select.value).toBe('every');
+    fireEvent.change(select, { target: { value: 'A' } });
+    await saveAndConfirmScope();
+    await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+    const call = updateFn.mock.calls[0][0] as { items: { visit_week?: string }[] };
+    expect(call.items[0].visit_week).toBe('A');
+  });
+
+  it('VW-3. 2 名体制の方は同じ曜日の slot 0/1 に同じ値を送る', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({
+      reads: [
+        { ...pfvRead(0, 'B'), course_template_id: 'aaaaaaaa-0000-0000-0000-000000000001' },
+        { ...pfvRead(1, 'B'), course_template_id: 'bbbbbbbb-0000-0000-0000-000000000002' },
+      ],
+      updateFn,
+      courseTemplates: VW_COURSE_TEMPLATES,
+    });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={VW_OFFICE_ID}
+        requiresMultipleStaff={true}
+        weeklyPattern={{ visit_frequency: 'biweekly' } as unknown as WeeklyPattern}
+      />,
+    );
+
+    const select = (await screen.findByTestId('pfv-visit-week-1')) as HTMLSelectElement;
+    expect(select.value).toBe('B');
+    fireEvent.change(select, { target: { value: 'A' } });
+    await saveAndConfirmScope();
+    await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+    const call = updateFn.mock.calls[0][0] as {
+      items: { slot_index: number; visit_week?: string }[];
+    };
+    expect(call.items).toHaveLength(2);
+    expect(call.items.map((it) => it.visit_week)).toEqual(['A', 'A']);
   });
 });

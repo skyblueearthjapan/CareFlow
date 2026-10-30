@@ -208,9 +208,23 @@ interface DayRow {
   movability: Movability;
   /** この曜日に対応する既存 PFV 行の id (slot 0/1 で最大 2 件). 未保存の行は空配列. */
   pfv_ids: string[];
+  /**
+   * 訪問する週 (migration 0102・biweekly-monthly-design-2026-10-30.md §3-2):
+   * every=毎回 / A=A の週 / B=B の週. 隔週の患者のときだけ画面に出す (それ以外も値は保つ).
+   * slot 0/1 共通で 1 値 (2 名体制の方は同じ曜日の 2 枠をそろえる決まり・BE は 422).
+   */
+  visit_week: PfvVisitWeek;
 }
 
 type DayRows = Record<number, DayRow>;
+
+type PfvVisitWeek = 'every' | 'A' | 'B';
+
+const VISIT_WEEK_LABELS: Record<PfvVisitWeek, string> = {
+  every: '毎回',
+  A: 'Aの週',
+  B: 'Bの週',
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -226,6 +240,7 @@ function emptyDayRow(baseMin: number = DEFAULT_BASE_MINUTES): DayRow {
     is_pinned: false,
     movability: 'unknown',
     pfv_ids: [],
+    visit_week: 'every',
   };
 }
 
@@ -271,6 +286,8 @@ function readsToDayRows(
         is_pinned: r.is_pinned === true || current.is_pinned,
         // P2-C: movability は slot 0 を優先 (旧 BE で未返却なら unknown フォールバック).
         movability: r.movability ?? current.movability ?? 'unknown',
+        // 0102: 訪問する週は slot 0 を優先 (旧 BE で未返却なら毎回).
+        visit_week: r.visit_week ?? 'every',
       };
     } else {
       // slot 1: enabled は slot 0 のフラグを尊重 (slot 0 が無い場合は slot 1 で起こす)
@@ -291,6 +308,8 @@ function readsToDayRows(
           current.movability && current.movability !== 'unknown'
             ? current.movability
             : (r.movability ?? current.movability ?? 'unknown'),
+        // 0102: slot 0 が先に来ていればその値 (slot 0 が後から来ても上書きされる).
+        visit_week: current.enabled ? current.visit_week : (r.visit_week ?? 'every'),
       };
     }
   }
@@ -342,6 +361,8 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
       is_pinned: mirroredPinned,
       // P2-C: 可動域 (slot 0/1 共通). 漏らすと保存のたび unknown に戻る (§1.3 運搬).
       movability: effectiveMovability,
+      // 0102: 訪問する週 (slot 0/1 共通). 隔週でない方も今の値を送って保つ.
+      visit_week: row.visit_week,
     });
 
     // slot 1 は requires_multiple_staff=true かつ
@@ -361,6 +382,8 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
         is_pinned: mirroredPinned,
         // P2-C: slot 0 と同じ可動域を継承.
         movability: effectiveMovability,
+        // 0102: slot 0 と同じ訪問する週 (2 名体制は同じ曜日でそろえる).
+        visit_week: row.visit_week,
       });
     }
   }
@@ -435,6 +458,8 @@ export function weeklyPatternToDayRows(
       movability: existing.movability,
       // 既存 PFV への参照 (ピン留め PATCH 用) も維持する.
       pfv_ids: existing.pfv_ids,
+      // 0102: 訪問する週も既存設定を保持.
+      visit_week: existing.visit_week,
     };
   }
   return rows;
@@ -472,6 +497,8 @@ interface ReadOnlyWeekGridProps {
   requiresMultipleStaff: boolean;
   /** Phase E-5: 全 office (サブ拠点ラベル解決用). */
   offices?: Office[];
+  /** 0102: 隔週の患者のとき true. 「Aの週」「Bの週」を出す. */
+  showVisitWeek?: boolean;
 }
 
 function ReadOnlyWeekGrid({
@@ -480,6 +507,7 @@ function ReadOnlyWeekGrid({
   requiresMultipleStaff,
   offices,
   baseMinutes = DEFAULT_BASE_MINUTES,
+  showVisitWeek = false,
 }: ReadOnlyWeekGridProps & { baseMinutes?: number }) {
   /** course_template_id → label の逆引きマップ */
   const labelMap = React.useMemo(() => {
@@ -521,6 +549,14 @@ function ReadOnlyWeekGrid({
               <>
                 <span className="text-text-primary tnum">{row.start_time}</span>
                 <span className="text-text-muted">{row.duration_min} 分</span>
+                {showVisitWeek ? (
+                  <span
+                    className="rounded bg-bg-muted px-1.5 py-0.5 text-xs font-medium text-text-secondary"
+                    data-testid={`ro-visit-week-${wd}`}
+                  >
+                    {VISIT_WEEK_LABELS[row.visit_week]}
+                  </span>
+                ) : null}
                 {/* 基本時間 (希望) と違う分数はイレギュラー対応として明示 (PO 2026-08-09)。 */}
                 {row.duration_min !== baseMinutes ? (
                   <span
@@ -613,6 +649,11 @@ interface WeekGridProps {
    * ○△×と残容量を出すための材料。undefined = 読込中 (ラベルのみ表示)。
    */
   courseLoad?: PfvCourseLoadResponse;
+  /**
+   * 0102: 隔週の患者のとき true. 枠ごとに「訪問する週」(毎回 / Aの週 / Bの週) を選べる.
+   * false のときは選択欄を出さない (値は保ち、保存でもそのまま送る).
+   */
+  showVisitWeek?: boolean;
 }
 
 function WeekGrid({
@@ -628,6 +669,7 @@ function WeekGrid({
   getSubOfficeCourseTemplates,
   baseMinutes,
   courseLoad,
+  showVisitWeek = false,
 }: WeekGridProps) {
   const update = (weekday: number, patch: Partial<DayRow>) => {
     const current = rows[weekday] ?? emptyDayRow(baseMinutes);
@@ -716,6 +758,26 @@ function WeekGrid({
                     </span>
                   ) : null}
                 </div>
+                {/* 0102: 訪問する週 (隔週の患者だけ). 2 名体制は 1 つの値で slot 0/1 をそろえる. */}
+                {showVisitWeek ? (
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={row.visit_week}
+                      onChange={(e) => update(wd, { visit_week: e.target.value as PfvVisitWeek })}
+                      disabled={editDisabled}
+                      className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-60"
+                      aria-label={`${WEEKDAY_LABELS[wd]} 訪問する週`}
+                      data-testid={`pfv-visit-week-${wd}`}
+                    >
+                      {(['every', 'A', 'B'] as const).map((vw) => (
+                        <option key={vw} value={vw}>
+                          {VISIT_WEEK_LABELS[vw]}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-text-muted">訪問する週</span>
+                  </div>
+                ) : null}
                 {/* Phase E-5 (項目 ⑥B): サブ拠点 selector. 主担当拠点以外の候補がある場合のみ表示. */}
                 {subOfficeCandidates.length > 0 ? (
                   <div className="flex items-center gap-1">
@@ -915,6 +977,8 @@ function ModePanel({
 
   // 基本の訪問時間 = 希望訪問パターンの service_minutes (PO 決定 2026-08-09)。
   const baseMinutes = baseServiceMinutes(weeklyPattern);
+  // 0102: 隔週の患者の通常の枠だけ「訪問する週」を出す (特別週の枠には出さない).
+  const showVisitWeek = mode === 'normal' && weeklyPattern?.visit_frequency === 'biweekly';
   const [rows, setRows] = React.useState<DayRows>(() => emptyDayRows(baseMinutes));
   const [fieldErrors, setFieldErrors] = React.useState<Record<number, string>>({});
   const [formError, setFormError] = React.useState<string | null>(null);
@@ -1286,6 +1350,7 @@ function ModePanel({
           requiresMultipleStaff={requiresMultipleStaff}
           offices={offices}
           baseMinutes={baseMinutes}
+          showVisitWeek={showVisitWeek}
         />
       ) : (
         <WeekGrid
@@ -1304,8 +1369,15 @@ function ModePanel({
           getSubOfficeCourseTemplates={getSubOfficeCourseTemplates}
           baseMinutes={baseMinutes}
           courseLoad={courseLoadQuery.data}
+          showVisitWeek={showVisitWeek}
         />
       )}
+      {showVisitWeek && !isLoading ? (
+        <p className="text-xs text-text-muted" data-testid="pfv-visit-week-help">
+          隔週の方です。患者マスタの「起点の週」が A の週、その次の週が B の週です。「毎回」の枠は A
+          の週に訪問します。
+        </p>
+      ) : null}
 
       {/* 案Z: 入力中ライブ検査の常設表示 (トーストと違い消えない)。
           二段検査 (PO確定 2026-08-09): 毎週 (型同士) と 今週のみ (実配置) を分けて表示。 */}

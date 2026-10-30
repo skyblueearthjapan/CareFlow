@@ -717,6 +717,7 @@ export function PatientForm({
               value={field.value}
               onChange={field.onChange}
               disabled={submitting}
+              patientId={patientId}
             />
           )}
         />
