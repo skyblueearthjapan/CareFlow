@@ -133,6 +133,29 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def entry_staff_count(patient: Any, entry: dict) -> tuple[int, bool]:
+    """``weekly_pattern.entries[]`` から週を作るときの人数 (1 か 2) を決める.
+
+    単一ソース (biweekly-monthly-design-2026-10-30.md §2-2「複数スタッフでの訪問が必要」):
+    **患者の ``requires_multiple_staff`` が正**。
+
+    * ``requires_multiple_staff=True`` → 常に 2 (entry の ``staff_count`` は見ない)。
+    * ``requires_multiple_staff=False`` で entry の ``staff_count == 2`` → 今までどおり 2
+      (データは移さない) だが、二重の設定として 2 つ目の戻り値 ``True`` で知らせる
+      (呼び出し側がログに残す)。患者マスタの「複数スタッフでの訪問が必要」に寄せる対象。
+    * それ以外 → 1。
+
+    Returns:
+        ``(staff_count, legacy_entry_two)``。
+    """
+    if bool(getattr(patient, "requires_multiple_staff", False)):
+        return 2, False
+    raw = _coerce_int(entry.get("staff_count"), 1)
+    if raw == 2:
+        return 2, True
+    return 1, False
+
+
 def _is_special_week_active(patient: Patient, iso_year: int, iso_week: int) -> bool:
     """``patient.special_week_active`` に当該週が含まれるか判定 (§3.4)."""
     refs = patient.special_week_active or []
@@ -1468,9 +1491,16 @@ class Layer1Expander:
                 continue
             seen_slots.add(slot_key)
 
-            staff_count = _coerce_int(entry.get("staff_count"), 1)
-            if staff_count not in (1, 2):
-                staff_count = 1
+            # 2 名体制の正は患者の requires_multiple_staff (entry_staff_count の docstring).
+            staff_count, legacy_entry_two = entry_staff_count(patient, entry)
+            if legacy_entry_two:
+                logger.warning(
+                    "Layer1: entries[].staff_count=2 だが requires_multiple_staff=False の患者"
+                    " (二重の設定・患者マスタの「複数スタッフでの訪問が必要」へ寄せる対象)"
+                    " patient=%s weekday=%s",
+                    patient.id,
+                    weekday,
+                )
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
 

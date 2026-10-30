@@ -121,6 +121,17 @@ PO の相談（10/30）：患者マスタで「隔週」を選べるが、週を
 
 - 2026-10-30：NG 曜日＝画面に出して全経路で守る。2 名で訪問の方＝保留プールからも 2 名で置けるようにする。
 
+### 段 3 の実装メモ（NG 曜日・男性のみ・2 名体制の正）
+
+- **NG 曜日**（`weekly_pattern.ng_weekdays`・曜日コードの並び）：純関数は `backend/app/services/scheduling/ng_weekdays.py`。保存は `schemas/v2/patient.py` が月→日の順・重複なしにそろえる。
+  - 日を選ぶ経路は使わない：空き枠の提案（通常・効率代替・定員超過・2 名ペア）、保留プールの俯瞰・一括投入、自動割当の希望候補・プールの候補、改善提案・範囲最適化・詰まり解消の移動先。希望曜日が全部 NG 曜日なら理由 `ng_weekday` を返す。
+  - 置く／動かす API は 422（`code='ng_weekday'`）：place-and-fix、fix-or-pattern、`POST/PATCH /visits`、visit-move-week-only、course-move-weekday-week-only、apply-individual、pool-bulk-apply、propose-unblock/apply。同じ曜日の中で時刻だけ変えるのは止めない。
+  - 固定訪問の検査（V10）：NG 曜日に枠を作る／動かすのは error、保存前からある枠は warning。
+  - 週の生成は保存済みの枠をそのまま作る（黙って消さない）。食い違いは点検（feasibility）の「NG 曜日に訪問」（△）で知らせる。
+  - ならし：曜日は変えないので、特別訪問週間の○を NG 曜日に足さない。
+- **男性のみ**：ならし（`docs/tools/week-leveling/solver.py`）でも女性の職員に付けない。検査と「入らない理由」にも出す。
+- **2 名体制の正**：患者の `requires_multiple_staff`。週の生成の `entries` の経路は、これが真なら `entries[].staff_count` を見ない。偽で `staff_count=2` のときだけ今までどおり 2 名にし、ログに残す（`layer1_expander.entry_staff_count`）。データは移していない。
+
 ### 特別週の 4 つの仕組み（調査・10/30 本番の記録から）
 
 | 仕組み | 入口 | 使われ方 |

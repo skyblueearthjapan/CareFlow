@@ -264,6 +264,7 @@ from app.services.scheduling.board_service import (
 from app.services.scheduling.config import SchedulingConfig, load_scheduling_config
 from app.services.scheduling.guards import (
     ensure_patient_schedulable,
+    ensure_weekday_not_ng,
     patient_not_active_detail,
     split_schedulable_patient_ids,
 )
@@ -271,8 +272,10 @@ from app.services.scheduling.improvement_engine import (
     ImprovementCandidateData,
     find_improvement_candidates,
 )
+from app.services.scheduling.ng_weekdays import patient_ng_weekdays
 from app.services.scheduling.pfv_validator import (
     _find_conflict,
+    errors_message,
     validate_pfv_changes,
 )
 from app.services.scheduling.pool_bulk_inserter import (
@@ -1104,6 +1107,23 @@ async def apply_individual_endpoint(
                 ),
             )
 
+    # NG 曜日 (PO 決定 2026-10-30): 提案を採用して NG 曜日に枠を作る/動かすのは 422.
+    # すでにその曜日にある枠 (時刻だけの変更) は止めない (既存の食い違いは点検で知らせる).
+    if patient_ng_weekdays(_patient_row):
+        _existing_wds = set(
+            (
+                await db.scalars(
+                    select(PatientFixedVisit.weekday).where(
+                        PatientFixedVisit.patient_id == payload.patient_id,
+                        PatientFixedVisit.mode == "normal",
+                    )
+                )
+            ).all()
+        )
+        for vp in payload.visit_plans:
+            if vp.weekday not in _existing_wds:
+                ensure_weekday_not_ng(_patient_row, vp.weekday)
+
     # NG スタッフ / 性別制限の確認フロー (§7-2)。「提案を採用して患者を置く」経路も
     # 手動配置と同じ穴を持つため、apply 直前 (= PFV を壊す前) に検査する。
     # ``pattern_and_week`` のときのみ = 週が特定できて初めて「どのコースの誰に
@@ -1547,6 +1567,9 @@ async def visit_move_week_only_endpoint(
 
     # PO 決定 (2026-08-09): 旧 pinned (=完全固定) の人手ブロックは撤廃 — 人手の
     # 「今週だけ移動」は常に正当。青ピンも廃止 (2026-10-12): 動かせない蓋は無い。
+
+    # NG 曜日 (PO 決定 2026-10-30): 別の曜日へ動かす先が NG 曜日なら 422 (時刻だけは通す).
+    ensure_weekday_not_ng(patient, payload.new_weekday, from_weekday=payload.old_weekday)
 
     # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
     # PO 実機テストの穴: 「訪問を移動」で患者を NG 指定スタッフのコースへ無警告で
@@ -2031,6 +2054,17 @@ async def course_move_weekday_week_only(
     # 警告 (非ブロック): 移動する患者が移動先の同日に既に別訪問を持つか。
     warnings: list[str] = []
     moved_patient_ids = {v.patient_id for v in moved_visits if v.status == VISIT_STATUS_PLANNED}
+    # NG 曜日 (PO 決定 2026-10-30): 移動先の曜日が NG 曜日の患者が 1 人でもいれば 422
+    # (書き込み前・コース丸ごとなので一部だけ動かすことはしない).
+    if moved_patient_ids:
+        for _p in (
+            await db.scalars(
+                select(Patient)
+                .where(Patient.id.in_(list(moved_patient_ids)))
+                .order_by(Patient.name)
+            )
+        ).all():
+            ensure_weekday_not_ng(_p, payload.to_weekday, from_weekday=from_weekday)
     if moved_patient_ids:
         moved_ids = {v.id for v in moved_visits}
         existing_rows = (
@@ -3136,8 +3170,11 @@ async def propose_slots_endpoint(
     """
     # 0. 入口ガード (Phase 2・設計 §7-3(d)): 既存患者を指定したときだけ検査する.
     #    新規候補 (existing_patient_id=None) は患者行がまだ無いので対象外.
+    # NG 曜日 (PO 決定 2026-10-30): 既存患者なら患者マスタの NG 曜日を候補から外す.
+    _ng_weekdays: frozenset[int] = frozenset()
     if payload.existing_patient_id is not None:
-        await ensure_patient_schedulable(db, payload.existing_patient_id)
+        _existing = await ensure_patient_schedulable(db, payload.existing_patient_id)
+        _ng_weekdays = patient_ng_weekdays(_existing)
 
     # 1. 候補座標 (+ 住所判定拠点) を確定.
     cand_lat, cand_lng, resolved_office_id = await _resolve_candidate_coords(db, payload)
@@ -3191,6 +3228,7 @@ async def propose_slots_endpoint(
         requires_multiple_staff=payload.requires_multiple_staff,
         existing_patient_id=payload.existing_patient_id,
         sex_restriction=payload.sex_restriction,
+        ng_weekdays=_ng_weekdays,
     )
 
     # Phase G-88 Step3: full-optimize と同一の事業所別設定をロードして注入 (read-only).
@@ -3354,6 +3392,7 @@ _POOL_EXCLUSION_PRIORITY: tuple[str, ...] = (
     "lunch_window",
     "no_gap",
     "course_closed",
+    "ng_weekday",
 )
 
 
@@ -3413,6 +3452,7 @@ def _patient_to_pool_candidate(patient: Patient) -> CandidateInput | None:
         requires_multiple_staff=bool(patient.requires_multiple_staff),
         existing_patient_id=patient.id,
         sex_restriction=patient.sex_restriction,
+        ng_weekdays=patient_ng_weekdays(patient),
     )
 
 
@@ -3852,6 +3892,19 @@ async def pool_bulk_apply_endpoint(
     for pl in target_placements:
         by_patient.setdefault(pl.patient_id, []).append(pl)
         name_by_patient.setdefault(pl.patient_id, pl.patient_name)
+
+    # 2-b. NG 曜日 (PO 決定 2026-10-30): simulate は NG 曜日を提案しないが、simulate 後に
+    # NG 曜日が登録されると古い placements が素通りする. 1 人も適用する前に全件を見て 422.
+    _bulk_patients = {
+        p.id: p
+        for p in (
+            await db.scalars(select(Patient).where(Patient.id.in_(list(by_patient.keys()))))
+        ).all()
+    }
+    for pl in target_placements:
+        _bp = _bulk_patients.get(pl.patient_id)
+        if _bp is not None:
+            ensure_weekday_not_ng(_bp, pl.weekday)
 
     # 3. NG スタッフ / 性別制限の事前一括検査 (§7-2)。simulate は NG 枠を提案しないが
     # (ba7c1da)、simulate 後に NG が登録されると **古い placements の apply が素通り**
@@ -4801,7 +4854,9 @@ async def improvement_apply_swap_endpoint(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
-                "message": "ピン留めされた枠は入れ替えできません",
+                "message": errors_message(
+                    [*va.errors, *vb.errors], "ピン留めされた枠は入れ替えできません"
+                ),
                 "violations": [
                     {
                         "code": w.code,
@@ -5355,7 +5410,8 @@ async def _validate_and_move_one(
             db,
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             {
-                "message": f"手順{seq}の適用が固定枠の保護に違反します",
+                "message": f"手順{seq}: "
+                + errors_message(v.errors, "適用が固定枠の保護に違反します"),
                 "violations": [
                     {
                         "code": w.code,
@@ -5710,6 +5766,7 @@ def _unblock_candidate_input(
     payload: ProposeUnblockRequest,
     lat: float,
     lng: float,
+    ng_weekdays: frozenset[int] = frozenset(),
 ) -> CandidateInput:
     """propose-unblock リクエスト → 対象患者の CandidateInput (propose-slots と同形)."""
     weekdays = frozenset(
@@ -5728,6 +5785,7 @@ def _unblock_candidate_input(
         requires_multiple_staff=payload.requires_multiple_staff,
         existing_patient_id=payload.existing_patient_id,
         sex_restriction=payload.sex_restriction,
+        ng_weekdays=ng_weekdays,
     )
 
 
@@ -5867,7 +5925,17 @@ async def propose_unblock_endpoint(
             resolved_office_id=office_id,
         )
 
-    candidate = _unblock_candidate_input(payload, cand_lat, cand_lng)
+    # NG 曜日 (PO 決定 2026-10-30): 既存患者なら NG 曜日の投入先を探さない.
+    _unblock_ng: frozenset[int] = frozenset()
+    if payload.existing_patient_id is not None:
+        _target_row = await db.scalar(
+            select(Patient).where(
+                Patient.id == payload.existing_patient_id, Patient.deleted_at.is_(None)
+            )
+        )
+        if _target_row is not None:
+            _unblock_ng = patient_ng_weekdays(_target_row)
+    candidate = _unblock_candidate_input(payload, cand_lat, cand_lng, _unblock_ng)
     config = await load_scheduling_config(db)
     try:
         result = await search_unblock_plans(
@@ -5988,7 +6056,7 @@ async def _insert_target_pfv(
             db,
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             {
-                "message": "対象患者の配置が固定枠の保護に違反します",
+                "message": errors_message(v.errors, "対象患者の配置が固定枠の保護に違反します"),
                 "violations": [
                     {
                         "code": w.code,
@@ -6118,6 +6186,8 @@ async def propose_unblock_apply_endpoint(
     )
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+    # NG 曜日 (PO 決定 2026-10-30): 対象患者の投入先が NG 曜日なら書き込み前に 422.
+    ensure_weekday_not_ng(target, plan.insert.weekday)
 
     # 配置時間 (service_minutes) は insert 枠の end−start、2 名体制の別は partner_course_code
     # の有無から復元する (candidate 情報を request に持たないため plan から自足させる)。

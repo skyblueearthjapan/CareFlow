@@ -162,6 +162,9 @@ class CandidateInput:
     existing_patient_id: UUID | None
     # ③ 表示統一: 提案行 (is_here) の色分け用. 候補患者自身の性別制限.
     sex_restriction: str | None = None
+    # NG 曜日 (weekly_pattern.ng_weekdays・PO 決定 2026-10-30): この曜日の枠は一切列挙しない
+    # (通常候補・効率代替・定員超過・2 名ペアのすべて). NG スタッフと同じハード除外.
+    ng_weekdays: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -223,7 +226,8 @@ class ExcludedReasonSummary:
     (昼休み重複) / ``travel_shortage`` (移動時間不足) / ``no_gap`` (空きギャップなし) /
     ``course_closed`` (希望曜日に開講コース無し) / ``pair_blocked`` (I-11: pair_mode=blocked
     のペア相手と同時間帯=90分同住所占有で重なるため除外) / ``no_pair_slot`` (W-12a D-2:
-    2 名体制で slot0 は入るが同時刻に入れる相方コースが見つからない).
+    2 名体制で slot0 は入るが同時刻に入れる相方コースが見つからない) / ``ng_weekday``
+    (希望曜日が患者の NG 曜日に当たっている・PO 決定 2026-10-30).
     """
 
     reason: str
@@ -964,6 +968,8 @@ def _enumerate_candidate_slots(
             continue
         if weekday not in target_weekdays:
             continue
+        if weekday in candidate.ng_weekdays:
+            continue  # NG 曜日 (訪問しない曜日): ハード除外
         # NG スタッフ (§6 / PO確定 2026-08-11): 候補患者がこのコースの割付スタッフを NG
         # 指定していれば **枠を一切列挙しない** (ハード除外. 従来の警告 + 降格から格上げ).
         # 除外理由 (exclusions_out) には積まない: ExcludedReasonCode は schema 側の
@@ -1312,6 +1318,8 @@ def _enumerate_pair_slots(
             continue
         if weekday not in target_weekdays:
             continue
+        if weekday in candidate.ng_weekdays:
+            continue  # NG 曜日 (訪問しない曜日): ハード除外
         # NG スタッフ (§6 / PO確定 2026-08-11): NG コースは primary / partner いずれとしても
         # 使わない (= どちらか一方でも NG ならペア枠が生成されない). 除外理由は
         # _enumerate_candidate_slots と同じ理由で exclusions_out に積まない.
@@ -1483,13 +1491,22 @@ def _aggregate_exclusions(
     *,
     office_ids: list[UUID],
     target_weekdays: frozenset[int],
+    ng_weekdays: frozenset[int] = frozenset(),
 ) -> list[ExcludedReasonSummary]:
     """P-1b: 生の bucket 除外理由を ``reason × weekday`` で集約する (非空を保証).
 
     希望曜日に開講コースが 1 つも無い曜日は ``course_closed`` を補完する. 最終的に空
     (bucket も除外理由も無い異常系) なら汎用 ``no_gap`` を 1 件足して「黙って 0 件」を防ぐ.
+
+    NG 曜日 (PO 決定 2026-10-30): ``ng_weekdays`` の曜日は ``ng_weekday`` として先頭に
+    積む (希望曜日が NG 曜日に当たっている = 患者マスタの食い違いを黙って消さない).
+    ``target_weekdays`` は NG 曜日を除いた後の曜日を渡す.
     """
-    records = list(raw)
+    records = [
+        _BucketExclusion(reason="ng_weekday", weekday=wd, course_code="")
+        for wd in sorted(ng_weekdays)
+    ]
+    records.extend(raw)
     # course_closed: scope 内で希望曜日に bucket が 1 つも無い曜日を補完.
     present_weekdays = {wd for (oid, wd, _cc) in buckets if (not office_ids or oid in office_ids)}
     for wd in sorted(target_weekdays):
@@ -1526,6 +1543,19 @@ def _aggregate_exclusions(
             )
         )
     return summaries
+
+
+def _target_weekdays(candidate: CandidateInput) -> frozenset[int]:
+    """列挙する曜日 = 希望曜日 (空なら全曜日) から NG 曜日を除いたもの."""
+    base = candidate.preferred_weekdays or frozenset(range(7))
+    return base - candidate.ng_weekdays
+
+
+def _ng_hit_weekdays(candidate: CandidateInput) -> frozenset[int]:
+    """除外理由に出す NG 曜日: 希望曜日があれば希望 ∩ NG、無ければ NG 曜日すべて."""
+    if candidate.preferred_weekdays:
+        return candidate.preferred_weekdays & candidate.ng_weekdays
+    return candidate.ng_weekdays
 
 
 def compute_all_proposed_slots(
@@ -1584,7 +1614,7 @@ def compute_all_proposed_slots(
     _lunch_duration = config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
     _lunch_window_start = config.lunch_window_start if config is not None else _LUNCH_EARLIEST_START
     _lunch_window_end = config.lunch_window_end if config is not None else _LUNCH_LATEST_END
-    target_weekdays = candidate.preferred_weekdays or frozenset(range(7))
+    target_weekdays = _target_weekdays(candidate)
     cand = Candidate(
         lat=candidate.lat,
         lng=candidate.lng,
@@ -1667,6 +1697,7 @@ def compute_all_proposed_slots(
                 buckets,
                 office_ids=office_ids,
                 target_weekdays=target_weekdays,
+                ng_weekdays=_ng_hit_weekdays(candidate),
             )
         )
 
@@ -1791,7 +1822,7 @@ def compute_overcapacity_slots(
     over_config = replace(base_config, max_patients_per_course=base_max + 1)
     over_max = base_max + 1
 
-    target_weekdays = candidate.preferred_weekdays or frozenset(range(7))
+    target_weekdays = _target_weekdays(candidate)
     cand = Candidate(
         lat=candidate.lat,
         lng=candidate.lng,

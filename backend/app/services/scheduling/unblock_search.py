@@ -67,6 +67,7 @@ from app.services.scheduling.improvement_engine import (
     compute_exact_marginal,
     snapshot_course_bucket,
 )
+from app.services.scheduling.ng_weekdays import ng_weekdays_of
 from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
@@ -404,6 +405,9 @@ def _enumerate_retreats(
         # 退避させない (ハード除外). 対象患者の投入先側は compute_all_proposed_slots が
         # 同じ判定で除外する (_fits_involving_bucket 経由).
         if _staff_ng_mismatch(patient.id, bucket.ng_patient_ids):
+            continue
+        # NG 曜日 (PO 決定 2026-10-30): 退避させられる患者の NG 曜日へは退避させない.
+        if not is_same_weekday and wd in ng_weekdays_of(patient.weekly_pattern):
             continue
 
         existing = _bucket_existing_excluding(bucket, patient.id)

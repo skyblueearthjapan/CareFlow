@@ -77,6 +77,7 @@ from app.services.scheduling.improvement_engine import (
     course_travel_buffer_total,
     snapshot_course_bucket,
 )
+from app.services.scheduling.ng_weekdays import ng_weekdays_of
 from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
@@ -550,6 +551,9 @@ def _enumerate_step_candidates(
                 continue
             is_same_weekday = wd_dst == wd_src
             kind = "time_change" if is_same_weekday else "day_change"
+            # NG 曜日 (PO 決定 2026-10-30): 別の曜日へ動かす先が NG 曜日なら手を作らない.
+            if not is_same_weekday and wd_dst in ng_weekdays_of(patient.weekly_pattern):
+                continue
 
             # 曜日跨ぎ: 移動先曜日を既に占有していたら apply 不能 (デッドエンド防止).
             if not is_same_weekday and wd_dst in sim.occupied_weekdays.get(pid, set()):

@@ -225,6 +225,7 @@ class ProposeSlotItem(BaseModel):
 # I-11: pair_blocked は pair_mode='blocked' のペア相手と同住所同時刻 (90分占有) で
 # 重なるため除外した枠. FE 側は z.string() 寛容パースなので BE 追加のみで安全.
 # W-12a: no_pair_slot は 2 名体制で slot0 は入るが同時刻に入れる相方コースが無い枠.
+# ng_weekday: 希望曜日が患者の NG 曜日 (weekly_pattern.ng_weekdays) に当たる (2026-10-30).
 ExcludedReasonCode = Literal[
     "capacity_full",
     "lunch_window",
@@ -233,6 +234,7 @@ ExcludedReasonCode = Literal[
     "course_closed",
     "pair_blocked",
     "no_pair_slot",
+    "ng_weekday",
 ]
 
 
@@ -248,7 +250,7 @@ class ProposeExcludedReason(BaseModel):
         ...,
         description=(
             "capacity_full / lunch_window / travel_shortage / no_gap / course_closed / "
-            "pair_blocked / no_pair_slot"
+            "pair_blocked / no_pair_slot / ng_weekday"
         ),
     )
     count: int = Field(..., ge=0, description="この reason × weekday で候補を落としたコース数")

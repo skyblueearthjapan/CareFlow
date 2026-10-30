@@ -6,7 +6,8 @@ v1 で削除する 10 項目（年齢 / NG時間 / エリア / 指定タイプ /
 v2 schema には含めない。
 
 追加項目（§3.3 / §3.4）:
-- weekly_pattern.staff_count (既定 1, 2 で 2 名体制)
+- weekly_pattern.staff_count (既定 1, 2 で 2 名体制・旧項目。正は requires_multiple_staff)
+- weekly_pattern.ng_weekdays (NG 曜日・2026-10-30 に画面へ戻した。全経路で守る)
 - special_weekly_pattern (JSONB)
 - special_week_active (適用週リスト [{iso_year, iso_week}, ...])
 """
@@ -102,7 +103,12 @@ class WeeklyPatternEntryV2(BaseModel):
         default=1,
         ge=1,
         le=2,
-        description="必要スタッフ数 (§3.3). 既定 1, 2 で 2 名体制",
+        description=(
+            "必要スタッフ数 (§3.3・旧項目). 2 名体制の正は患者の requires_multiple_staff. "
+            "週の生成 (entries の経路) は requires_multiple_staff=True なら常に 2 名で、"
+            "この値を見ない. False で 2 のときだけ今までどおり 2 名にし、二重の設定として"
+            "ログに残す (layer1_expander.entry_staff_count)"
+        ),
     )
 
     @field_validator("preferred_start", "preferred_end")
@@ -148,6 +154,14 @@ class WeeklyPatternV2(BaseModel):
         ),
     )
     preferred_weekdays: list[WeekdayV2] | None = None
+    ng_weekdays: list[WeekdayV2] | None = Field(
+        default=None,
+        description=(
+            "NG 曜日 (訪問しない曜日). 曜日コードの並び (月→日の順・重複なし). "
+            "日を選ぶ経路 (提案・保留プール・自動割当・ならし・今週だけの移動/追加・"
+            "固定訪問の枠の作成/移動) はこの曜日を使わない. 空の並び = NG 曜日なし."
+        ),
+    )
     service_minutes: int | None = Field(default=None, ge=0, le=300)
     time_type: TimeTypeV2 | None = None
     preferred_start: str | None = None
@@ -181,6 +195,14 @@ class WeeklyPatternV2(BaseModel):
         from app.services.scheduling.visit_frequency import normalize_visit_weeks
 
         return normalize_visit_weeks(v)
+
+    @field_validator("ng_weekdays", mode="before")
+    @classmethod
+    def _check_ng_weekdays(cls, v: object) -> list[str] | None:
+        """曜日コード (Mon〜Sun) の並び. 重複は 1 つに・月→日の順にそろえる."""
+        from app.services.scheduling.ng_weekdays import normalize_ng_weekdays
+
+        return normalize_ng_weekdays(v)
 
 
 class SpecialWeekRefV2(BaseModel):
@@ -263,12 +285,13 @@ class PatientV2Base(BaseModel):
         description="ハード制約 (§4.1 / §5.4)",
     )
     # W18 Phase A: 複数スタッフ同行必須フラグ (§4.1 / §5.4).
-    # 患者単位の独立フラグ。weekly_pattern.entries[].staff_count とは別軸。
+    # 2 名体制の単一ソース (2026-10-30)。weekly_pattern.entries[].staff_count は旧項目で、
+    # この値が True なら週の生成は entries の staff_count を見ない。
     requires_multiple_staff: bool = Field(
         default=False,
         description=(
-            "TRUE で常に 2 名体制が必要な患者. weekly_pattern.staff_count とは独立した "
-            "患者単位フラグ (§4.1 / §5.4)."
+            "TRUE で常に 2 名体制が必要な患者 (§4.1 / §5.4). 2 名体制の単一ソース: "
+            "weekly_pattern.entries[].staff_count (旧項目) より優先する."
         ),
     )
 

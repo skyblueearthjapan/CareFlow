@@ -113,7 +113,7 @@ from app.services.constraint_override_notify import (
 )
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 from app.services.patient_status_sync import status_since_date
-from app.services.scheduling.guards import ensure_patient_schedulable
+from app.services.scheduling.guards import ensure_patient_schedulable, ensure_weekday_not_ng
 from app.services.staff_leave import settle_leave_unassign
 from app.utils.db import try_advisory_xact_lock
 
@@ -923,7 +923,9 @@ async def create_visit(
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict:
     # 入口ガード (Phase 2・設計 §7-3(d)): 非稼働患者は 422 `patient_not_active`.
-    await ensure_patient_schedulable(db, payload.patient_id)
+    _patient = await ensure_patient_schedulable(db, payload.patient_id)
+    # NG 曜日 (PO 決定 2026-10-30): NG 曜日の日付に訪問を作るのは 422.
+    ensure_weekday_not_ng(_patient, payload.visit_date.weekday())
     # NG スタッフ / 性別制限 (§7-2): 作成時に担当 / コースが指定されていれば検査する。
     await _guard_constraint_violations(
         db,
@@ -983,6 +985,19 @@ async def update_visit(
     # (担当変更・メモ等) は非稼働でも通す — 残骸の手当てを塞がないため。
     if changes.get("patient_id") is not None and changes["patient_id"] != visit.patient_id:
         await ensure_patient_schedulable(db, changes["patient_id"])
+
+    # NG 曜日 (PO 決定 2026-10-30): 日付を別の曜日へ動かす / 患者を付け替えるとき、
+    # 変更後の曜日が変更後の患者の NG 曜日なら 422 (同じ曜日の中の変更は通す).
+    _new_date = changes.get("visit_date") or visit.visit_date
+    _new_pid = changes.get("patient_id") or visit.patient_id
+    if _new_date != visit.visit_date or _new_pid != visit.patient_id:
+        _ng_patient = await db.scalar(select(Patient).where(Patient.id == _new_pid))
+        if _ng_patient is not None:
+            ensure_weekday_not_ng(
+                _ng_patient,
+                _new_date.weekday(),
+                from_weekday=(visit.visit_date.weekday() if _new_pid == visit.patient_id else None),
+            )
 
     # その 2: **ステータス連動の取消を PATCH で planned へ戻させない**。
     # 正しい戻し方はステータスを稼働中にすること (型から再生成される)。

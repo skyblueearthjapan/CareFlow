@@ -84,6 +84,10 @@ KIND_STAFF_NOT_MIRRORED = "主担当なし(コース担当あり)"
 # 休みの時間帯に本人が担当の訪問 (休み設計 §4-2 の漏れの検知)。カイポケの取込で休む人に
 # 担当が戻ったときなど。職員スケジュールで割り当て直す対象として △ に載せる。
 KIND_ON_LEAVE = "休みの時間帯に担当"
+# NG 曜日 (weekly_pattern.ng_weekdays) に入っている訪問 (PO 決定 2026-10-30)。週の生成は
+# 保存済みの固定訪問の枠をそのまま展開する (黙って落とさない) ため、NG 曜日と枠が
+# 食い違う方はここで △ として知らせる。患者マスタの NG 曜日か枠を合わせる対象。
+KIND_NG_WEEKDAY = "NG 曜日に訪問"
 # 「成立しない」(❗) と「余裕がない/ルール逸脱」(△)。それ以外 (昼休み・座標なし) は参考。
 HARD_KINDS: frozenset[str] = frozenset({KIND_OVERLAP, KIND_IMPOSSIBLE, KIND_PAIR_OVER})
 SOFT_KINDS: frozenset[str] = frozenset(
@@ -94,6 +98,7 @@ SOFT_KINDS: frozenset[str] = frozenset(
         KIND_PAIR_NOT_SAME_START,
         KIND_STAFF_NOT_MIRRORED,
         KIND_ON_LEAVE,
+        KIND_NG_WEEKDAY,
     }
 )
 # item.level → (❗/△/参考, ラベル)。HTML 側の表示にも使う。
@@ -860,6 +865,98 @@ async def load_leave_findings(
     return findings
 
 
+async def load_ng_weekday_findings(
+    db: AsyncSession,
+    *,
+    week_start: date,
+    week_end: date,
+    office_id: uuid.UUID | None = None,
+) -> list[Finding]:
+    """「患者の NG 曜日に入っている予定 (planned)」を指摘として拾う (SELECT のみ).
+
+    NG 曜日を持つ患者だけを先に Python で絞り (JSONB の中身の判定は
+    ``ng_weekdays.ng_weekdays_of`` が単一ソース)、その患者の今週の訪問を読む。
+    担当は訪問の主担当、無ければコースの担当、どちらも無ければ「担当未定」の行。
+    拠点は盤面と同じくコースの拠点、コース無しは患者の主担当拠点で絞る。
+    """
+    from app.services.scheduling.ng_weekdays import ng_weekdays_of, weekday_label
+
+    ng_by_patient: dict[uuid.UUID, frozenset[int]] = {}
+    for pid, wp in (
+        await db.execute(
+            select(Patient.id, Patient.weekly_pattern).where(
+                Patient.deleted_at.is_(None), Patient.weekly_pattern.is_not(None)
+            )
+        )
+    ).all():
+        ng = ng_weekdays_of(wp)
+        if ng:
+            ng_by_patient[pid] = ng
+    if not ng_by_patient:
+        return []
+    rows = (
+        await db.execute(
+            select(
+                Visit.visit_date,
+                Visit.start_time,
+                Visit.primary_staff_id,
+                Visit.patient_id,
+                Patient.name,
+                Patient.primary_office_id,
+                Course.office_id,
+                Course.assigned_staff_id,
+            )
+            .join(Patient, Patient.id == Visit.patient_id)
+            .outerjoin(Course, and_(Course.id == Visit.course_id, Course.deleted_at.is_(None)))
+            .where(
+                Visit.patient_id.in_(list(ng_by_patient.keys())),
+                Visit.deleted_at.is_(None),
+                Visit.status == "planned",
+                Visit.visit_date >= week_start,
+                Visit.visit_date <= week_end,
+            )
+        )
+    ).all()
+    hits = [
+        r
+        for r in rows
+        if r.visit_date.weekday() in ng_by_patient.get(r.patient_id, frozenset())
+        and (office_id is None or (r.office_id or r.primary_office_id) == office_id)
+    ]
+    if not hits:
+        return []
+    staff_ids = {r.primary_staff_id or r.assigned_staff_id for r in hits} - {None}
+    staff_names: dict[uuid.UUID, str] = (
+        dict((await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(staff_ids)))).all())
+        if staff_ids
+        else {}
+    )
+    findings: list[Finding] = []
+    for r in hits:
+        sid = r.primary_staff_id or r.assigned_staff_id
+        sname = (
+            (staff_names.get(sid) or "").replace("　", " ").strip()
+            if sid is not None
+            else UNASSIGNED_STAFF_LABEL
+        )
+        findings.append(
+            Finding(
+                staff=sname,
+                day=r.visit_date,
+                kind=KIND_NG_WEEKDAY,
+                at=fmt_hm(_to_min(r.start_time)),
+                to=(r.name or "").replace("　", " ").strip(),
+                frm=(
+                    f"{weekday_label(r.visit_date.weekday())}曜は NG 曜日（訪問しない曜日）です"
+                    "（患者マスタの NG 曜日か固定訪問の枠を合わせてください）"
+                ),
+                staff_key=str(sid) if sid is not None else UNASSIGNED_STAFF_KEY,
+            )
+        )
+    findings.sort(key=lambda f: (f.day, f.at, f.staff, f.to))
+    return findings
+
+
 async def build_feasibility_report(
     db: AsyncSession,
     *,
@@ -892,6 +989,11 @@ async def build_feasibility_report(
     )
     report.findings.extend(
         await load_leave_findings(db, week_start=week_start, week_end=week_end, office_id=office_id)
+    )
+    report.findings.extend(
+        await load_ng_weekday_findings(
+            db, week_start=week_start, week_end=week_end, office_id=office_id
+        )
     )
     return report
 

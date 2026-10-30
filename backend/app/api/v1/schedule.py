@@ -96,7 +96,7 @@ from app.services.scheduling import (
     PoolEntry,
     VisitCreated,
 )
-from app.services.scheduling.guards import ensure_patient_schedulable
+from app.services.scheduling.guards import ensure_patient_schedulable, ensure_weekday_not_ng
 from app.services.scheduling.layer1_expander import (
     LAYER1_VISIT_SOURCE,
     UnplacedMultiStaffEntry,
@@ -354,14 +354,20 @@ async def fix_or_pattern(
     # ----- 入口ガード (Phase 2・設計 §7-3(d)) -----
     # 対象 visit の患者が非稼働なら 422 `patient_not_active` (DB 書き込みの前).
     # visit が存在しない場合はガードを飛ばし、既存の 404 経路に委ねる.
-    target_patient_id = await db.scalar(
-        select(Visit.patient_id).where(
-            Visit.id == body.visit_id,
-            Visit.deleted_at.is_(None),
+    target_row = (
+        await db.execute(
+            select(Visit.patient_id, Visit.visit_date).where(
+                Visit.id == body.visit_id,
+                Visit.deleted_at.is_(None),
+            )
         )
-    )
-    if target_patient_id is not None:
-        await ensure_patient_schedulable(db, target_patient_id)
+    ).first()
+    if target_row is not None:
+        _target_patient = await ensure_patient_schedulable(db, target_row.patient_id)
+        # NG 曜日 (PO 決定 2026-10-30): 別の曜日へ動かす先が NG 曜日なら 422 (時刻だけは通す).
+        ensure_weekday_not_ng(
+            _target_patient, body.new_weekday, from_weekday=target_row.visit_date.weekday()
+        )
 
     service = ScheduleFixService()
 
@@ -928,6 +934,8 @@ async def place_and_fix(
         # Phase 2 (設計 §7-3(d)): 非稼働患者は 422 `patient_not_active`.
         # DB 書き込みの前に必ず通す.
         patient = await ensure_patient_schedulable(db, body.patient_id)
+        # NG 曜日 (PO 決定 2026-10-30): NG 曜日へ置く (今週だけ / 固定枠化とも) のは 422.
+        ensure_weekday_not_ng(patient, body.weekday)
 
         # ----- W37 Phase 2-A: requires_multiple_staff フラグとの整合チェック (案 X) -----
         # 「requires_multiple_staff=True フラグ ON → 2 コース必須」(BE 側で守る).

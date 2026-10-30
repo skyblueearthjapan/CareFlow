@@ -44,6 +44,7 @@ from sqlalchemy import select
 from app.models.patient import Patient
 from app.schemas.v2.patient_guard import ExcludedPatient
 from app.services.patient_status_sync import is_schedulable_status, status_label
+from app.services.scheduling.ng_weekdays import ng_weekday_detail, patient_ng_weekdays
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -176,3 +177,33 @@ async def split_schedulable_patient_ids(
             )
         )
     return schedulable, excluded
+
+
+def ensure_weekday_not_ng(
+    patient: Patient,
+    weekday: int,
+    *,
+    from_weekday: int | None = None,
+) -> None:
+    """NG 曜日 (``weekly_pattern.ng_weekdays``) に予定を置く操作なら 422 で止める.
+
+    正典: ``docs/plans/biweekly-monthly-design-2026-10-30.md`` §9 (PO 決定 2026-10-30
+    「NG 曜日＝画面に出して全経路で守る」)。NG スタッフと同じハード制約だが、
+    確認して通す道 (acknowledge) は作らない: 曜日は人の都合で決まった「訪問しない日」で、
+    通したい日は患者マスタの NG 曜日を外してから置く。
+
+    ``from_weekday`` (今の曜日) と同じ曜日のまま時刻だけ変える操作は止めない
+    (すでにその曜日にある予定を、別の日へ動かせなくなるのを防ぐ)。
+
+    Raises:
+        HTTPException 422: detail は ``{code='ng_weekday', patient_id, weekday, message}``。
+    """
+    if from_weekday is not None and from_weekday == weekday:
+        return
+    if weekday in patient_ng_weekdays(patient):
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ng_weekday_detail(
+                patient_id=patient.id, patient_name=patient.name, weekday=weekday
+            ),
+        )

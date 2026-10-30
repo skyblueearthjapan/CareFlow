@@ -81,6 +81,7 @@ from app.services.scheduling.constants import (
     SAME_ADDRESS_TOLERANCE,
 )
 from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_visits
+from app.services.scheduling.ng_weekdays import ng_weekdays_of
 from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
     filter_pfv_rows_for_week,
@@ -1802,6 +1803,10 @@ def _extract_weekly_entries(
     Phase G-88 Step3: ``preferred_start`` 不在時の仮開始時刻を ``config.business_start``
     で注入可能にする. ``config=None`` は module 定数 ``AM_BLOCK_START`` (09:30) を
     使い挙動不変.
+
+    NG 曜日 (``weekly_pattern.ng_weekdays``・PO 決定 2026-10-30): NG 曜日の希望は
+    返さない (希望を元に日を選ぶ全経路 = 保留プールの希望候補・希望フォールバック・
+    Before の希望経路・G-93 の希望曜日が NG 曜日を候補にしない).
     """
     # Phase G-88 Step3: 仮開始時刻 (preferred_start 不在時) を config 化.
     _business_start = config.business_start if config is not None else AM_BLOCK_START
@@ -1809,6 +1814,7 @@ def _extract_weekly_entries(
     if not isinstance(pattern, dict):
         return []
     out: list[tuple[int, time, int, str | None, str | None, str | None]] = []
+    ng_wds = ng_weekdays_of(pattern)
 
     entries = pattern.get("entries")
     base_time_type = pattern.get("time_type")
@@ -1817,7 +1823,7 @@ def _extract_weekly_entries(
             if not isinstance(entry, dict):
                 continue
             wd = _resolve_weekday(entry.get("weekday"))
-            if wd is None:
+            if wd is None or wd in ng_wds:
                 continue
             ps_raw = entry.get("preferred_start")
             pe_raw = entry.get("preferred_end")
@@ -1856,7 +1862,7 @@ def _extract_weekly_entries(
     if isinstance(weekdays_raw, list):
         for wd_raw in weekdays_raw:
             wd = _resolve_weekday(wd_raw)
-            if wd is None:
+            if wd is None or wd in ng_wds:
                 continue
             st = base_start if base_start is not None else _business_start
             out.append(
@@ -2289,6 +2295,7 @@ def build_visits_for_pool(
             if allowed_weekdays_by_patient is not None
             else None
         )
+        _ng_wds = ng_weekdays_of(patient.weekly_pattern)
         addr = patient.address
         area = _extract_area_label(addr)
         sex_r = patient.sex_restriction
@@ -2367,6 +2374,10 @@ def build_visits_for_pool(
                 for wd, st, sm in entries_fixed:
                     if _allowed_wds is not None and wd not in _allowed_wds:
                         continue  # 訪問頻度: この週に訪問しない曜日
+                    if wd in _ng_wds:
+                        # NG 曜日 (PO 決定 2026-10-30): プールの候補として NG 曜日に置かない.
+                        # 枠そのものは消さない (週の生成はそのまま展開し、点検で知らせる).
+                        continue
                     ov = overlay.get((patient.id, wd))
                     if ov is not None:
                         st_eff = ov.new_start

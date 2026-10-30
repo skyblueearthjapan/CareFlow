@@ -11,6 +11,8 @@ PUT /patients/{id}/fixed-visits（手動系統＋候補採用系統）の削除�
     - V5  コース容量 480 分 / 6 名 超過                              → warning
     - V7  2名体制の相方枠なし（W-12a: 片肺の曜日・非ブロッキング）    → warning
     - V9  コース担当が NG スタッフ / 性別制限に不適合                → warning
+    - V10 NG 曜日 (weekly_pattern.ng_weekdays) に枠を作る / 動かす      → error
+          (すでにその曜日にある枠を残すだけなら warning = 既存の食い違いの知らせ)
 
 設計方針:
     - 距離・移動・バッファー・同住所・90 分占有・昼休み・容量のプリミティブは
@@ -45,6 +47,7 @@ from app.services.scheduling.auto_allocator_v2 import (
 )
 from app.services.scheduling.config import SchedulingConfig
 from app.services.scheduling.layer3_assignment import sex_satisfies_restrictions
+from app.services.scheduling.ng_weekdays import patient_ng_weekdays
 from app.services.scheduling.proposal_solver import (
     ExistingVisit,
     _course_total_minutes_from_existing,
@@ -73,6 +76,10 @@ CODE_WEEK_CONFLICT = "week_conflict"  # V8 (warning)
 # というピンモデル / §2 の原則)。
 CODE_COURSE_STAFF_NG = "course_staff_ng"  # V9 (warning)
 CODE_COURSE_STAFF_SEX = "course_staff_sex_mismatch"  # V9 (warning)
+# V10 (PO 決定 2026-10-30「NG 曜日＝画面に出して全経路で守る」): 通常の枠を NG 曜日に
+# 新しく作る / 別の曜日から動かすのは error (422)。保存前からその曜日にある枠は warning
+# (黙って消さない・ほかの枠の編集を止めない)。特別週 (mode='special') は対象外。
+CODE_NG_WEEKDAY = "ng_weekday"  # V10 (error / warning)
 
 _WEEKDAY_JP: tuple[str, ...] = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -475,6 +482,38 @@ async def validate_pfv_changes(
                 )
             )
 
+    # --- V10: NG 曜日 (通常の枠だけ) ---------------------------------------
+    if mode == "normal" and patient is not None:
+        ng = patient_ng_weekdays(patient)
+        hit_wds = sorted({item.weekday for item in proposed_items if item.weekday in ng})
+        if hit_wds:
+            existing_wds = set(
+                (
+                    await db.scalars(
+                        select(PatientFixedVisit.weekday).where(
+                            PatientFixedVisit.patient_id == patient_id,
+                            PatientFixedVisit.mode == "normal",
+                        )
+                    )
+                ).all()
+            )
+            for wd in hit_wds:
+                kept = wd in existing_wds
+                warnings.append(
+                    PfvValidationWarning(
+                        code=CODE_NG_WEEKDAY,
+                        message=(
+                            f"{_wd_name(wd)}曜は NG 曜日（訪問しない曜日）ですが、"
+                            "固定訪問の枠があります。患者マスタの NG 曜日か枠をご確認ください。"
+                            if kept
+                            else f"{_wd_name(wd)}曜は NG 曜日（訪問しない曜日）のため、"
+                            "この曜日に枠を作れません。患者マスタの NG 曜日をご確認ください。"
+                        ),
+                        weekday=wd,
+                        severity="warning" if kept else "error",
+                    )
+                )
+
     if (
         patient is not None
         and patient.primary_office_id is not None
@@ -701,3 +740,12 @@ async def validate_pfv_changes(
         has_errors=has_errors,
         corrected_items=proposed_items,
     )
+
+
+def errors_message(errors: list[PfvValidationWarning], default: str) -> str:
+    """422 の detail.message: error の文言 (重複なし・並び順のまま)。無ければ ``default``."""
+    seen: list[str] = []
+    for w in errors:
+        if w.message not in seen:
+            seen.append(w.message)
+    return " ".join(seen) if seen else default

@@ -66,7 +66,7 @@ from app.services.scheduling.auto_allocator_v2 import (
 from app.services.scheduling.config import load_scheduling_config
 from app.services.scheduling.guards import patient_not_active_detail
 from app.services.scheduling.layer1_expander import _is_special_week_active
-from app.services.scheduling.pfv_validator import validate_pfv_changes
+from app.services.scheduling.pfv_validator import errors_message, validate_pfv_changes
 from app.services.scheduling.visit_frequency import frequency_rule_active, pfv_visits_in_week
 from app.services.scheduling.visit_week_carry import (
     carried_visit_week as _carried_visit_week,
@@ -657,7 +657,9 @@ async def apply_put_fixed_visits(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
-                "message": "完全固定 (is_pinned) の枠を変更・削除しようとしています",
+                "message": errors_message(
+                    validation.errors, "完全固定 (is_pinned) の枠を変更・削除しようとしています"
+                ),
                 "violations": [
                     {
                         "code": w.code,

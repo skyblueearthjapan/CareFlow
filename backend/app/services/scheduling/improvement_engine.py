@@ -47,6 +47,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     haversine_km,
 )
 from app.services.scheduling.config import DEFAULT_SCHEDULING_CONFIG, SchedulingConfig
+from app.services.scheduling.ng_weekdays import ng_weekdays_of
 from app.services.scheduling.pfv_validator import _find_conflict
 from app.services.scheduling.proposal_solver import (
     Candidate,
@@ -678,6 +679,9 @@ def _swap_candidates_for_pfv(
             continue
         same_bucket = bucket_y is current.bucket
         weekday_changes = wy != wx
+        # NG 曜日 (PO 決定 2026-10-30) 方向 X: X を NG 曜日へ動かす入れ替えは出さない.
+        if weekday_changes and wy in ng_weekdays_of(patient.weekly_pattern):
+            continue
 
         for vy in bucket_y.visits:
             y_pid = vy.patient_id  # type: ignore[attr-defined]
@@ -688,6 +692,11 @@ def _swap_candidates_for_pfv(
             # していればこのスワップも出さない (両方向ハード除外).
             if _staff_ng_mismatch(y_pid, current.bucket.ng_patient_ids):
                 continue
+            # NG 曜日 方向 Y: Y は X の今の曜日 (wx) へ移るので、Y の NG 曜日なら出さない.
+            if weekday_changes:
+                _py_ng = patient_by_id.get(y_pid)
+                if _py_ng is not None and wx in ng_weekdays_of(_py_ng.weekly_pattern):
+                    continue
             # Y の可動域 / pin は Y の PFV から判定 (PFV 基準). 無ければ保守的に skip.
             pfv_y = pfv_by_pw.get((y_pid, wy))
             if pfv_y is None or pfv_y.is_pinned or pfv_y.movability == "locked":
@@ -1063,6 +1072,9 @@ async def find_improvement_candidates(
             # NG スタッフ (§6 / PO確定 2026-08-11): 対象患者が移動先コースの割付スタッフを
             # NG 指定していれば候補を一切生成しない (従来の警告 + 表示から除外へ格上げ).
             if _staff_ng_mismatch(patient.id, bucket.ng_patient_ids):
+                continue
+            # NG 曜日 (PO 決定 2026-10-30): 別の曜日へ動かす先が NG 曜日なら候補にしない.
+            if wd != weekday and wd in ng_weekdays_of(patient.weekly_pattern):
                 continue
             existing = _bucket_existing_excluding(bucket, patient.id)
             lunch = compute_lunch_window(
