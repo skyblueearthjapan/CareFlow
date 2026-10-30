@@ -33,6 +33,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.patient import Patient
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.user import User, normalize_user_role
@@ -45,7 +46,7 @@ from app.schemas.patient_status import (
     StatusChangeResult,
     StatusImpact,
 )
-from app.schemas.v2.patient import PatientStatusV2
+from app.schemas.v2.patient import PatientStatusV2, PatientVisitFrequencyPreview
 from app.services.geocoding.hash import normalize_address
 from app.services.patient_address import (
     VisitGeocodeError,
@@ -59,8 +60,17 @@ from app.services.patient_status_sync import (
     apply_status_change,
     build_patient_read,
     compute_impact,
+    today_jst,
 )
 from app.services.scheduling.auto_allocator_v2 import SAME_ADDRESS_TOLERANCE, _address_bucket
+from app.services.scheduling.visit_frequency import (
+    frequency_status,
+    normalize_visit_weeks,
+    pfv_slots,
+    upcoming_visit_dates,
+    validate_biweekly_anchor,
+    visit_frequency_of,
+)
 
 # Phase G-86: 自動採番した code が UNIQUE 衝突したときの再採番上限。
 _PATIENT_CODE_RETRY_MAX = 5
@@ -425,6 +435,93 @@ async def update_patient(
     await db.refresh(patient)
     # refresh で動的属性が落ちるため、返す直前に載せ直す。
     return await _attach_ng_staff_count(db, patient)
+
+
+_WEEKDAY_CODES: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+@router.get(
+    "/{patient_id}/visit-frequency-preview",
+    response_model=PatientVisitFrequencyPreview,
+    summary="訪問頻度の「次の訪問」の並び (admin・read-only)",
+)
+async def get_visit_frequency_preview(
+    patient_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    from_date: Annotated[
+        date | None, Query(description="この日以降を並べる (JST・既定=今日)")
+    ] = None,
+    count: Annotated[int, Query(ge=1, le=26, description="並べる件数 (既定 6)")] = 6,
+    visit_frequency: Annotated[
+        Literal["every", "biweekly", "monthly"] | None,
+        Query(description="保存前の値で試す: 頻度 (省略は保存済みの値)"),
+    ] = None,
+    biweekly_anchor: Annotated[
+        str | None, Query(description="保存前の値で試す: 起点の週 (月曜 YYYY-MM-DD)")
+    ] = None,
+    visit_weeks: Annotated[
+        str | None, Query(description="保存前の値で試す: 第何週 (例 1,3)")
+    ] = None,
+) -> PatientVisitFrequencyPreview:
+    """患者マスタの頻度の下に「次の訪問」を並べるための読み取り専用 API.
+
+    biweekly-monthly-design-2026-10-30.md §4。曜日は固定訪問の通常の枠 (A/B を含む) から
+    取り、枠が無い方は希望曜日 (毎回) で並べる。判定は週の生成と同じ関数を通す。
+    クエリで保存前の頻度・起点・第何週を渡すと、その値で試算する (保存はしない)。
+    """
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    wp = dict(patient.weekly_pattern) if isinstance(patient.weekly_pattern, dict) else {}
+    try:
+        if visit_frequency is not None:
+            wp["visit_frequency"] = visit_frequency
+        if biweekly_anchor is not None:
+            wp["biweekly_anchor"] = validate_biweekly_anchor(biweekly_anchor)
+        if visit_weeks is not None:
+            wp["visit_weeks"] = normalize_visit_weeks(visit_weeks)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient_id,
+                PatientFixedVisit.mode == "normal",
+            )
+        )
+    ).all()
+    slots = pfv_slots(rows)
+    source: Literal["fixed_visits", "preferred_weekdays", "none"] = "fixed_visits"
+    if not slots:
+        raw_days = wp.get("preferred_weekdays")
+        slots = [
+            (_WEEKDAY_CODES.index(code), "every")
+            for code in (raw_days if isinstance(raw_days, list) else [])
+            if isinstance(code, str) and code in _WEEKDAY_CODES
+        ]
+        source = "preferred_weekdays" if slots else "none"
+
+    start = from_date or today_jst()
+    dates = upcoming_visit_dates(wp, slots, start, count)
+    anchor = wp.get("biweekly_anchor")
+    weeks = wp.get("visit_weeks")
+    return PatientVisitFrequencyPreview(
+        patient_id=patient.id,
+        visit_frequency=visit_frequency_of(wp),  # type: ignore[arg-type]
+        frequency_status=frequency_status(wp),
+        biweekly_anchor=anchor if isinstance(anchor, str) and anchor else None,
+        visit_weeks=weeks if isinstance(weeks, str) and weeks else None,
+        slots_source=source,
+        from_date=start.isoformat(),
+        upcoming_visit_dates=[d.isoformat() for d in dates],
+    )
 
 
 @router.get(

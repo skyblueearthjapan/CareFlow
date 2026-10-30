@@ -22,6 +22,10 @@ PatientFixedVisitMode = Literal["normal", "special"]
 # 受け取れるよう型には残すが、下の Base の validator が unknown に寄せて捨てる.
 PatientFixedVisitMovability = Literal["unknown", "time_flexible", "day_flexible", "locked"]
 
+# 訪問する週 (migration 0102・biweekly-monthly-design-2026-10-30.md §3-2):
+#   every = 毎回 / A = A の週 / B = B の週. 隔週の患者のときだけ意味を持つ.
+PatientFixedVisitVisitWeek = Literal["every", "A", "B"]
+
 
 class PatientFixedVisitV2Base(BaseModel):
     """PUT body / 個別訪問アイテムの共通フィールド."""
@@ -83,6 +87,17 @@ class PatientFixedVisitV2Base(BaseModel):
         ),
     )
 
+    # 0102: 訪問する週. 省略 (None) は「今の値のまま」= PUT では同じ (曜日, slot) の
+    # 既存行の値を引き継ぎ、新しい枠は 'every'. 旧 FE が送らなくても A/B が消えない.
+    visit_week: PatientFixedVisitVisitWeek | None = Field(
+        default=None,
+        description=(
+            "訪問する週 (0102). every=毎回 / A=A の週 / B=B の週. "
+            "隔週 (weekly_pattern.visit_frequency='biweekly') の患者のときだけ効く. "
+            "省略は既存行の値を引き継ぐ (新しい枠は every)."
+        ),
+    )
+
     @model_validator(mode="after")
     def _normalize_red_pin(self) -> PatientFixedVisitV2Base:
         """赤ピンを 2 値 + 厳密ミラーにそろえる (旧 FE の値は受けて正規化する).
@@ -104,6 +119,8 @@ class PatientFixedVisitV2Read(PatientFixedVisitV2Base):
     id: UUID
     patient_id: UUID
     mode: PatientFixedVisitMode
+    # 0102: 読み出しでは必ず値がある (列は NOT NULL DEFAULT 'every').
+    visit_week: PatientFixedVisitVisitWeek = "every"  # type: ignore[assignment]
     created_at: datetime
     updated_at: datetime
 
@@ -253,5 +270,3 @@ class PfvCourseLoadResponse(BaseModel):
     course_max_minutes: int
     max_patients_per_course: int
     cells: list[PfvCourseLoadCell] = Field(default_factory=list)
-
-

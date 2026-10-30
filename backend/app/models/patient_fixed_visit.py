@@ -125,6 +125,17 @@ class PatientFixedVisit(Base):
         server_default="unknown",
     )
 
+    # 訪問する週 (migration 0102・docs/plans/biweekly-monthly-design-2026-10-30.md §3-2).
+    #   'every' = 毎回 / 'A' = A の週 / 'B' = B の週。
+    #   隔週 (weekly_pattern.visit_frequency='biweekly') の患者のときだけ意味を持つ.
+    #   判定は app.services.scheduling.visit_frequency に 1 か所でまとめる.
+    visit_week: Mapped[str] = mapped_column(
+        String(8),
+        nullable=False,
+        default="every",
+        server_default="every",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -166,6 +177,11 @@ class PatientFixedVisit(Base):
         CheckConstraint(
             "movability IN ('unknown','time_flexible','day_flexible','locked')",
             name="ck_pfv_movability",
+        ),
+        # 0102: 訪問する週は 3 値のみ (migration 0102 と一致).
+        CheckConstraint(
+            "visit_week IN ('every','A','B')",
+            name="ck_pfv_visit_week",
         ),
     )
 

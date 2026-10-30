@@ -29,8 +29,13 @@ WeekdayV2 = Literal["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 #   午前 / 午後 / 終日 (時刻不要)
 TimeTypeV2 = Literal["固定", "時間帯", "午前", "午後", "終日"]
 
-# 訪問頻度 (§4.1 / §7.1 残置確定):
-#   毎週 / 隔週 / 月次。具体的な使い方は別途検討（"TBD" のまま）。
+# 訪問頻度 (docs/plans/biweekly-monthly-design-2026-10-30.md §3・PO 決定 2026-10-30):
+#   every    = 毎週
+#   biweekly = 隔週 (2 週おき)。起点の週 ``biweekly_anchor`` (月曜) の週が A の週で、
+#              起点から 0・2・4… 週目に訪問する。固定訪問の枠ごとに A / B を選べる。
+#   monthly  = 月の第何週 (``visit_weeks`` の "1,3" など)。枠の曜日の日付がその月の
+#              第 N 回目の曜日で、N が visit_weeks に含まれる週だけ訪問する。
+#   未設定 (null) は毎週と同じ。判定は app.services.scheduling.visit_frequency。
 VisitFrequencyV2 = Literal["every", "biweekly", "monthly"]
 
 # 性別 (§4.1):
@@ -123,11 +128,24 @@ class WeeklyPatternV2(BaseModel):
     )
     visit_frequency: VisitFrequencyV2 | None = Field(
         default=None,
-        description="訪問頻度 (毎週/隔週/月次, §7.1 残置確定, 具体仕様 TBD)",
+        description=(
+            "訪問頻度 every=毎週 / biweekly=隔週 (biweekly_anchor の週から 0・2・4… 週目) / "
+            "monthly=月の第何週 (visit_weeks). null は毎週."
+        ),
+    )
+    biweekly_anchor: str | None = Field(
+        default=None,
+        description=(
+            "隔週の起点の週 (月曜の日付 YYYY-MM-DD). この週が A の週. "
+            "biweekly のときだけ使う. 空の隔週は毎週作り、設定不足として知らせる."
+        ),
     )
     visit_weeks: str | None = Field(
         default=None,
-        description="訪問週 (例 '1,3', §7.1 残置確定, 具体仕様 TBD)",
+        description=(
+            "月の第何週に訪問するか (例 '1,3' = 第 1・第 3 週). 1〜5 のカンマ区切り. "
+            "monthly のときだけ使う. 空の月次は毎週作り、設定不足として知らせる."
+        ),
     )
     preferred_weekdays: list[WeekdayV2] | None = None
     service_minutes: int | None = Field(default=None, ge=0, le=300)
@@ -146,6 +164,23 @@ class WeeklyPatternV2(BaseModel):
     @classmethod
     def _check_hhmm(cls, v: str | None) -> str | None:
         return _validate_hhmm(v)
+
+    @field_validator("biweekly_anchor", mode="before")
+    @classmethod
+    def _check_biweekly_anchor(cls, v: object) -> str | None:
+        """月曜の日付だけを受ける. 空は null. 保存は YYYY-MM-DD."""
+        # services パッケージの __init__ を schemas の読み込み時に引かない (循環 import 回避).
+        from app.services.scheduling.visit_frequency import validate_biweekly_anchor
+
+        return validate_biweekly_anchor(v)
+
+    @field_validator("visit_weeks", mode="before")
+    @classmethod
+    def _check_visit_weeks(cls, v: object) -> str | None:
+        """1〜5 の重ならない数. 空白・全角のカンマ/数字はそろえる. 空は null."""
+        from app.services.scheduling.visit_frequency import normalize_visit_weeks
+
+        return normalize_visit_weeks(v)
 
 
 class SpecialWeekRefV2(BaseModel):
@@ -375,4 +410,32 @@ class PatientV2Read(PatientV2Base):
         default=0,
         ge=0,
         description="NG スタッフ登録件数 (派生値・プールカードの「NGあり」バッジ用)",
+    )
+
+
+class PatientVisitFrequencyPreview(BaseModel):
+    """GET /patients/{id}/visit-frequency-preview — 患者マスタの「次の訪問」表示用.
+
+    docs/plans/biweekly-monthly-design-2026-10-30.md §4。判定は予定づくりと同じ
+    ``app.services.scheduling.visit_frequency`` を通す (表示と計算をずらさない)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    visit_frequency: VisitFrequencyV2 = Field(description="頻度 (未設定は every)")
+    frequency_status: Literal["ok", "missing_anchor", "missing_weeks"] = Field(
+        description=(
+            "ok / missing_anchor=隔週なのに起点の週が無い / "
+            "missing_weeks=月の第何週なのに第何週が空 (どちらも毎週作る)"
+        )
+    )
+    biweekly_anchor: str | None = None
+    visit_weeks: str | None = None
+    slots_source: Literal["fixed_visits", "preferred_weekdays", "none"] = Field(
+        description="並べた曜日の出どころ (固定訪問の通常の枠 / 希望曜日 / なし)"
+    )
+    from_date: str = Field(description="この日以降を並べた (YYYY-MM-DD)")
+    upcoming_visit_dates: list[str] = Field(
+        default_factory=list, description="次の訪問日 (YYYY-MM-DD・先から)"
     )

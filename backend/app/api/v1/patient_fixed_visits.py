@@ -306,6 +306,25 @@ async def _load_pfv_pin_partition(
     return pinned_slots, movability_by_wd_start
 
 
+async def _load_visit_week_by_slot(
+    db: AsyncSession, *, patient_id: UUID, mode: str
+) -> dict[tuple[int, int], str]:
+    """(weekday, slot_index) → 訪問する週 (0102). 行を置き換えても A/B を引き継ぐために使う."""
+    rows = (
+        await db.execute(
+            select(
+                PatientFixedVisit.weekday,
+                PatientFixedVisit.slot_index,
+                PatientFixedVisit.visit_week,
+            ).where(
+                PatientFixedVisit.patient_id == patient_id,
+                PatientFixedVisit.mode == mode,
+            )
+        )
+    ).all()
+    return {(wd, si): vw or "every" for wd, si, vw in rows}
+
+
 async def _insert_pfv_from_visits(
     db: AsyncSession,
     *,
@@ -314,6 +333,7 @@ async def _insert_pfv_from_visits(
     visit_rows,
     pinned_slots: set[tuple[int, int]] | None = None,
     movability_by_wd_start: dict[tuple[int, time], str] | None = None,
+    visit_week_by_slot: dict[tuple[int, int], str] | None = None,
 ) -> None:
     """visits を PatientFixedVisit に書き戻す (slot_index を決定論的に割当).
 
@@ -332,6 +352,7 @@ async def _insert_pfv_from_visits(
     """
     pinned_slots = pinned_slots or set()
     movability_by_wd_start = movability_by_wd_start or {}
+    visit_week_by_slot = visit_week_by_slot or {}
     requires_multi = bool(patient.requires_multiple_staff)
     by_wd = _group_visits_by_weekday(visit_rows)
 
@@ -347,7 +368,13 @@ async def _insert_pfv_from_visits(
                     continue
                 mov = movability_by_wd_start.get((wd, v.start_time), "unknown")
                 await _add_one_pfv(
-                    db, patient=patient, mode=mode, visit=v, slot_index=slot_idx, movability=mov
+                    db,
+                    patient=patient,
+                    mode=mode,
+                    visit=v,
+                    slot_index=slot_idx,
+                    movability=mov,
+                    visit_week=visit_week_by_slot.get((wd, slot_idx), "every"),
                 )
         else:
             # 1 visit (通常パターン) — slot_index=0 で 1 行
@@ -356,7 +383,13 @@ async def _insert_pfv_from_visits(
                 continue
             mov = movability_by_wd_start.get((wd, v.start_time), "unknown")
             await _add_one_pfv(
-                db, patient=patient, mode=mode, visit=v, slot_index=0, movability=mov
+                db,
+                patient=patient,
+                mode=mode,
+                visit=v,
+                slot_index=0,
+                movability=mov,
+                visit_week=visit_week_by_slot.get((wd, 0), "every"),
             )
 
 
@@ -368,6 +401,7 @@ async def _add_one_pfv(
     visit,
     slot_index: int,
     movability: str = "unknown",
+    visit_week: str = "every",
 ) -> None:
     """visit から 1 行の PatientFixedVisit を組み立てて add する.
 
@@ -399,6 +433,8 @@ async def _add_one_pfv(
             slot_index=slot_index,
             movability="locked" if red else "unknown",
             is_pinned=red,
+            # 0102: 置き換え前の同じ (曜日, slot) の訪問する週を引き継ぐ (無ければ毎回).
+            visit_week=visit_week,
         )
     )
 
@@ -675,6 +711,10 @@ async def apply_put_fixed_visits(
             detail=constraint_confirmation_detail(_cw),
         )
 
+    # 0102: 訪問する週を省略した item は、同じ (曜日, slot) の既存行の値を引き継ぐ
+    # (旧 FE が送らなくても A/B が消えない). 新しい枠は 'every'.
+    _visit_week_by_slot = await _load_visit_week_by_slot(db, patient_id=patient_id, mode=body.mode)
+
     # 1 TX: 当該 (patient_id, mode) を DELETE → INSERT
     await db.execute(
         delete(PatientFixedVisit).where(
@@ -704,6 +744,12 @@ async def apply_put_fixed_visits(
                 # P2-A (§1.3): 可動域フラグを運搬. 省略すると保存のたび 'unknown' に
                 # 戻る (P0-2 の is_pinned BLOCKER と同型の罠). 必ず引き継ぐこと.
                 movability=item.movability,
+                # 0102: 訪問する週 (省略は既存行の値・新しい枠は every).
+                visit_week=(
+                    item.visit_week
+                    if item.visit_week is not None
+                    else _visit_week_by_slot.get((item.weekday, item.slot_index), "every")
+                ),
             )
         )
 
@@ -897,6 +943,9 @@ async def from_week_bulk(
         pinned_slots, movability_by_wd_start = await _load_pfv_pin_partition(
             db, patient_id=patient.id, mode=effective_mode
         )
+        visit_week_by_slot = await _load_visit_week_by_slot(
+            db, patient_id=patient.id, mode=effective_mode
+        )
 
         # 既存削除 — ただし pinned 行 (is_pinned=True) は残す (ピン消失防止).
         await db.execute(
@@ -915,6 +964,7 @@ async def from_week_bulk(
             visit_rows=visit_rows,
             pinned_slots=pinned_slots,
             movability_by_wd_start=movability_by_wd_start,
+            visit_week_by_slot=visit_week_by_slot,
         )
 
         updated_patient_ids.append(patient.id)
@@ -1008,6 +1058,9 @@ async def from_week(
     pinned_slots, movability_by_wd_start = await _load_pfv_pin_partition(
         db, patient_id=patient_id, mode=effective_mode
     )
+    visit_week_by_slot = await _load_visit_week_by_slot(
+        db, patient_id=patient_id, mode=effective_mode
+    )
 
     # 1 TX: 非 pinned 行のみ削除 → INSERT (pinned 行は残す = ピン消失防止)
     await db.execute(
@@ -1026,6 +1079,7 @@ async def from_week(
         visit_rows=visit_rows,
         pinned_slots=pinned_slots,
         movability_by_wd_start=movability_by_wd_start,
+        visit_week_by_slot=visit_week_by_slot,
     )
 
     await _commit_or_409(db)
