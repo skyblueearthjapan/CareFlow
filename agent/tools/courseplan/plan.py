@@ -35,6 +35,8 @@ def pfv_items(rows: list[dict], new: dict[str, dict]) -> list[dict]:
             "slot_index": int(r.get("slot_index") or 0),
             "is_pinned": mv == "locked",
             "movability": mv,
+            # 訪問する週（隔週の A/B）を落とさない（無い行は API が今の値を引き継ぐ）。
+            **({"visit_week": r["visit_week"]} if r.get("visit_week") else {}),
         })
     return items
 

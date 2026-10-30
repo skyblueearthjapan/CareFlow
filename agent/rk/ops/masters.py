@@ -21,6 +21,7 @@ undo_note() が理由（日本語）を返す。`undoable` はクラスの既定
 from __future__ import annotations
 
 import re
+from datetime import date as _date
 from typing import Any
 
 from rk import RkError
@@ -345,6 +346,10 @@ class PatientStatus(Op):
 
 _PFV_KEYS = ("weekday", "start_time", "duration_min", "course_template_id", "sub_office_id",
              "slot_index", "is_pinned", "movability")
+# 0102: 訪問する週（every=毎回 / A=A の週 / B=B の週）。隔週の方だけ効く。
+# 省略すると API が同じ（曜日, slot）の今の値を引き継ぐ（新しい枠は every）。
+_PFV_VISIT_WEEKS = ("every", "A", "B")
+_PFV_ALLOWED_KEYS = (*_PFV_KEYS, "visit_week")
 
 
 def pfv_item(row: dict) -> dict:
@@ -359,6 +364,8 @@ def pfv_item(row: dict) -> dict:
         "slot_index": int(row.get("slot_index") or 0),
         "is_pinned": mv == "locked",
         "movability": mv,
+        # 訪問する週は行にあるときだけ運ぶ（op で省略したら API が今の値を引き継ぐ）。
+        **({"visit_week": row["visit_week"]} if row.get("visit_week") is not None else {}),
     }
 
 
@@ -382,6 +389,7 @@ class PfvUpdate(Op):
          "items":[{"weekday":1,"start_time":"09:30","duration_min":35,"course_template_id":"…",
                    "slot_index":0,"movability":"unknown","is_pinned":false}], "label":"…"}
     items は**変更後の全件**（今ある枠を残すならそれも入れる）。movability は今の値をそのまま写す。
+    visit_week（every=毎回 / A=A の週 / B=B の週・隔週の方だけ効く）は任意。省略は今の値を引き継ぐ（新しい枠は every）。
     """
 
     name = "pfv-update"
@@ -427,7 +435,10 @@ class PfvUpdate(Op):
                 errs.append(f"{tag}: movability を今の値のまま必ず書く（省略すると unknown に戻る）")
             elif bool(it.get("is_pinned", False)) != (mv == "locked"):
                 errs.append(f"{tag}: is_pinned は movability=locked のときだけ true")
-            unknown = set(it) - set(_PFV_KEYS)
+            vw = it.get("visit_week")
+            if vw is not None and vw not in _PFV_VISIT_WEEKS:
+                errs.append(f"{tag}: visit_week は every（毎回）/ A（A の週）/ B（B の週）")
+            unknown = set(it) - set(_PFV_ALLOWED_KEYS)
             if unknown:
                 errs.append(f"{tag}: 使えない項目 {sorted(unknown)}")
             if (wd, si) in seen:
@@ -525,6 +536,44 @@ class PfvUpdate(Op):
 # ---------------------------------------------------------------------------
 
 
+_VISIT_FREQUENCIES = ("every", "biweekly", "monthly")
+
+
+def _frequency_errors(wp: dict) -> list[str]:
+    """訪問頻度・起点の週・第何週・NG 曜日の形（backend の visit_frequency.py / ng_weekdays.py と同じ決まり）。"""
+    errs: list[str] = []
+    vf = wp.get("visit_frequency")
+    if vf is not None and vf not in _VISIT_FREQUENCIES:
+        errs.append("visit_frequency は every（毎週）/ biweekly（隔週）/ monthly（月の第何週）")
+    anchor = wp.get("biweekly_anchor")
+    if anchor not in (None, ""):
+        try:
+            d = _date.fromisoformat(str(anchor))
+        except ValueError:
+            errs.append(f"biweekly_anchor は YYYY-MM-DD の日付で指定してください: {anchor!r}")
+        else:
+            if d.weekday() != 0:
+                errs.append(f"biweekly_anchor は月曜の日付で指定してください: {d.isoformat()}")
+    vw = wp.get("visit_weeks")
+    if vw not in (None, ""):
+        nums = [t.strip() for t in re.split(r"[,、，\s]+", str(vw)) if t.strip()]
+        if not nums or any(not t.isdigit() or not 1 <= int(t) <= 5 for t in nums):
+            errs.append(f"visit_weeks は 1〜5 の数をカンマ区切りで指定してください（例 \"1,3\"）: {vw!r}")
+        elif len(set(nums)) != len(nums):
+            errs.append(f"visit_weeks に同じ週が 2 回あります: {vw!r}")
+    # 隔週で起点の週が無い／月の第何週で第何週が空は、保存はできるが毎週作られる（頻度の設定が足りない）。
+    # 今ある方の希望を写すだけの変更を止めないため、ここではエラーにしない（案の説明で人に伝える）。
+    ng = wp.get("ng_weekdays")
+    if ng is not None:
+        if not isinstance(ng, list):
+            errs.append("ng_weekdays は曜日（Mon〜Sun）の並び")
+        else:
+            for d in ng:
+                if d not in _WEEKDAYS_PREF:
+                    errs.append(f"ng_weekdays に曜日でない値があります: {d!r}（Mon〜Sun で書く）")
+    return errs
+
+
 @register
 class PreferenceUpdate(Op):
     """患者の希望（週の回数・曜日・時間の種類・時間帯・基本の時間）を置き換える。
@@ -532,6 +581,10 @@ class PreferenceUpdate(Op):
     API: PATCH /patients/{patient_id} body {"weekly_pattern": {...}}（patients.py:278）。
     weekly_pattern は丸ごと置き換え（JSONB 1 列）。前の値を保存して同じ PATCH で戻せる。
     希望を変えても固定訪問の枠は自動では変わらない（R2 D-5）→ 回数と枠の数の食い違いは別に確かめる。
+    丸ごと置き換えなので、今ある visit_frequency / biweekly_anchor / visit_weeks / ng_weekdays / entries も必ず写す。
+    - visit_frequency: every=毎週 / biweekly=隔週（biweekly_anchor の月曜の週が A の週・2 週おき）/
+      monthly=月の第何週（visit_weeks "1,3"）。frequency_per_week は「訪問する週の回数」。
+    - ng_weekdays: ["Mon","Wed"] の並び。NG 曜日には置けない（置く API は 422 code=ng_weekday）。
     op: {"op":"preference-update","patient_id":"…","weekly_pattern":{"frequency_per_week":2,
          "preferred_weekdays":["Tue","Fri"],"time_type":"時間帯","preferred_start":"09:00",
          "preferred_end":"12:00","service_minutes":35}}
@@ -564,6 +617,7 @@ class PreferenceUpdate(Op):
         sm = wp.get("service_minutes")
         if sm is not None and (not isinstance(sm, int) or not 0 <= sm <= 300):
             errs.append("service_minutes は 0〜300")
+        errs += _frequency_errors(wp)
         return errs
 
     def request(self, op):

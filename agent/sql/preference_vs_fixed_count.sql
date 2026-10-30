@@ -1,18 +1,46 @@
--- 希望の週回数と固定訪問の枠の数（曜日 × 時刻の異なる枠。2 名体制の 2 枠は 1 つに数える）が違う稼働中の方（例: 週 3 回希望・枠 2 つ＝毎週プールに残る）。毎週以外（隔週・月 1 など）は参考として出す | params: (なし)
+-- 希望の週回数（訪問する週の回数）と固定訪問の枠の数（曜日 × 時刻の異なる枠。2 名体制の 2 枠は 1 つに数える）が違う稼働中の方（例: 週 3 回希望・枠 2 つ＝毎週プールに残る）。隔週は A の週（毎回＋A の枠）と B の週（毎回＋B の枠）をそれぞれ比べる（B の枠が無ければ B の週はお休みの週）。月の第何週は訪問する週に全部の枠が当たるので毎週と同じに比べる。issue=count_differs／missing_anchor（隔週なのに起点の週が無い＝毎週作られる）／missing_weeks（月の第何週なのに第何週が空＝毎週作られる） | params: (なし)
 with f as (
-  select f.patient_id, count(distinct (f.weekday, f.start_time)) as slots
+  select f.patient_id,
+         count(distinct (f.weekday, f.start_time)) as slots,
+         count(distinct (f.weekday, f.start_time)) filter (where coalesce(f.visit_week, 'every') <> 'B') as slots_a_week,
+         count(distinct (f.weekday, f.start_time)) filter (where coalesce(f.visit_week, 'every') <> 'A') as slots_b_week,
+         count(*) filter (where f.visit_week = 'B') as b_marks
   from patient_fixed_visits f where f.mode = 'normal' group by 1
+), p2 as (
+  select p.*, coalesce(f.slots, 0) as fixed_slots, coalesce(f.slots_a_week, 0) as slots_a_week,
+         coalesce(f.slots_b_week, 0) as slots_b_week, coalesce(f.b_marks, 0) as b_marks,
+         case when p.weekly_pattern->>'visit_frequency' in ('biweekly', 'monthly')
+              then p.weekly_pattern->>'visit_frequency' else 'every' end as freq,
+         (p.weekly_pattern->>'biweekly_anchor' ~ '^\d{4}-\d{2}-\d{2}$'
+          and extract(isodow from (case when p.weekly_pattern->>'biweekly_anchor' ~ '^\d{4}-\d{2}-\d{2}$'
+                                        then (p.weekly_pattern->>'biweekly_anchor')::date end)) = 1) as anchor_ok,
+         coalesce(p.weekly_pattern->>'visit_weeks', '') ~ '[1-5]' as weeks_ok
+  from patients p left join f on f.patient_id = p.id
+  where p.deleted_at is null and p.status = 'active' and p.name not like '【検証】%'
+), judged as (
+  select p2.*,
+         case when p2.freq = 'biweekly' and not p2.anchor_ok then 'missing_anchor'
+              when p2.freq = 'monthly' and not p2.weeks_ok then 'missing_weeks'
+              when coalesce(p2.weekly_pattern->>'frequency_per_week', '') !~ '^[0-9]+$' then null
+              when p2.freq = 'biweekly'
+                then case when (p2.weekly_pattern->>'frequency_per_week')::int <> p2.slots_a_week
+                            or (p2.b_marks > 0 and (p2.weekly_pattern->>'frequency_per_week')::int <> p2.slots_b_week)
+                          then 'count_differs' end
+              when (p2.weekly_pattern->>'frequency_per_week')::int <> p2.fixed_slots then 'count_differs'
+          end as issue
+  from p2
 )
-select p.code as patient_code, p.name as patient_name, o.short_label as office,
-       p.weekly_pattern->>'visit_frequency' as pref_frequency,
-       p.weekly_pattern->>'frequency_per_week' as pref_per_week,
-       coalesce(f.slots, 0) as fixed_slots,
-       p.weekly_pattern->'preferred_weekdays' as pref_weekdays,
-       coalesce(p.weekly_pattern->>'visit_frequency', 'every') <> 'every' as not_weekly
-from patients p
-left join f on f.patient_id = p.id
-left join offices o on o.id = p.primary_office_id
-where p.deleted_at is null and p.status = 'active' and p.name not like '【検証】%'
-  and coalesce(p.weekly_pattern->>'frequency_per_week', '') ~ '^[0-9]+$'
-  and (p.weekly_pattern->>'frequency_per_week')::int <> coalesce(f.slots, 0)
-order by not_weekly, p.code
+select j.code as patient_code, j.name as patient_name, o.short_label as office,
+       j.weekly_pattern->>'visit_frequency' as pref_frequency,
+       j.weekly_pattern->>'biweekly_anchor' as biweekly_anchor,
+       j.weekly_pattern->>'visit_weeks' as visit_weeks,
+       j.weekly_pattern->>'frequency_per_week' as pref_per_week,
+       j.fixed_slots, j.slots_a_week, j.slots_b_week,
+       j.weekly_pattern->'preferred_weekdays' as pref_weekdays,
+       j.weekly_pattern->'ng_weekdays' as ng_weekdays,
+       j.freq <> 'every' as not_weekly,
+       j.issue
+from judged j
+left join offices o on o.id = j.primary_office_id
+where j.issue is not null
+order by j.issue, j.code

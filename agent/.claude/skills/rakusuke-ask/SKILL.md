@@ -33,7 +33,9 @@ description: らく助のデータへの質問に、本番を読むだけで根�
 - **ダッシュボード API** は行数で数え、検証用を含む → SQL の値と違えばその理由を書く。
 - **取消の内訳**は `source`（`manual_cancel` 今週だけ取消／`status_cancel` 患者の非稼働化）。取消・削除の訪問にも打刻が残ることがある。
 - **打刻**: 種類（到着/退出）ごとに最新 1 行。`no_show` は実績にしない。`manual`（手入力）・`signature`（サイン）は「QR で読んだ」ではない。打刻率は**定義を必ず書く**（到着の率か、到着と退出が揃った率か／終わった予定だけか）。
-- **週を作っていない週**は 0 件ではなく「まだ週を作っていない」。固定訪問の枠（`rk sql patient_fixed_visits`）で補う。
+- **週を作っていない週**は 0 件ではなく「まだ週を作っていない」。固定訪問の枠（`rk sql patient_fixed_visits`）で補う。隔週・月の第何週の方は枠をそのまま毎週と読まない（`visit_frequency`・`biweekly_anchor`＝起点の週から 2 週おき・枠の `visit_week` A/B・`visit_weeks`＝月の第何週。正典 `backend/app/services/scheduling/visit_frequency.py`）。お休みの週に予定が無いのは正しい。
+- **NG 曜日**（`weekly_pattern.ng_weekdays`）はその曜日には置けない決まり。聞かれたら `patient_constraints` の `ng_weekdays` で答える。
+- **2 名体制の予定は 1 行**（`primary_staff_id`＋`secondary_staff_id`）。職員ごとの件数では 2 人目にも 1 件。古い 2 行の組（`visit_group_id`）も残るので 1 回に畳む式は今のまま。
 
 ## 3. まず使う集計済みの API（`rk get`）
 

@@ -463,3 +463,43 @@ def test_patient_create_two_addresses_need_coords_for_visit():
         {"patient": {**base, "insurance_address": "千葉市", "visit_same_as_insurance": False}}))
     assert impl.validate({"patient": {**base, "insurance_address": "千葉市", "visit_same_as_insurance": False,
                                       "address": "別の場所", "lat": 35.6, "lng": 140.1}}) == []
+
+
+# --- 訪問頻度・NG 曜日・訪問する週（biweekly-monthly-design-2026-10-30） ----------------
+
+
+def test_preference_update_validate_frequency_keys():
+    impl = PreferenceUpdate()
+
+    def errs(wp):
+        return impl.validate({"patient_id": PID, "weekly_pattern": wp})
+
+    assert errs({"visit_frequency": "biweekly", "biweekly_anchor": "2026-11-02", "frequency_per_week": 1}) == []
+    assert errs({"visit_frequency": "monthly", "visit_weeks": "1,3"}) == []
+    assert errs({"ng_weekdays": ["Mon", "Wed"]}) == []
+    # 起点の週が無い隔週は保存できる（毎週作られる・今の希望を写すだけの変更を止めない）
+    assert errs({"visit_frequency": "biweekly"}) == []
+    assert errs({"visit_frequency": "隔週"})
+    assert any("月曜" in e for e in errs({"visit_frequency": "biweekly", "biweekly_anchor": "2026-11-04"}))
+    assert any("YYYY-MM-DD" in e for e in errs({"biweekly_anchor": "11/2"}))
+    assert errs({"visit_weeks": "1,6"})
+    assert errs({"visit_weeks": "1,1"})
+    assert errs({"visit_weeks": "第1"})
+    assert errs({"ng_weekdays": ["月"]})
+    assert errs({"ng_weekdays": "Mon"})
+
+
+def test_pfv_update_visit_week():
+    impl = PfvUpdate()
+    base = {"weekday": 1, "start_time": "09:30", "duration_min": 35, "course_template_id": None,
+            "sub_office_id": None, "slot_index": 0, "is_pinned": False, "movability": "unknown"}
+    ok = {"patient_id": PID, "mode": "normal", "items": [{**base, "visit_week": "A"},
+                                                         {**base, "weekday": 4, "visit_week": "B"}]}
+    assert impl.validate(ok) == []
+    assert impl.validate({**ok, "items": [base]}) == []  # 省略は今の値を引き継ぐ
+    bad = impl.validate({**ok, "items": [{**base, "visit_week": "C"}]})
+    assert any("visit_week" in e for e in bad)
+    # GET の行の visit_week は運ぶ（undo で A/B が消えない）・無ければ書かない（API が引き継ぐ）
+    from rk.ops.masters import pfv_item
+    assert pfv_item({**base, "visit_week": "B"})["visit_week"] == "B"
+    assert "visit_week" not in pfv_item(base)

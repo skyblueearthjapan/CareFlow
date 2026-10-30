@@ -160,6 +160,6 @@ def pfv_rows_sql(patient_ids: list[str]) -> str:
     return f"""
 select coalesce(json_agg(row_to_json(x)), '[]'::json) from (
   select f.id, f.patient_id, f.weekday, to_char(f.start_time, 'HH24:MI') start_time, f.duration_min,
-         f.course_template_id, f.sub_office_id, f.slot_index, f.movability, f.is_pinned
+         f.course_template_id, f.sub_office_id, f.slot_index, f.movability, f.is_pinned, f.visit_week
   from patient_fixed_visits f
   where f.mode = 'normal' and f.patient_id in ({inlist})) x"""

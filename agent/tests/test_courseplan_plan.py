@@ -99,3 +99,15 @@ def test_report_renders_a3(tmp_path):
     path = write_report(cfg, plan, a3=True, out=tmp_path / "a3.html")
     html = path.read_text(encoding="utf-8")
     assert "いまの型" in html and "案" in html and "固定訪問の枠" in html
+
+
+def test_pfv_items_keep_visit_week():
+    """隔週の枠の「訪問する週」（A/B）を案の items に運ぶ（無い行は書かない＝API が今の値を引き継ぐ）。"""
+    from tools.courseplan.plan import pfv_items
+    rows = [{"id": "f1", "weekday": 1, "start_time": "09:30", "duration_min": 35, "course_template_id": "c1",
+             "sub_office_id": None, "slot_index": 0, "movability": "unknown", "is_pinned": False, "visit_week": "B"},
+            {"id": "f2", "weekday": 3, "start_time": "10:00", "duration_min": 35, "course_template_id": "c1",
+             "sub_office_id": None, "slot_index": 0, "movability": "unknown", "is_pinned": False}]
+    items = pfv_items(rows, {"f1": {"course": "c2", "start": 600}})
+    assert items[0]["visit_week"] == "B" and items[0]["course_template_id"] == "c2"
+    assert "visit_week" not in items[1]

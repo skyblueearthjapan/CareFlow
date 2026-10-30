@@ -10,6 +10,9 @@
 - 休みの種類（`staff_weekly_overrides.override_type`）: 終日の休みは `in ('off', 'paid_off')`（公休と有給）。半休は `am_off`（13:00 から勤務）・`pm_off`（12:30 から休み）。`custom_time` は時間変更で休みではない。**`= 'off'` だけで終日休みを見ない**（有給が漏れる）。主担当が空で `manual_staff_override` が真の訪問は「明示の担当なし」（休みの時間帯から外した訪問など）で、上の担当の式のとおりコースの担当に読み替えない。
 - 時刻: 予定（visits）は日本時間のまま。打刻・作成時刻は `at time zone 'Asia/Tokyo'`。職員の予定（staff_events）は `at time zone 'UTC'`（壁時計を UTC として保存）。今日は `(now() at time zone 'Asia/Tokyo')::date`。
 - 曜日の番号は 0=月〜6=日（staff_shifts・overrides・PFV・courses・marks）。
+- 訪問頻度（2026-10-30）: `weekly_pattern.visit_frequency`（every/biweekly/monthly・空は毎週）・`biweekly_anchor`（月曜。その週が A の週、起点から偶数週目が A・奇数週目が B）・`visit_weeks`（"1,3"＝枠の曜日の日付がその月の第 1・3 の曜日の週だけ）。枠の `visit_week`（every/A/B）は隔週の方だけ効く。設定が足りない（起点の週が無い・第何週が空）ときと、特別週（`special_week_active`）の週は毎週として数える。正典は `backend/app/services/scheduling/visit_frequency.py`。週を数える SQL はこの決まりで「お休みの週」を除く（`pool_week`・`master_vs_week_diff`）。
+- NG 曜日: `weekly_pattern.ng_weekdays`（["Mon","Wed"]）。その曜日には置けない（API は 422 `code=ng_weekday`）。
+- 2 名体制は**予定 1 行**（`primary_staff_id` ＋ `secondary_staff_id`）。固定訪問の枠は slot 0/1 の 2 行のまま。古い 2 行の組（`visit_group_id`）も残るので 1 回 1 件は `count(distinct coalesce(v.visit_group_id, v.id))`。
 - 列名は英語の snake_case（JSON のキー）。答えるときは日本語に言い換える。
 - 利用者名を含む結果をリポジトリに保存しない（保存するなら `docs/reports/agent/`）。
 
@@ -39,11 +42,11 @@
 | `patient_lookup` | 利用者の名前の同定（候補 30 件まで） | name |
 | `patients_by_status` | 状態ごとの利用者・いつから・今日以降の予定の残り・枠の数 | status（空=稼働中以外すべて） |
 | `patient_counts_by_office` | 拠点 × 状態の利用者数 | (なし) |
-| `patient_constraints` | NG 職員・女性限定・2 名必須・希望・固定枠の要約（🔴赤ピン）・同住所 | patient（空=条件のある稼働中の方すべて） |
-| `patient_fixed_visits` | 固定訪問の枠（1 枠 1 行・赤ピン・コース） | patient（空=稼働中の全員） |
-| `preference_vs_fixed_count` | 希望の週回数と固定枠の数が違う方 | (なし) |
-| `master_vs_week_diff` | 毎週の型とその週の予定の食い違い（曜日 × 時刻） | monday |
-| `pool_week` | 週の保留プールの近似（特別訪問の未配置○・希望回数に足りない方） | monday |
+| `patient_constraints` | NG 職員・NG 曜日・女性限定・2 名必須・希望・訪問頻度（起点の週・第何週）・固定枠の要約（🔴赤ピン・A/B の週）・同住所 | patient（空=条件のある稼働中の方すべて） |
+| `patient_fixed_visits` | 固定訪問の枠（1 枠 1 行・赤ピン・コース・訪問する週 every/A/B・頻度） | patient（空=稼働中の全員） |
+| `preference_vs_fixed_count` | 希望の週回数（訪問する週の回数）と固定枠の数が違う方（隔週は A の週・B の週ごと）・頻度の設定が足りない方 | (なし) |
+| `master_vs_week_diff` | 型（その週に訪問する枠だけ）とその週の予定の食い違い（曜日 × 時刻・1 回 1 件） | monday |
+| `pool_week` | 週の保留プールの近似（特別訪問の未配置○・その週の希望回数に足りない方・隔週/第何週のお休みの週の方） | monday |
 | `special_periods_active` | その日に特別訪問週間中の方・その週の○と未配置・訪問数 | on_date |
 | `kaipoke_snapshot_latest` | 保存したカイポケ CSV の鮮度（区分 × 月 × 週・日本時間） | (なし) |
 | `kaipoke_jobs_recent` | 最近のカイポケ連携ジョブと明細の成否 | days |

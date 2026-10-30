@@ -22,11 +22,11 @@ description: らく助の週（または日）を読むだけで点検する。�
 | 4 | 同じ職員の時間の重なり | `rk sql staff_overlaps -p date_from=… -p date_to=…` | 1 件でも（同じ 2 名体制の組は除いてある・移動は見ない） |
 | 5 | 実現性チェック（移動が間に合うか・ゆとり・同じ住所） | `rk get /schedule/v2/feasibility-report -q iso_year=2026 -q iso_week=43 -q include_html=false`（拠点で絞るなら `-q office_id=…`・`-q days=6`） | 画面の「実現性チェック」と同じ。間に合わない・ゆとり不足 |
 | 6 | スケジュール診断（移動の重い順路） | `rk get /schedule/v2/schedule-health -q iso_year=2026 -q iso_week=43` | 移動が平均の 1.5 倍を超えるコース（画面の「要対応」）。診断は重なりを見つけない（4 で見る） |
-| 7 | 型（固定訪問の枠）と今週の違い | `rk sql master_vs_week_diff -p monday=…` | only_master（型にあるのに週に無い）＝入れ忘れ・取消の可能性／only_week＝今週だけの追加・ずらし・特別訪問 |
-| 8 | 希望の回数と枠の数 | `rk sql preference_vs_fixed_count` | 週 3 回希望で枠 2 つ ＝ 毎週プールに残る |
-| 9 | 保留プール | `rk sql pool_week -p monday=…` | 特別訪問週間の○の未配置・回数の足りない方 |
+| 7 | 型（固定訪問の枠）と今週の違い | `rk sql master_vs_week_diff -p monday=…` | only_master（型にあるのに週に無い）＝入れ忘れ・取消の可能性／only_week＝今週だけの追加・ずらし・特別訪問。隔週・月の第何週のお休みの週の枠は型に数えない |
+| 8 | 希望の回数と枠の数・頻度の設定 | `rk sql preference_vs_fixed_count` | 週 3 回希望で枠 2 つ ＝ 毎週プールに残る。隔週は A の週・B の週ごとに比べる（`issue=count_differs`）。`missing_anchor`／`missing_weeks` ＝ 隔週・月の第何週なのに設定が足りず毎週作られている |
+| 9 | 保留プール | `rk sql pool_week -p monday=…` | 特別訪問週間の○の未配置・回数の足りない方（`kind=short`）。`kind=off_week` は隔週・月の第何週でこの週がお休みの方（足りないに数えない・消えたと言わない） |
 | 10 | 同行 | `rk sql accompaniments_week -p monday=…` | 新人の出勤日に同行が無い・偏り |
-| 11 | 利用者の条件 | `rk sql patient_constraints -p patient=`（1 人だけなら `-p patient=<名前かコード>`） | NG・女性限定・2 名必須に反する担当（あれば 3〜4 と合わせて報告） |
+| 11 | 利用者の条件 | `rk sql patient_constraints -p patient=`（1 人だけなら `-p patient=<名前かコード>`） | NG・NG 曜日・女性/男性限定・2 名必須に反する担当や曜日（あれば 3〜4 と合わせて報告） |
 | 12 | 職員ごとの件数 | `rk sql visits_by_staff_day -p date_from=… -p date_to=… -p staff=` | 正規で 6 件超・1 人に偏る日 |
 
 - SQL の一覧と引数は `rk sql --list`（説明は `agent/sql/README.md`）。**列挙した引数はすべて必須**で、「指定なし」は空（`-p staff=`）で渡す。名前が見つからないときは推測で書かず、`rk sql --list` から近いものを選ぶ。
@@ -52,6 +52,7 @@ rk level week --week 2026-10-19 --seconds 30        # 案は作るが反映し�
 - `staff_overlaps` は同じ建物の 2 名の「5 分重ね」（例 9:30-10:05 と 10:00-10:35）も重なりとして出す。同じ建物の 2 名は 1 人で 90 分の枠に収まれば決まりの上は問題ない（ならしの道具も重なりに数えない）。住所が同じか（`patient_constraints` の同住所リンク・実現性チェックの同住所）を見て、違う住所の重なりだけを問題として報告する（週43 の試し 10/12 では 7 組のうち 6 組が 5 分重ね・1 組が 20 分。ならしの道具の「今の重なり」は 0 だったので、どれも同じ建物の組と思われる＝推測）。
 - 担当の正典はコースの担当（訪問の主担当が空でもコースに担当がいれば「担当あり」）。ただし主担当が空で手の上書きの印がある訪問は「明示の担当なし」（半休の時間帯から外した訪問など）で、コースの担当に読み替えない。`unassigned_visits` はこれを考えて数えている。
 - 休みは記録（`staff_weekly_overrides`）が正典。終日の休みは公休と有給の 2 つ（`off`・`paid_off`）。半休の方はコースを持ったまま、休みの時間帯の訪問だけが担当なしになる。月の全員の休みは画面の「休み・勤務表」（管理者のメニュー）でも見られる。
+- 2 名体制の予定は 1 行（`primary_staff_id`＋`secondary_staff_id`）。2 人目の職員の時間もふさがっている（盤面では 2 人目のコースの列に薄く出る）。古い 2 行の組（`visit_group_id`）も残る。
 - 件数は 1 回 1 件（2 名体制は 1 回）・取消と【検証】を除く。アプリのダッシュボードは行数で数えるので違いが出たら説明する。
 - 職員の予定（staff_events）の時刻は「日本時間を UTC として保存」。SQL は `at time zone 'UTC'` で読む（9 時間ずれて見えても不具合ではない）。
 - 実現性チェック・診断・プールの試算は読むだけの API。プール一括投入の試算（`pool-bulk-simulate`）も読むだけだが、結果を「反映」するのは書き込み（このスキルではしない）。
