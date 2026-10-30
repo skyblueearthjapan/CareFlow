@@ -36,7 +36,6 @@ from app.models.staff import Staff
 from app.services.office_labels import office_code_short_pairs, ordered_office_codes
 from app.services.patient_excel.schema import (
     COMMENT_AUTHOR,
-    DEFAULT_TIME_TYPE,
     GRID_BLOCK_HEIGHT,
     GRID_COLS_PER_DAY,
     GRID_COURSE_ORDER,
@@ -60,6 +59,7 @@ from app.services.patient_excel.schema import (
     PFV_EDIT_WEEKDAY_KEY_TO_INT,
     PFV_EDIT_WEEKDAY_KEYS,
     PFV_GRID_A1_COMMENT_TEXT,
+    PFV_VISIT_WEEK_EN_TO_JA,
     SEX_EN_TO_JA,
     SEX_RESTRICTION_EN_TO_JA,
     SHEET_PATIENTS,
@@ -71,6 +71,7 @@ from app.services.patient_excel.schema import (
     VISIT_SAME_MARK,
     build_office_code_short_maps,
     course_token,
+    ng_weekdays_en_to_yesno_cells,
     weekdays_en_to_yesno_cells,
 )
 
@@ -302,6 +303,10 @@ def _write_patient_row(
     weekday_cells = weekdays_en_to_yesno_cells(
         pref_weekdays if isinstance(pref_weekdays, list) else None
     )
+    # 2026-10-30: NG 曜日 7 列 (〇/×) と隔週の起点の週。
+    ng_weekdays = wp.get("ng_weekdays")
+    ng_cells = ng_weekdays_en_to_yesno_cells(ng_weekdays if isinstance(ng_weekdays, list) else None)
+    anchor = wp.get("biweekly_anchor")
 
     values: dict[str, object | None] = {
         "patient_id": str(patient.id),
@@ -337,6 +342,8 @@ def _write_patient_row(
         # 2 つの住所 (2026-10-22): 保険証の住所と「訪問先は保険証と同じ」(○ / 空 = 別).
         "insurance_address": patient.insurance_address,
         "visit_same_as_insurance": VISIT_SAME_MARK if patient.visit_same_as_insurance else None,
+        "biweekly_anchor": anchor if isinstance(anchor, str) and anchor else None,
+        **ng_cells,
     }
     for col_key, col_idx in PATIENT_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
@@ -363,9 +370,10 @@ def _write_pfv_edit_patient_row(
 
     ``pfvs`` はこの患者の **normal mode** PFV のみ (呼び出し側でフィルタ済).
     各曜日 (0=月..5=土) に start_time → ``{曜日}_時刻``、course_template → ``{曜日}_コース``
-    (拠点付きトークン) を書く. duration / time_type は患者代表値 (全曜日同一前提;
-    異なる場合は最初の行の値を採用しログ警告). slot_index=1 は現データ 0 だが、
-    存在したらログ警告し slot_index=0 の行を優先採用 (将来対応).
+    (拠点付きトークン)、visit_week → ``{曜日}_訪問する週`` (毎回 / Aの週 / Bの週) を書く.
+    duration は患者代表値 (全曜日同一前提; 異なる場合は最初の行の値を採用しログ警告).
+    時間タイプの列は 2026-10-30 に消した (枠は時刻が決まっていて保存先が無い).
+    slot_index=1 は 1 行形式では書かない (slot_index=0 の行を採用).
     """
     # weekday → 採用する PFV (slot_index=0 を優先).
     by_weekday: dict[int, PatientFixedVisit] = {}
@@ -403,14 +411,11 @@ def _write_pfv_edit_patient_row(
             sorted(durations_seen),
             rep_duration,
         )
-    rep_tt = _resolve_time_type(patient, sorted(by_weekday)[0]) if by_weekday else None
-
     values: dict[str, object | None] = {
         "patient_id": str(patient.id),
         "patient_code": patient.code,
         "patient_name": patient.name,
         "service_minutes": rep_duration,
-        "time_type": rep_tt or DEFAULT_TIME_TYPE,
         "delete_flag": None,
     }
 
@@ -420,8 +425,11 @@ def _write_pfv_edit_patient_row(
         if pfv is None:
             values[f"{wd_key}_time"] = None
             values[f"{wd_key}_course"] = None
+            values[f"{wd_key}_week"] = None
             continue
         values[f"{wd_key}_time"] = _hhmm(pfv.start_time)
+        vw = pfv.visit_week or "every"
+        values[f"{wd_key}_week"] = PFV_VISIT_WEEK_EN_TO_JA.get(vw, vw)
         # course_template → 拠点付きトークン. クロスオフィス参照は空欄 + warning.
         token: str | None = None
         if pfv.course_template_id is not None:
@@ -443,27 +451,6 @@ def _write_pfv_edit_patient_row(
 
     for col_key, col_idx in PFV_EDIT_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
-
-
-def _resolve_time_type(patient: Patient, weekday: int) -> str | None:
-    """patient.weekly_pattern.entries[].weekday と一致するエントリの time_type を返す.
-
-    weekly_pattern が辞書で entries が無い場合は patient.weekly_pattern.time_type を返す.
-    どちらも無い場合は ``None``.
-    """
-    wp = patient.weekly_pattern
-    if not isinstance(wp, dict):
-        return None
-    short = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[weekday]
-    entries = wp.get("entries") or []
-    if isinstance(entries, list):
-        for entry in entries:
-            if isinstance(entry, dict) and entry.get("weekday") == short:
-                tt = entry.get("time_type")
-                if isinstance(tt, str):
-                    return tt
-    tt_root = wp.get("time_type")
-    return tt_root if isinstance(tt_root, str) else None
 
 
 def _course_token_dropdown_values(

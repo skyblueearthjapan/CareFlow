@@ -470,7 +470,6 @@ async def test_pfv_excel_import_resolves_sub_office_code(client, db) -> None:
     ws_f.cell(row=2, column=PFV_COL_INDEX["weekday"] + 1, value="月")
     ws_f.cell(row=2, column=PFV_COL_INDEX["slot_index"] + 1, value=0)
     ws_f.cell(row=2, column=PFV_COL_INDEX["mode"] + 1, value="normal")
-    ws_f.cell(row=2, column=PFV_COL_INDEX["time_type"] + 1, value="固定")
     ws_f.cell(row=2, column=PFV_COL_INDEX["start_time"] + 1, value="09:00")
     ws_f.cell(row=2, column=PFV_COL_INDEX["duration_min"] + 1, value=30)
     ws_f.cell(row=2, column=PFV_COL_INDEX["sub_office_code"] + 1, value="TSUGA")

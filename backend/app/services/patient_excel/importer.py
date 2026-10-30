@@ -18,9 +18,10 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, time
+from datetime import date, datetime, time
 from io import BytesIO
 from typing import Any
 from uuid import UUID
@@ -52,13 +53,16 @@ from app.services.patient_address import (
     visit_coords_needed,
 )
 from app.services.patient_excel.schema import (
-    DEFAULT_TIME_TYPE,
     INSURANCE_JA_TO_EN,
     INSURANCE_VALUES,
+    LEGACY_PFV_COLUMNS,
+    LEGACY_PFV_EDIT_COLUMNS,
     LEGACY_SHEET_PFV,
     PATIENT_COL_INDEX,
     PFV_COL_INDEX,
+    PFV_COLUMNS,
     PFV_EDIT_COL_INDEX,
+    PFV_EDIT_COLUMNS,
     PFV_EDIT_WEEKDAY_KEY_TO_INT,
     PFV_EDIT_WEEKDAY_KEYS,
     PFV_MODE_JA_TO_EN,
@@ -85,10 +89,14 @@ from app.services.patient_excel.schema import (
     build_office_code_short_maps,
     is_magic_clear,
     is_magic_delete,
+    ng_weekday_yesno_cells_to_en,
     parse_course_token,
+    parse_pfv_visit_week_cell,
+    resolve_col_index,
     weekday_yesno_cells_to_en,
     weekdays_cell_to_en,
 )
+from app.services.scheduling.visit_frequency import monday_of, normalize_visit_weeks
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +253,13 @@ def has_address_columns(header_row: tuple[Any, ...] | None) -> bool:
     if not header_row or idx >= len(header_row):
         return False
     return _read_str(header_row[idx]) == VISIT_SAME_AS_INSURANCE_HEADER
+
+
+def _header_row(ws: Any) -> tuple[Any, ...]:
+    """シートの 1 行目 (見出し) を返す. 空のシートは空の tuple."""
+    for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+        return tuple(row)
+    return ()
 
 
 def read_patient_header(ws: Any) -> tuple[Any, ...]:
@@ -1443,9 +1458,11 @@ def _parse_pfv_row(
     existing_pfvs: dict[tuple[UUID, str, int, int], PatientFixedVisit],
     pending_new_keys: set[tuple[UUID, str, int, int]],
     offices_by_code: dict[str, Office] | None = None,
+    col_index: dict[str, int] | None = None,
 ) -> tuple[PfvExcelImportRow, dict[str, Any] | None]:
-    cells: dict[str, Any] = {}
-    for col_key, idx in PFV_COL_INDEX.items():
+    # 2026-10-30: 列は見出しで見分ける (時間タイプの列を消し、訪問する週の列を足した)。
+    cells: dict[str, Any] = {key: None for key in PFV_COL_INDEX}
+    for col_key, idx in (col_index if col_index is not None else PFV_COL_INDEX).items():
         cells[col_key] = row[idx] if idx < len(row) else None
 
     raw_id = cells["patient_id"]
@@ -1643,29 +1660,25 @@ def _parse_pfv_row(
             {"_pfv_id": existing_pfv.id, "_op": "delete"},
         )
 
-    # time_type
-    # 空セルは default ("時間帯") で吸収する (E-4: round-trip 運用で 0 エラーを担保).
-    # patient.weekly_pattern にエントリが無いと export 時に空で出てくるため、
-    # 単に default で埋めて success 扱いする。time_type は PFV テーブルに保存先が
-    # 無いため (importer.py 1178-1181 の note 参照) UI 用の参考情報のみ。
-    raw_tt = cells["time_type"]
-    if _is_blank(raw_tt):
-        time_type: str | None = DEFAULT_TIME_TYPE
-    else:
-        time_type = _read_str(raw_tt)
-        if time_type not in TIME_TYPE_VALUES:
-            return (
-                PfvExcelImportRow(
-                    row_number=row_number,
-                    patient_id=patient_id,
-                    patient_code=patient.code,
-                    weekday=weekday,
-                    slot_index=slot_index,
-                    operation="error",
-                    error_message=f"time_type の値が候補外: {time_type!r}",
-                ),
-                None,
-            )
+    # 時間タイプ: 2026-10-30 に列を消した (枠は時刻が決まっているため保存先が無い)。
+    # 古いファイルの「時間タイプ」の列は読まない (値が何でも取り込める)。
+
+    # 訪問する週 (毎回 / Aの週 / Bの週)。空セル = 維持 (新規は毎回)。
+    try:
+        visit_week = parse_pfv_visit_week_cell(cells.get("visit_week"))
+    except ValueError as exc:
+        return (
+            PfvExcelImportRow(
+                row_number=row_number,
+                patient_id=patient_id,
+                patient_code=patient.code,
+                weekday=weekday,
+                slot_index=slot_index,
+                operation="error",
+                error_message=str(exc),
+            ),
+            None,
+        )
 
     # start_time
     try:
@@ -1822,6 +1835,7 @@ def _parse_pfv_row(
             "course_template_id": course_template_id,
             # Phase E-5 (項目 ⑥B): サブ拠点 ID. 解決できなかった場合は None.
             "sub_office_id": sub_office_id,
+            "visit_week": visit_week or "every",
         }
         return (
             PfvExcelImportRow(
@@ -1881,10 +1895,16 @@ def _parse_pfv_row(
             )
         )
         update_dict["sub_office_id"] = sub_office_id
-    # time_type は patients.weekly_pattern 側の情報. PFV テーブル自体には保存先が無い.
-    # 仕様書「time_type → patients.weekly_pattern にも反映」は WeeklyPattern の構造
-    # 上、PFV 行 1 件から単純に書き換えると他曜日の設定を壊しうるため、本実装では
-    # 表示用のみとし、import 時には patients.weekly_pattern を変更しない (TODO).
+    # 訪問する週 (空セルは変えない)。
+    if visit_week is not None and (existing_pfv.visit_week or "every") != visit_week:
+        changes.append(
+            PatientExcelChange(
+                field="visit_week",
+                old_value=existing_pfv.visit_week or "every",
+                new_value=visit_week,
+            )
+        )
+        update_dict["visit_week"] = visit_week
     if not changes:
         return (
             PfvExcelImportRow(
@@ -1914,6 +1934,29 @@ def _parse_pfv_row(
 # ---------------------------------------------------------------------------
 # Phase G-51: 「固定訪問パターン（編集用）」シート (患者 1 行) パーサ
 # ---------------------------------------------------------------------------
+
+
+def pfv_edit_col_index(header_row: tuple[Any, ...] | None) -> dict[str, int]:
+    """「固定訪問パターン（編集用）」の見出し → 列の位置 (2026-10-30 の並び替えに対応).
+
+    見出しの無い・知らないファイルは 2026-10-30 より前の並び (時間タイプの列あり) で読む。
+    """
+    return resolve_col_index(header_row, PFV_EDIT_COLUMNS, LEGACY_PFV_EDIT_COLUMNS)
+
+
+def pfv_col_index(header_row: tuple[Any, ...] | None) -> dict[str, int]:
+    """旧 1 枠 1 行の「固定訪問パターン」の見出し → 列の位置 (時間タイプの列を消した)."""
+    return resolve_col_index(header_row, PFV_COLUMNS, LEGACY_PFV_COLUMNS)
+
+
+def read_pfv_edit_cells(
+    row: tuple[Any, ...], col_index: dict[str, int] | None = None
+) -> dict[str, Any]:
+    """編集用シートの 1 行 → 列キーの dict (見出しで見つからない列は None)."""
+    cells: dict[str, Any] = {key: None for key in PFV_EDIT_COL_INDEX}
+    for col_key, idx in (col_index if col_index is not None else PFV_EDIT_COL_INDEX).items():
+        cells[col_key] = row[idx] if idx < len(row) else None
+    return cells
 
 
 def _resolve_pfv_course(
@@ -1959,6 +2002,7 @@ def _parse_pfv_edit_patient(
     course_templates: dict[tuple[UUID, str], CourseTemplate],
     existing_pfvs: dict[tuple[UUID, str, int, int], PatientFixedVisit],
     offices_by_code: dict[str, Office],
+    col_index: dict[str, int] | None = None,
 ) -> tuple[list[PfvExcelImportRow], list[dict[str, Any]]]:
     """「固定訪問パターン（編集用）」1 行 (患者 1 行) → PFV 差分行 + apply op の list.
 
@@ -1970,10 +2014,7 @@ def _parse_pfv_edit_patient(
       - special mode / slot_index!=0 の既存 PFV は触らない (本シート対象外で保持).
       - 行に出てこない患者の PFV は触らない (incremental; 呼び出し側でループ).
     """
-    cells: dict[str, Any] = {
-        col_key: (row[idx] if idx < len(row) else None)
-        for col_key, idx in PFV_EDIT_COL_INDEX.items()
-    }
+    cells = read_pfv_edit_cells(row, col_index)
 
     raw_id = cells["patient_id"]
     raw_code = cells["patient_code"]
@@ -2088,6 +2129,11 @@ def _parse_pfv_edit_patient(
             continue
         if start_str is None:
             continue
+        try:
+            visit_week = parse_pfv_visit_week_cell(cells.get(f"{wd_key}_week"))
+        except ValueError as exc:
+            errors.append(f"{wd_key}: {exc}")
+            continue
         ct_id = _resolve_pfv_course(
             _read_str(cells.get(f"{wd_key}_course")),
             patient=patient,
@@ -2100,6 +2146,8 @@ def _parse_pfv_edit_patient(
             "start_str": start_str,
             "course_template_id": ct_id,
             "duration_min": duration,
+            # None = 空セル (既存の枠は変えない・新しい枠は毎回)。
+            "visit_week": visit_week,
         }
 
     if errors:
@@ -2142,6 +2190,7 @@ def _parse_pfv_edit_patient(
                     "course_template_id": spec["course_template_id"],
                     # sub_office_id は本シート対象外 (model default None). 既存 PFV の
                     # sub_office_id は update でも触らない (round-trip 安定).
+                    "visit_week": spec["visit_week"] or "every",
                 }
             )
             diff_rows.append(
@@ -2195,6 +2244,21 @@ def _parse_pfv_edit_patient(
                 )
             )
             update_dict["course_template_id"] = spec["course_template_id"]
+        # 訪問する週: 空セルは変えない。変えたら同じ曜日の 2 人目 (slot 1) の枠もそろえる
+        # (2 名体制の 2 行は同じ週に訪問する)。
+        new_vw = spec["visit_week"]
+        if new_vw is not None and (existing_pfv.visit_week or "every") != new_vw:
+            changes.append(
+                PatientExcelChange(
+                    field="visit_week",
+                    old_value=existing_pfv.visit_week or "every",
+                    new_value=new_vw,
+                )
+            )
+            update_dict["visit_week"] = new_vw
+            slot1 = existing_pfvs.get((patient_id, "normal", wd_int, 1))
+            if slot1 is not None and (slot1.visit_week or "every") != new_vw:
+                ops.append({"_pfv_id": slot1.id, "_op": "update", "visit_week": new_vw})
         # sub_office_id は本シートでは触らない (既存値を保持; round-trip 安定 + 誤削除防止).
         if changes:
             ops.append(update_dict)
@@ -2277,13 +2341,16 @@ def _build_weekly_pattern(
     if freq is not None and 1 <= freq <= 7:
         wp["frequency_per_week"] = freq
 
-    vf = _read_str(visit_frequency)
-    if vf:
-        vf_en = VISIT_FREQUENCY_ANY_TO_EN.get(vf)
-        if vf_en is not None:
-            wp["visit_frequency"] = vf_en
+    vf_en = visit_frequency_to_en(visit_frequency)
+    if vf_en is not None:
+        wp["visit_frequency"] = vf_en
 
-    vw = _read_str(visit_weeks)
+    # 月の第何週: "1,3" にそろえる。読めない値はここでは積まない
+    # (患者マスタのシートは parse_weekly_extras が行エラーにする)。
+    try:
+        vw = normalize_visit_weeks(_visit_weeks_raw(visit_weeks))
+    except ValueError:
+        vw = None
     if vw:
         wp["visit_weeks"] = vw
 
@@ -2308,11 +2375,119 @@ def _build_weekly_pattern(
     return wp
 
 
-# Phase G-48 hotfix: 統合「患者マスタ」シートが扱う weekly_pattern の管理キー (8 個).
-# exporter/_build_weekly_pattern が読み書きするのはこの 8 キーのみ. ``entries`` /
+def visit_frequency_to_en(value: Any) -> str | None:
+    """訪問頻度のセル → ``every`` / ``biweekly`` / ``monthly``. 空・候補外は None.
+
+    今の表記 (毎週 / 隔週（2 週おき） / 月の第何週)・古い表記 (隔週 / 月次)・英語値を受ける。
+    全角/半角の括弧や空白の違いは問わない。
+    """
+    text = _read_str(value)
+    if not text:
+        return None
+    if text in VISIT_FREQUENCY_ANY_TO_EN:
+        return VISIT_FREQUENCY_ANY_TO_EN[text]
+    compact = unicodedata.normalize("NFKC", text).replace(" ", "")
+    for key, en in VISIT_FREQUENCY_ANY_TO_EN.items():
+        if unicodedata.normalize("NFKC", key).replace(" ", "") == compact:
+            return en
+    return None
+
+
+def _visit_weeks_raw(value: Any) -> Any:
+    """第何週のセル値: Excel が数 (3 / 3.0) にしたものを整数へ."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _read_date_cell(value: Any) -> date | None:
+    """日付のセル → date. 空は None. 読めない値は ``ValueError``.
+
+    Excel の日付 (datetime)・"2026-11-02"・"2026/11/2"・"2026.11.2" を受ける。
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = unicodedata.normalize("NFKC", str(value)).strip()
+    if not text:
+        return None
+    parts = text.replace("/", "-").replace(".", "-").split("-")
+    if len(parts) != 3 or not all(p.strip().isdigit() for p in parts):
+        raise ValueError(text)
+    y, m, d = (int(p) for p in parts)
+    return date(y, m, d)
+
+
+def parse_weekly_extras(cells: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str]]:
+    """訪問頻度・起点の週・第何週・NG 曜日のセルを検査する (2026-10-30).
+
+    戻り値 ``(updates, errors, infos)``:
+      * ``updates``: weekly_pattern に入れるキー。値 ``None`` はキーを消す (``<CLEAR>``)。
+      * ``errors``: 行エラーにする理由 (1 つでもあれば、その患者の行は取り込まない)。
+      * ``infos``: 取り込むが知らせること (月曜でない起点の週を月曜にそろえた など)。
+    空セルはキーを積まない (= 維持)。
+    """
+    updates: dict[str, Any] = {}
+    errors: list[str] = []
+    infos: list[str] = []
+
+    raw_vf = cells.get("visit_frequency")
+    if not _is_blank(raw_vf) and visit_frequency_to_en(raw_vf) is None:
+        errors.append(
+            f"訪問頻度の値が候補外です: {_read_str(raw_vf)!r}"
+            "（毎週 / 隔週（2 週おき） / 月の第何週）"
+        )
+
+    raw_vw = cells.get("visit_weeks")
+    if is_magic_clear(raw_vw):
+        updates["visit_weeks"] = None
+    elif not _is_blank(raw_vw):
+        try:
+            vw = normalize_visit_weeks(_visit_weeks_raw(raw_vw))
+        except ValueError:
+            errors.append(
+                f"月の第何週は 1〜5 の数をカンマ区切りで書いてください（例 1,3）: {raw_vw!r}"
+            )
+        else:
+            if vw:
+                updates["visit_weeks"] = vw
+
+    raw_anchor = cells.get("biweekly_anchor")
+    if is_magic_clear(raw_anchor):
+        updates["biweekly_anchor"] = None
+    elif not _is_blank(raw_anchor):
+        try:
+            d = _read_date_cell(raw_anchor)
+        except ValueError:
+            errors.append(f"隔週の起点の週が日付として読めません: {raw_anchor!r}（例 2026-11-02）")
+        else:
+            if d is not None:
+                monday = monday_of(d)
+                updates["biweekly_anchor"] = monday.isoformat()
+                if monday != d:
+                    infos.append(
+                        f"{monday.isoformat()}（{d.month}/{d.day} は月曜でないため、"
+                        f"その週の月曜 {monday.month}/{monday.day} にそろえました）"
+                    )
+
+    ng = ng_weekday_yesno_cells_to_en(cells)
+    if ng is not None:
+        updates["ng_weekdays"] = ng
+
+    return updates, errors, infos
+
+
+# Phase G-48 hotfix: 統合「患者マスタ」シートが扱う weekly_pattern の管理キー.
+# exporter/_build_weekly_pattern が読み書きするのはこのキーのみ. ``entries`` /
 # ``staff_count`` 等の細粒度キー (WeeklyPatternV2 は extra="allow") は本パイプラインの
 # 管理対象外で、merge 時に必ず保持しなければならない (消すとスケジューラの訪問時刻 /
 # 2 名体制が静かに壊れる).
+# 2026-10-30: 隔週の起点の週 (biweekly_anchor) と NG 曜日 (ng_weekdays) を足した。
 MANAGED_WEEKLY_KEYS: tuple[str, ...] = (
     "frequency_per_week",
     "visit_frequency",
@@ -2322,6 +2497,8 @@ MANAGED_WEEKLY_KEYS: tuple[str, ...] = (
     "time_type",
     "preferred_start",
     "preferred_end",
+    "biweekly_anchor",
+    "ng_weekdays",
 )
 
 
@@ -2349,9 +2526,56 @@ def _merge_weekly_pattern(
         return None
     base: dict[str, Any] = dict(existing_wp) if isinstance(existing_wp, dict) else {}
     for key in MANAGED_WEEKLY_KEYS:
-        if key in wp:
-            base[key] = wp[key]
+        if key not in wp:
+            continue
+        value = wp[key]
+        if value is None:
+            # <CLEAR> (起点の週・第何週): キーを消す。
+            base.pop(key, None)
+        elif key == "ng_weekdays" and not value and not base.get(key):
+            # NG 曜日なし: キーが無いのと同じ (全部 × の書き出しをそのまま戻しても差分にしない)。
+            continue
+        else:
+            base[key] = value
+    if not base and not isinstance(existing_wp, dict):
+        # 希望が何も無い方 (weekly_pattern=None) で、変わるものも無い (NG 曜日なしだけ等)。
+        return existing_wp
     return base
+
+
+def parse_weekly_from_patient_cells_checked(
+    cells: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+    """``_parse_weekly_from_patient_cells`` + 訪問頻度まわりの検査 (2026-10-30).
+
+    戻り値 ``(weekly, errors, infos)``。``errors`` があれば、呼び出し側はその行を
+    エラーにして取り込まない。
+    """
+    wp = _parse_weekly_from_patient_cells(cells) or {}
+    updates, errors, infos = parse_weekly_extras(cells)
+    if errors:
+        return None, errors, []
+    wp.update(updates)
+    return (wp or None), errors, infos
+
+
+def apply_weekly_check_to_row(
+    diff_row: PatientExcelImportRow,
+    op: dict[str, Any] | None,
+    errors: list[str],
+    infos: list[str],
+) -> dict[str, Any] | None:
+    """訪問頻度まわりの検査結果を患者の行に反映する. 返り値は積む op (エラーなら None)."""
+    if errors:
+        diff_row.operation = "error"
+        diff_row.error_message = " / ".join(errors)
+        diff_row.changes = []
+        return None
+    for info in infos:
+        diff_row.changes.append(
+            PatientExcelChange(field="biweekly_anchor", old_value=None, new_value=info)
+        )
+    return op
 
 
 def _parse_weekly_from_patient_cells(cells: dict[str, Any]) -> dict[str, Any] | None:
@@ -2554,20 +2778,22 @@ async def parse_and_diff(
             staff_code_by_id=staff_code_by_id,
             has_address_cols=has_address_cols,
         )
-        patient_rows.append(diff_row)
-        if op is not None:
-            patient_ops.append(op)
         # Phase G-48: 統合シートの weekly_pattern を抽出.
         # error 行 / patient 未解決行 (patient_id None) は対象外.
         # delete 行は後段の merge で delete op に統合しないので除外.
+        # 2026-10-30: 訪問頻度・起点の週・第何週が読めない行はエラーにして取り込まない。
         if diff_row.operation in ("new", "update", "noop") and diff_row.patient_id is not None:
             row_cells: dict[str, Any] = {
                 col_key: (row[idx] if idx < len(row) else None)
                 for col_key, idx in PATIENT_COL_INDEX.items()
             }
-            weekly = _parse_weekly_from_patient_cells(row_cells)
-            if weekly is not None:
+            weekly, w_errors, w_infos = parse_weekly_from_patient_cells_checked(row_cells)
+            op = apply_weekly_check_to_row(diff_row, op, w_errors, w_infos)
+            if weekly is not None and not w_errors:
                 weekly_from_patient_sheet[diff_row.patient_id] = weekly
+        patient_rows.append(diff_row)
+        if op is not None:
+            patient_ops.append(op)
 
     # 訪問先が変わった行の位置 (2026-10-22): 求められない行はここでエラーにする
     # (PFV シートの新規患者の紐付けより前に op を外すため)。
@@ -2620,6 +2846,7 @@ async def parse_and_diff(
     if use_pfv_edit_sheet:
         # Phase G-51: 新「固定訪問パターン（編集用）」(患者 1 行) を per-patient replace で処理.
         ws_f = wb[SHEET_PFV_EDIT]
+        edit_col_index = pfv_edit_col_index(_header_row(ws_f))
         seen_edit_pids: set[UUID] = set()
         for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
             if _row_is_empty(row):
@@ -2633,6 +2860,7 @@ async def parse_and_diff(
                 course_templates=course_templates,
                 existing_pfvs=existing_pfvs,
                 offices_by_code=offices_by_code,
+                col_index=edit_col_index,
             )
             # 同一患者が複数行に出てきた場合の二重処理を防ぐ (1 行目を採用).
             for dr in diff_rows_edit:
@@ -2662,6 +2890,7 @@ async def parse_and_diff(
         # 旧 per-visit シート (後方互換 fallback).
         assert pfv_sheet_name is not None
         ws_f = wb[pfv_sheet_name]
+        legacy_col_index = pfv_col_index(_header_row(ws_f))
         pending_new_keys: set[tuple[UUID, str, int, int]] = set()
         for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
             if _row_is_empty(row):
@@ -2677,6 +2906,7 @@ async def parse_and_diff(
                 pending_new_keys=pending_new_keys,
                 # Phase E-5: sub_office_code 解決用 (患者シートと共有).
                 offices_by_code=offices_by_code,
+                col_index=legacy_col_index,
             )
             pfv_rows.append(diff_row)
             if op is not None:

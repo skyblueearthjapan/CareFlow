@@ -427,8 +427,11 @@ async def test_pending_patient_create_uses_input_as_insurance_address(db) -> Non
 
 def test_excel_columns_appended_at_end_and_address_header_renamed() -> None:
     keys = [str(c["key"]) for c in PATIENT_COLUMNS]
-    assert keys[-2:] == ["insurance_address", "visit_same_as_insurance"]
-    assert keys.index("ng_staff_codes") == len(keys) - 3  # 既存の列位置は動かさない
+    # 2026-10-30: その後ろに起点の週と NG 曜日 7 列を足した (列の位置は動かさない)。
+    i = keys.index("insurance_address")
+    assert keys[i : i + 2] == ["insurance_address", "visit_same_as_insurance"]
+    assert keys[i + 2] == "biweekly_anchor"
+    assert keys.index("ng_staff_codes") == i - 1  # 既存の列位置は動かさない
     headers = {str(c["key"]): c["header"] for c in PATIENT_COLUMNS}
     assert headers["address"] == "訪問先の住所"
     assert headers["insurance_address"] == "保険証の住所"

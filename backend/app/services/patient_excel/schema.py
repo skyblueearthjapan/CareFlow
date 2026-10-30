@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable
 from typing import Final
 
@@ -166,15 +167,62 @@ DELETE_FLAG_VALUES: Final[tuple[str, ...]] = (MAGIC_DELETE,)
 # いずれも受理する.
 
 VISIT_FREQUENCY_VALUES: Final[tuple[str, ...]] = ("every", "biweekly", "monthly")
+# 2026-10-30 (biweekly-monthly-design §3-1): 画面と同じ「隔週（2 週おき）」「月の第何週」。
 VISIT_FREQUENCY_EN_TO_JA: Final[dict[str, str]] = {
     "every": "毎週",
-    "biweekly": "隔週",
-    "monthly": "月次",
+    "biweekly": "隔週（2 週おき）",
+    "monthly": "月の第何週",
 }
-VISIT_FREQUENCY_JA_VALUES: Final[tuple[str, ...]] = ("毎週", "隔週", "月次")
+VISIT_FREQUENCY_JA_VALUES: Final[tuple[str, ...]] = ("毎週", "隔週（2 週おき）", "月の第何週")
+# 取込は古い表記 (隔週 / 月次) と、空白・括弧の書き方の違いも受ける (後方互換)。
 VISIT_FREQUENCY_JA_TO_EN: Final[dict[str, str]] = {
-    ja: en for en, ja in VISIT_FREQUENCY_EN_TO_JA.items()
+    **{ja: en for en, ja in VISIT_FREQUENCY_EN_TO_JA.items()},
+    "隔週": "biweekly",
+    "隔週（2週おき）": "biweekly",
+    "隔週(2週おき)": "biweekly",
+    "隔週(2 週おき)": "biweekly",
+    "月次": "monthly",
 }
+
+
+# ---------------------------------------------------------------------------
+# 隔週の起点の週 / 月の第何週 / NG 曜日 / 枠の「訪問する週」(2026-10-30)
+# ---------------------------------------------------------------------------
+#
+# 判定と検査の正は ``app.services.scheduling.visit_frequency`` / ``ng_weekdays``。
+# ここは Excel の列と表記だけを持つ。
+
+# 枠の「訪問する週」(patient_fixed_visits.visit_week)。隔週の方のときだけ効く。
+PFV_VISIT_WEEK_EN_TO_JA: Final[dict[str, str]] = {"every": "毎回", "A": "Aの週", "B": "Bの週"}
+PFV_VISIT_WEEK_JA_VALUES: Final[tuple[str, ...]] = ("毎回", "Aの週", "Bの週")
+_PFV_VISIT_WEEK_ANY_TO_EN: Final[dict[str, str]] = {
+    **{ja: en for en, ja in PFV_VISIT_WEEK_EN_TO_JA.items()},
+    "every": "every",
+    "毎週": "every",
+    "A": "A",
+    "B": "B",
+    "a": "A",
+    "b": "B",
+    "Aの週": "A",
+    "Bの週": "B",
+}
+
+
+def parse_pfv_visit_week_cell(value: object) -> str | None:
+    """「訪問する週」セル → ``every`` / ``A`` / ``B``. 空は None (= 変えない).
+
+    「A の週」のような空白入り・全角の「Ａの週」も受ける。候補外は ``ValueError``。
+    """
+    if value is None:
+        return None
+    text = unicodedata.normalize("NFKC", str(value)).strip()
+    if not text:
+        return None
+    key = text.replace(" ", "").replace("　", "")
+    en = _PFV_VISIT_WEEK_ANY_TO_EN.get(key)
+    if en is None:
+        raise ValueError(f"訪問する週の値が候補外です: {text!r}（毎回 / Aの週 / Bの週）")
+    return en
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +345,48 @@ PATIENT_WEEKDAY_KEY_TO_HEADER: Final[dict[str, str]] = {
 }
 
 
+# NG 曜日 7 列 (月..日 / 〇・×)。希望曜日の 7 列と同じ書き方。
+PATIENT_NG_WEEKDAY_COL_KEYS: Final[tuple[str, ...]] = (
+    "ng_wd_mon",
+    "ng_wd_tue",
+    "ng_wd_wed",
+    "ng_wd_thu",
+    "ng_wd_fri",
+    "ng_wd_sat",
+    "ng_wd_sun",
+)
+PATIENT_NG_WEEKDAY_KEY_TO_EN: Final[dict[str, str]] = dict(
+    zip(PATIENT_NG_WEEKDAY_COL_KEYS, WEEKDAY_EN_LIST, strict=True)
+)
+PATIENT_NG_WEEKDAY_KEY_TO_HEADER: Final[dict[str, str]] = {
+    key: f"NG曜日_{label}"
+    for key, label in zip(PATIENT_NG_WEEKDAY_COL_KEYS, WEEKDAY_LABELS, strict=True)
+}
+
+
+def ng_weekdays_en_to_yesno_cells(weekdays: list[str] | None) -> dict[str, str]:
+    """ng_weekdays (英 list) → 7 列 (ng_wd_mon..) の 〇/×. 空でも全列「×」."""
+    present = {str(w) for w in (weekdays or [])}
+    return {
+        key: ("〇" if en in present else "×") for key, en in PATIENT_NG_WEEKDAY_KEY_TO_EN.items()
+    }
+
+
+def ng_weekday_yesno_cells_to_en(cells: dict[str, object]) -> list[str] | None:
+    """7 列 (ng_wd_mon..) の 〇/× → ng_weekdays (英 list・月→日の順).
+
+    7 列がすべて空なら ``None`` (= 変えない。この列の無い古いファイルも同じ)。
+    1 列でも書いてあれば、〇 の曜日だけの並び (全部 × なら ``[]`` = NG 曜日なし)。
+    """
+    if all(_is_blank_cell(cells.get(key)) for key in PATIENT_NG_WEEKDAY_COL_KEYS):
+        return None
+    return [en for key, en in PATIENT_NG_WEEKDAY_KEY_TO_EN.items() if _is_yes(cells.get(key))]
+
+
+def _is_blank_cell(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 # ---------------------------------------------------------------------------
 # シート 1: 患者マスタ (Phase G-48 で希望訪問パターンを統合)
 # ---------------------------------------------------------------------------
@@ -362,7 +452,9 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "width": 12,
         "dropdown": VISIT_FREQUENCY_JA_VALUES,
     },
-    {"key": "visit_weeks", "header": "訪問週 (例 '1,3')", "width": 14, "dropdown": None},
+    # 2026-10-30: 月の第何週 (1〜5)。訪問頻度が「月の第何週」のときだけ使う。
+    # 見出しを「訪問週」から変えた (列位置で読むので古い見出しのファイルも取り込める)。
+    {"key": "visit_weeks", "header": "月の第何週 (例 '1,3')", "width": 16, "dropdown": None},
     # Phase G-49/G-50: 希望曜日を 7 列クリック式 (月..日 / 〇・×) に分割.
     # 旧 1 セル "希望曜日 (例 '月,水,金')" 列は廃止 (旧 export ファイルは importer の
     # 後方互換経路で読む).
@@ -447,6 +539,25 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "width": 18,
         "dropdown": VISIT_SAME_MARK_VALUES,
     },
+    # ---- 訪問頻度の残り と NG 曜日 (biweekly-monthly-design-2026-10-30) ----
+    # 隔週の起点の週: 月曜の日付。月曜でない日付は、その週の月曜にそろえて取り込む
+    # (取込結果に知らせる)。空セル = 維持 / ``<CLEAR>`` = 消す。
+    {
+        "key": "biweekly_anchor",
+        "header": "隔週の起点の週 (月曜の日付)",
+        "width": 20,
+        "dropdown": None,
+    },
+    # NG 曜日 7 列 (〇/×)。7 列すべて空 = 維持 (この列の無い古いファイルも同じ)。
+    *(
+        {
+            "key": key,
+            "header": PATIENT_NG_WEEKDAY_KEY_TO_HEADER[key],
+            "width": 11,
+            "dropdown": WEEKDAY_MARK_VALUES,
+        }
+        for key in PATIENT_NG_WEEKDAY_COL_KEYS
+    ),
 ]
 
 # index lookup
@@ -467,6 +578,8 @@ PATIENT_WEEKLY_KEYS: Final[tuple[str, ...]] = (
     "weekly_time_type",
     "preferred_start",
     "preferred_end",
+    "biweekly_anchor",
+    *PATIENT_NG_WEEKDAY_COL_KEYS,
 )
 
 # 派生列 (システム自動算出 / システム用). exporter でグレー塗り + コメントを付与.
@@ -499,7 +612,6 @@ PFV_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "weekday", "header": "曜日", "width": 8, "dropdown": WEEKDAY_LABELS},
     {"key": "slot_index", "header": "slot_index", "width": 10, "dropdown": None},
     {"key": "mode", "header": "モード", "width": 10, "dropdown": PFV_MODE_JA_VALUES},
-    {"key": "time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
     {"key": "start_time", "header": "開始時刻", "width": 12, "dropdown": None},
     {"key": "end_time", "header": "終了時刻", "width": 12, "dropdown": None},
     {"key": "duration_min", "header": "duration_min", "width": 14, "dropdown": None},
@@ -518,19 +630,58 @@ PFV_COLUMNS: Final[list[dict[str, object]]] = [
         "width": 16,
         "dropdown": None,
     },
+    # 2026-10-30: 枠の「訪問する週」(毎回 / Aの週 / Bの週)。空セル = 維持 (新規は毎回)。
+    # 列は見出しで見分ける (resolve_col_index)。
+    {
+        "key": "visit_week",
+        "header": "訪問する週",
+        "width": 12,
+        "dropdown": PFV_VISIT_WEEK_JA_VALUES,
+    },
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
 ]
 
 PFV_COL_INDEX: Final[dict[str, int]] = {str(col["key"]): i for i, col in enumerate(PFV_COLUMNS)}
 
-# 必須項目: patient_id, weekday, slot_index, time_type, start_time
+# 2026-10-30 より前の列の並び (「時間タイプ」の列があり「訪問する週」が無い)。
+# 見出しで列を見分けられないファイルは、この並びとして読む (後方互換)。
+# 時間タイプは固定訪問の枠に保存先が無い (時刻が決まっている) ため、読んでも使わない。
+LEGACY_PFV_COLUMNS: Final[list[dict[str, object]]] = [
+    *PFV_COLUMNS[:6],
+    {"key": "time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
+    *(c for c in PFV_COLUMNS[6:] if c["key"] != "visit_week"),
+]
+
+# 必須項目: patient_id, weekday, slot_index, start_time
 PFV_REQUIRED: Final[tuple[str, ...]] = (
     "patient_id",
     "weekday",
     "slot_index",
-    "time_type",
     "start_time",
 )
+
+
+def resolve_col_index(
+    header_row: Iterable[object] | None,
+    columns: list[dict[str, object]],
+    legacy_columns: list[dict[str, object]],
+) -> dict[str, int]:
+    """見出しの行から「列キー → 列の位置」を作る (列の並びが変わったシート用).
+
+    今の列と古い列の見出しを両方知っていて、見出しで見つかった列だけを返す。
+    ``patient_code`` の見出しが見つからない (見出しの無い・知らないファイル) ときは、
+    古い並び (``legacy_columns``) の位置で読む。返さない列キーは「空セル」と同じ扱い。
+    """
+    known: dict[str, str] = {}
+    for col in (*legacy_columns, *columns):
+        known.setdefault(str(col["header"]).strip(), str(col["key"]))
+    found: dict[str, int] = {}
+    for i, h in enumerate(header_row or ()):
+        if isinstance(h, str) and h.strip() in known:
+            found.setdefault(known[h.strip()], i)
+    if "patient_code" in found and len(found) >= 3:
+        return found
+    return {str(col["key"]): i for i, col in enumerate(legacy_columns)}
 
 
 # ---------------------------------------------------------------------------
@@ -683,8 +834,11 @@ GRID_OFFICE_GAP: Final = 1
 GRID_COURSE_ORDER: Final[tuple[str, ...]] = COURSE_TEMPLATE_CODES  # ("A","B","C","D","E","M")
 
 
-def _pfv_edit_columns() -> list[dict[str, object]]:
+def _pfv_edit_columns(*, legacy: bool = False) -> list[dict[str, object]]:
     """「固定訪問パターン（編集用）」シートの列定義を組み立てる.
+
+    ``legacy=True`` は 2026-10-30 より前の並び (時間タイプの列あり・訪問する週の列なし)。
+    取込で見出しを見分けられないファイルをこの並びで読むために残す。
 
     course 列の dropdown は build_workbook 内で (office, label) から動的生成するため、
     ここでは None (= dropdown 無し) のプレースホルダ. exporter が差し替える.
@@ -704,8 +858,12 @@ def _pfv_edit_columns() -> list[dict[str, object]]:
             "width": 16,
             "dropdown": SERVICE_MINUTES_VALUES,
         },
-        {"key": "time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
     ]
+    if legacy:
+        # 2026-10-30 より前: 使っていない「時間タイプ」の列があった。
+        cols.append(
+            {"key": "time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES}
+        )
     for key, label in zip(PFV_EDIT_WEEKDAY_KEYS, PFV_EDIT_WEEKDAY_LABELS, strict=True):
         cols.append(
             {
@@ -724,6 +882,16 @@ def _pfv_edit_columns() -> list[dict[str, object]]:
                 "dropdown": None,
             }
         )
+        if not legacy:
+            # 2026-10-30: その曜日の枠の「訪問する週」(毎回 / Aの週 / Bの週)。空セル = 維持。
+            cols.append(
+                {
+                    "key": f"{key}_week",
+                    "header": f"{label}_訪問する週",
+                    "width": 12,
+                    "dropdown": PFV_VISIT_WEEK_JA_VALUES,
+                }
+            )
     cols.append(
         {
             "key": "delete_flag",
@@ -739,6 +907,7 @@ PFV_EDIT_COLUMNS: Final[list[dict[str, object]]] = _pfv_edit_columns()
 PFV_EDIT_COL_INDEX: Final[dict[str, int]] = {
     str(col["key"]): i for i, col in enumerate(PFV_EDIT_COLUMNS)
 }
+LEGACY_PFV_EDIT_COLUMNS: Final[list[dict[str, object]]] = _pfv_edit_columns(legacy=True)
 
 # patient_id 列ヘッダーのガイダンスコメント (新「編集用」シート用).
 PFV_EDIT_PATIENT_ID_COMMENT_TEXT: Final = (

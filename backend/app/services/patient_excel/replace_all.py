@@ -52,18 +52,23 @@ from app.services.patient_excel.importer import (
     STATUS_ANY_TO_EN,
     VISIT_SAME_MISMATCH_MESSAGE,
     _build_ng_staff_change,
+    _header_row,
     _load_ng_staff_by_patient,
     _load_staff_by_code,
     _merge_weekly_pattern,
     _parse_ng_staff_cell,
-    _parse_weekly_from_patient_cells,
     _read_visit_same_mark,
     apply_ng_staff_updates,
+    apply_weekly_check_to_row,
     cleanup_soft_deleted_patient_links,
     excel_address_updates,
     excel_visit_coords,
     has_address_columns,
+    parse_weekly_from_patient_cells_checked,
+    pfv_col_index,
+    pfv_edit_col_index,
     read_patient_header,
+    read_pfv_edit_cells,
     resolve_excel_visit_coords,
     visit_same_mismatch,
 )
@@ -71,11 +76,9 @@ from app.services.patient_excel.importer import (
     _parse_weekly_row as _parse_weekly_row_replace,  # noqa: E402
 )
 from app.services.patient_excel.schema import (
-    DEFAULT_TIME_TYPE,
     LEGACY_SHEET_PFV,
     PATIENT_COL_INDEX,
     PFV_COL_INDEX,
-    PFV_EDIT_COL_INDEX,
     PFV_EDIT_WEEKDAY_KEY_TO_INT,
     PFV_EDIT_WEEKDAY_KEYS,
     SEX_RESTRICTION_JA_VALUES,
@@ -84,10 +87,10 @@ from app.services.patient_excel.schema import (
     SHEET_PFV,
     SHEET_PFV_EDIT,
     SHEET_WEEKLY,
-    TIME_TYPE_VALUES,
     WEEKDAY_LABEL_TO_INT,
     build_office_code_short_maps,
     parse_course_token,
+    parse_pfv_visit_week_cell,
 )
 
 # ---------------------------------------------------------------------------
@@ -749,14 +752,16 @@ def _parse_pfv_row_replace(
     course_templates: dict[tuple[UUID, str], CourseTemplate],
     pending_new_keys: set[tuple[UUID, str, int, int]],
     offices_by_code: dict[str, Office] | None = None,
+    col_index: dict[str, int] | None = None,
 ) -> tuple[PfvExcelImportRow, dict[str, Any] | None]:
     """1 PFV 行をパース. 完全置換では update / delete は無く、new のみ.
 
     既存 PFV は全件物理削除されてから Excel の各行を INSERT するため、
     op_type は "new" のみ (or "error").
     """
-    cells: dict[str, Any] = {}
-    for col_key, idx in PFV_COL_INDEX.items():
+    # 2026-10-30: 列は見出しで見分ける (時間タイプの列を消し、訪問する週の列を足した)。
+    cells: dict[str, Any] = {key: None for key in PFV_COL_INDEX}
+    for col_key, idx in (col_index if col_index is not None else PFV_COL_INDEX).items():
         cells[col_key] = row[idx] if idx < len(row) else None
 
     raw_id = cells["patient_id"]
@@ -919,27 +924,23 @@ def _parse_pfv_row_replace(
 
     key = (patient_id, mode, weekday, slot_index)
 
-    # time_type
-    # E-4: 空セルは default で吸収 (round-trip 運用 0 エラー). 詳細は importer.py の
-    # 同 block コメント参照.
-    raw_tt = cells["time_type"]
-    if _is_blank(raw_tt):
-        time_type: str | None = DEFAULT_TIME_TYPE
-    else:
-        time_type = _read_str(raw_tt)
-        if time_type not in TIME_TYPE_VALUES:
-            return (
-                PfvExcelImportRow(
-                    row_number=row_number,
-                    patient_id=patient_id,
-                    patient_code=patient.code,
-                    weekday=weekday,
-                    slot_index=slot_index,
-                    operation="error",
-                    error_message=f"time_type の値が候補外: {time_type!r}",
-                ),
-                None,
-            )
+    # 時間タイプ: 2026-10-30 に列を消した (古いファイルの列は読まない)。
+    # 訪問する週 (毎回 / Aの週 / Bの週)。完全置換なので空セルは毎回。
+    try:
+        visit_week = parse_pfv_visit_week_cell(cells.get("visit_week")) or "every"
+    except ValueError as exc:
+        return (
+            PfvExcelImportRow(
+                row_number=row_number,
+                patient_id=patient_id,
+                patient_code=patient.code,
+                weekday=weekday,
+                slot_index=slot_index,
+                operation="error",
+                error_message=str(exc),
+            ),
+            None,
+        )
 
     # start_time
     try:
@@ -1086,6 +1087,7 @@ def _parse_pfv_row_replace(
         "course_template_id": course_template_id,
         # Phase E-5 (項目 ⑥B): サブ拠点 ID.
         "sub_office_id": sub_office_id,
+        "visit_week": visit_week,
     }
     return (
         PfvExcelImportRow(
@@ -1143,16 +1145,14 @@ def _parse_pfv_edit_patient_replace(
     patient_code_to_id: dict[str, UUID],
     course_templates: dict[tuple[UUID, str], CourseTemplate],
     offices_by_code: dict[str, Office],
+    col_index: dict[str, int] | None = None,
 ) -> tuple[list[PfvExcelImportRow], list[dict[str, Any]]]:
     """Phase G-51: 「固定訪問パターン（編集用）」1 行 → new PFV op の list (replace-all).
 
     完全置換では既存 PFV は全件物理削除済なので、行が示す各曜日 (時刻入り) について
     normal mode / slot_index=0 の new op を生成するだけ (update/delete は無い).
     """
-    cells: dict[str, Any] = {
-        col_key: (row[idx] if idx < len(row) else None)
-        for col_key, idx in PFV_EDIT_COL_INDEX.items()
-    }
+    cells = read_pfv_edit_cells(row, col_index)
     raw_id = cells["patient_id"]
     raw_code = cells["patient_code"]
 
@@ -1263,6 +1263,11 @@ def _parse_pfv_edit_patient_replace(
             continue
         if start_str is None:
             continue
+        try:
+            visit_week = parse_pfv_visit_week_cell(cells.get(f"{wd_key}_week")) or "every"
+        except ValueError as exc:
+            errors.append(f"{wd_key}: {exc}")
+            continue
         ct_id = _resolve_pfv_course_replace(
             _read_str(cells.get(f"{wd_key}_course")),
             offices_by_code=offices_by_code,
@@ -1280,6 +1285,7 @@ def _parse_pfv_edit_patient_replace(
                 "duration_min": duration,
                 "course_template_id": ct_id,
                 # sub_office_id は本シート対象外 (model default None).
+                "visit_week": visit_week,
             }
         )
         diff_rows.append(
@@ -1415,21 +1421,24 @@ async def parse_and_diff_replace_all(
             staff_code_by_id=staff_code_by_id,
             has_address_cols=has_address_cols,
         )
-        patient_rows.append(diff_row)
-        if op is not None:
-            patient_ops.append(op)
         # alive 既存患者が Excel に居る → 削除リストから除外
+        # (訪問頻度の検査でエラーになっても、Excel に居る患者は消さない)。
         if diff_row.operation in ("update", "noop") and diff_row.patient_id is not None:
             excel_patient_ids_seen.add(diff_row.patient_id)
         # Phase G-48: 統合シートの weekly_pattern を抽出 (new/update/noop 行のみ).
+        # 2026-10-30: 訪問頻度・起点の週・第何週が読めない行はエラー (= 全体を止める)。
         if diff_row.operation in ("new", "update", "noop") and diff_row.patient_id is not None:
             row_cells: dict[str, Any] = {
                 col_key: (row[idx] if idx < len(row) else None)
                 for col_key, idx in PATIENT_COL_INDEX.items()
             }
-            weekly = _parse_weekly_from_patient_cells(row_cells)
-            if weekly is not None:
+            weekly, w_errors, w_infos = parse_weekly_from_patient_cells_checked(row_cells)
+            op = apply_weekly_check_to_row(diff_row, op, w_errors, w_infos)
+            if weekly is not None and not w_errors:
                 weekly_from_patient_sheet[diff_row.patient_id] = weekly
+        patient_rows.append(diff_row)
+        if op is not None:
+            patient_ops.append(op)
 
     # 訪問先が変わった行の位置 (2026-10-22): 求められない行はエラー (= 全体を止める)。
     await resolve_excel_visit_coords(db, patient_rows, patient_ops, weekly_from_patient_sheet)
@@ -1485,6 +1494,7 @@ async def parse_and_diff_replace_all(
     if use_pfv_edit_sheet:
         # Phase G-51: 新「編集用」(患者 1 行) → 各曜日 new op (replace は全件再投入).
         ws_f = wb[SHEET_PFV_EDIT]
+        edit_col_index = pfv_edit_col_index(_header_row(ws_f))
         for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
             if _row_is_empty(row):
                 continue
@@ -1496,12 +1506,14 @@ async def parse_and_diff_replace_all(
                 patient_code_to_id=patient_code_to_id,
                 course_templates=course_templates,
                 offices_by_code=offices_by_code,
+                col_index=edit_col_index,
             )
             pfv_rows.extend(diff_rows_edit)
             pfv_ops.extend(ops_edit)
     else:
         assert pfv_sheet_name is not None
         ws_f = wb[pfv_sheet_name]
+        legacy_col_index = pfv_col_index(_header_row(ws_f))
         pending_new_keys: set[tuple[UUID, str, int, int]] = set()
         for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
             if _row_is_empty(row):
@@ -1516,6 +1528,7 @@ async def parse_and_diff_replace_all(
                 pending_new_keys=pending_new_keys,
                 # Phase E-5: sub_office_code 解決用.
                 offices_by_code=offices_by_code,
+                col_index=legacy_col_index,
             )
             pfv_rows.append(diff_row)
             if op is not None:

@@ -1576,10 +1576,10 @@ async def test_resurrection_preserves_id(client, db) -> None:
 # ---------------------------------------------------------------------------
 
 
-# E-4-1) Phase G-51: export 時に patient.weekly_pattern が無くても「編集用」シートの
-# time_type が default ("時間帯") で書き出され、import 側で空欄エラーにならない.
+# E-4-1) 2026-10-30: 「編集用」シートの時間タイプの列は消した (枠は時刻が決まっていて
+# 保存先が無い)。代わりに曜日ごとの「訪問する週」を書き出す (枠の既定は毎回)。
 @pytest.mark.asyncio
-async def test_patient_export_fills_default_time_type_when_empty(client, db) -> None:
+async def test_patient_export_edit_sheet_has_no_time_type_column(client, db) -> None:
     admin = await _make_user(db, "e4-export-tt@example.com", "admin")
     patient = await _make_patient(db, code="P-E4-TT-1", name="time_type欠落")
     # weekly_pattern は明示的に None (該当エントリ無し).
@@ -1594,9 +1594,11 @@ async def test_patient_export_fills_default_time_type_when_empty(client, db) -> 
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
     ws_f = wb[SHEET_PFV_EDIT]
-    # 患者行 (row 2) の time_type セルが空ではなく default "時間帯".
-    tt_value = ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["time_type"] + 1).value
-    assert tt_value == "時間帯"
+    headers = [c.value for c in ws_f[1]]
+    assert "時間タイプ" not in headers
+    assert "time_type" not in PFV_EDIT_COL_INDEX
+    assert ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["mon_week"] + 1).value == "毎回"
+    assert ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["tue_week"] + 1).value is None
 
 
 # E-4-2) Phase G-51: クロス拠点 course (患者 primary≠template office) は

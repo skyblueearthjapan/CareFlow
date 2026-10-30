@@ -23,7 +23,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import time
+from copy import copy
+from datetime import date, datetime, time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,9 @@ from app.services.patient_excel.schema import (
     WEEKDAY_MARK_VALUES,
     build_office_code_short_maps,
     course_token,
+    ng_weekdays_en_to_yesno_cells,
+    weekdays_cell_to_en,
+    weekdays_en_to_cell,
     weekdays_en_to_yesno_cells,
 )
 
@@ -121,9 +125,48 @@ FIXED_SUNDAY_NOTE_TEXT: str = "※固定訪問の日曜は取込対象外"
 FIXED_SCHEDULE_HEADING: str = f"■ 固定訪問スケジュール（週）　{FIXED_SUNDAY_NOTE_TEXT}"
 
 
+# 訪問頻度の残り と NG 曜日 (2026-10-30・biweekly-monthly-design §5「Excel」)。
+# テンプレートの空いているセルに見出しを足して書く (A1:H25 の印刷範囲の中)。
+KARTE_ANCHOR_LABEL_CELL: str = "E9"
+KARTE_ANCHOR_CELL: str = "F9"  # 隔週の起点の週 (月曜の日付)
+KARTE_VISIT_WEEKS_LABEL_CELL: str = "G9"
+KARTE_VISIT_WEEKS_CELL: str = "H9"  # 月の第何週 (例 1,3)
+KARTE_NG_LABEL_CELL: str = "E14"
+KARTE_NG_CELL: str = "F14"  # NG 曜日 (例 月,水 / なし)。F14:H14 を結合する
+KARTE_NG_RANGE: str = "F14:H14"
+KARTE_NG_NONE: str = "なし"
+
+
 # ---------------------------------------------------------------------------
 # 体裁 helpers
 # ---------------------------------------------------------------------------
+
+
+def _add_frequency_cells(ws: Worksheet) -> None:
+    """起点の週・第何週・NG 曜日の見出しをテンプレートの空きセルに書く.
+
+    見出しは「頻度:」(C9)、値は頻度の値 (D9) と同じ体裁にする。
+    """
+    label_src = ws["C9"]
+    value_src = ws["D9"]
+    for cell, text in (
+        (KARTE_ANCHOR_LABEL_CELL, "起点の週:"),
+        (KARTE_VISIT_WEEKS_LABEL_CELL, "第何週:"),
+        (KARTE_NG_LABEL_CELL, "NG曜日:"),
+    ):
+        c = ws[cell]
+        c.value = text
+        c.font = copy(label_src.font)
+        c.alignment = copy(label_src.alignment)
+        c.fill = copy(label_src.fill)
+        c.border = copy(label_src.border)
+    for cell in (KARTE_ANCHOR_CELL, KARTE_VISIT_WEEKS_CELL, KARTE_NG_CELL):
+        c = ws[cell]
+        c.font = copy(value_src.font)
+        c.alignment = copy(value_src.alignment)
+        c.fill = copy(value_src.fill)
+        c.border = copy(value_src.border)
+    ws.merge_cells(KARTE_NG_RANGE)
 
 
 def _load_template_ws() -> tuple[Workbook, Worksheet]:
@@ -140,6 +183,7 @@ def _load_template_ws() -> tuple[Workbook, Worksheet]:
     # 固定訪問スケジュール見出し (A16) に日曜取込対象外の注記を併記する.
     # 資産側の見出しは注記なしのため、ここで本文へ差し替える (font/fill は維持される).
     ws["A16"].value = FIXED_SCHEDULE_HEADING
+    _add_frequency_cells(ws)
     return wb, ws
 
 
@@ -328,6 +372,15 @@ def build_karte_workbook(
     ws["B9"].value = wp.get("frequency_per_week")
     vf = wp.get("visit_frequency")
     ws["D9"].value = VISIT_FREQUENCY_EN_TO_JA.get(vf, vf) if isinstance(vf, str) else None
+    # 隔週の起点の週 / 月の第何週 / NG 曜日 (2026-10-30)。
+    anchor = wp.get("biweekly_anchor")
+    ws[KARTE_ANCHOR_CELL].value = anchor if isinstance(anchor, str) and anchor else None
+    visit_weeks = wp.get("visit_weeks")
+    ws[KARTE_VISIT_WEEKS_CELL].value = str(visit_weeks) if visit_weeks not in (None, "") else None
+    ng = wp.get("ng_weekdays")
+    ws[KARTE_NG_CELL].value = (
+        weekdays_en_to_cell(ng) if isinstance(ng, list) and ng else KARTE_NG_NONE
+    )
 
     # 希望曜日 B11:H11 (〇/×).
     pref_weekdays = wp.get("preferred_weekdays")
@@ -444,6 +497,25 @@ def _visit_address_from_cell(value: str | None) -> str | None:
         if line.strip() and not line.strip().startswith(KARTE_INSURANCE_PREFIX)
     ]
     return " ".join(lines) or None
+
+
+def _read_anchor_cell(ws: Worksheet) -> str | None:
+    """起点の週のセル. Excel が日付にしたときは YYYY-MM-DD の文字にする."""
+    v = ws[KARTE_ANCHOR_CELL].value
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    return _read_cell_str(ws, KARTE_ANCHOR_CELL)
+
+
+def _ng_marks_from_cell(value: str | None) -> dict[str, str]:
+    """NG 曜日のセル ("月,水" / "なし" / 空) → ng_wd_* の 〇/×. 空は {} (= 維持)."""
+    if value is None:
+        return {}
+    if value.strip() == KARTE_NG_NONE:
+        return ng_weekdays_en_to_yesno_cells([])
+    return ng_weekdays_en_to_yesno_cells(weekdays_cell_to_en(value))
 
 
 def _strip_office_auto_suffix(label: str | None) -> str | None:
@@ -588,6 +660,10 @@ def parse_karte_workbook(
     pref_marks: dict[str, str | None] = {}
     for key, col in zip(PATIENT_WEEKDAY_COL_KEYS, WEEKDAY_COL_LETTERS, strict=True):
         pref_marks[key] = _read_cell_str(ws, f"{col}11")
+    # 起点の週 / 第何週 / NG 曜日 (2026-10-30)。空欄 = 維持 (この欄の無い古いカルテも同じ)。
+    biweekly_anchor = _read_anchor_cell(ws)
+    visit_weeks = _read_cell_str(ws, KARTE_VISIT_WEEKS_CELL)
+    ng_marks = _ng_marks_from_cell(_read_cell_str(ws, KARTE_NG_CELL))
 
     # ---- 標準 Workbook を組み立てる ----
     out = Workbook()
@@ -616,6 +692,9 @@ def parse_karte_workbook(
         "requires_multiple_staff": requires_multiple_staff,
         "frequency_per_week": frequency_per_week,
         "visit_frequency": visit_frequency,
+        "visit_weeks": visit_weeks,
+        "biweekly_anchor": biweekly_anchor,
+        **ng_marks,
         **pref_marks,
         "service_minutes": service_minutes,
         "weekly_time_type": time_type,
@@ -647,10 +726,12 @@ def parse_karte_workbook(
     # importer (_parse_pfv_edit_patient) は service_minutes を全曜日 PFV の duration_min
     # に適用する. これは意図的挙動で、カルテ上は「サービス時間」1 値が固定訪問の
     # duration を兼ねる (本番確認で weekly service_minutes と PFV duration の不整合は 0 件).
+    # 時間タイプは固定訪問の枠に保存先が無い (2026-10-30 に列を消した)。患者マスタの
+    # 時間タイプ (weekly_time_type) にだけ渡す。枠の「訪問する週」はカルテに欄が無いので
+    # 空 (= 維持)。
     edit_values: dict[str, object | None] = {
         "patient_code": patient_code,
         "service_minutes": service_minutes,
-        "time_type": time_type,
     }
     # WEEKDAY_COL_LETTERS は月..日. PFV_EDIT_WEEKDAY_KEYS は月..土 (index 0..5).
     for wd_key in PFV_EDIT_WEEKDAY_KEYS:
