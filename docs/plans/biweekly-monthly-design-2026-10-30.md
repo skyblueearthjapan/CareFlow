@@ -148,3 +148,14 @@ PO の相談（10/30）：患者マスタで「隔週」を選べるが、週を
 ### 未決（PO に聞く）
 
 1. カイポケ側の頻度の設定を事務所にそろえてもらえるか。
+
+## 10. 頻度に合わない補助の値の片付け（2026-11-01 PO 了承）
+
+頻度を切り替えても、使わなくなった補助の値が裏に残っていた（本番で隔週の P128・P131 に `visit_weeks` "1,3"）。保存のたびに、頻度に合わない値をキーごと消す。
+
+- 月の第何週でない（毎週・隔週・未設定）→ `visit_weeks` を消す。隔週でない → `biweekly_anchor` を消す。
+- 片付けは純関数 `prune_frequency_fields`（`backend/app/services/scheduling/visit_frequency.py`）1 つにまとめた。
+- 通す経路：患者の作成と PATCH（`api/v1/patients.py` の `_model_dump_for_orm`）、時刻変更の申請（恒常）の承認と患者作成の申請（`pending_request_applier.py`）、Excel・カルテの取り込み（`importer._merge_weekly_pattern`。頻度のセルが空なら今の頻度で見る）。
+- Excel・カルテの書き出しは、DB に古い値が残っていても頻度に合わない値を空で出す。取り込みで合わない値が書いてあっても保存しない（行エラーにしない。隔週でない方の起点の週は「そろえました」の知らせも出さない）。
+- 入力欄と Excel の列は残す（月次・隔週の方に要る）。判定（`visit_frequency.py` の判定の関数）は前から合わない値を読まないので変えない。migration は作らない。本番の古い値は、人が患者マスタで保存し直すか、Excel を書き出して取り込み直すと消える。
+- 週の予定の画面から希望の時刻だけを書き換える経路（`schedule_v2._update_weekly_pattern_entry`・`schedule_fix_service`）は片付けを通さない（ほかのキーをそのまま残すため、古い値も残るが判定には効かない）。
