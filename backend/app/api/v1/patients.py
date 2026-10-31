@@ -67,6 +67,7 @@ from app.services.scheduling.visit_frequency import (
     frequency_status,
     normalize_visit_weeks,
     pfv_slots,
+    prune_frequency_fields,
     upcoming_visit_dates,
     validate_biweekly_anchor,
     visit_frequency_of,
@@ -122,6 +123,9 @@ def _model_dump_for_orm(payload: PatientCreate | PatientUpdate, *, partial: bool
             data["primary_office_id"] = UUID(str(data["primary_office_id"]))
         except (ValueError, TypeError):
             data["primary_office_id"] = None
+    # 訪問頻度に合わない補助の値 (訪問週・起点の週) は保存のたびに消す (設計 §10)。
+    if isinstance(data.get("weekly_pattern"), dict):
+        data["weekly_pattern"] = prune_frequency_fields(data["weekly_pattern"])
     # ``special_week_active`` is a list[dict] (already JSON-mode-friendly).
     return data
 

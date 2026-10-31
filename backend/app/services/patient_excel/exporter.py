@@ -74,6 +74,7 @@ from app.services.patient_excel.schema import (
     ng_weekdays_en_to_yesno_cells,
     weekdays_en_to_yesno_cells,
 )
+from app.services.scheduling.visit_frequency import prune_frequency_fields
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,8 @@ def _write_patient_row(
     wp = patient.weekly_pattern or {}
     if not isinstance(wp, dict):
         wp = {}
+    # 頻度に合わない訪問週・起点の週は空で出す (DB に古い値が残っていても。設計 §10)。
+    wp = prune_frequency_fields(wp)
     vf_raw = wp.get("visit_frequency")
     visit_frequency_ja = (
         VISIT_FREQUENCY_EN_TO_JA.get(vf_raw, vf_raw) if isinstance(vf_raw, str) else None

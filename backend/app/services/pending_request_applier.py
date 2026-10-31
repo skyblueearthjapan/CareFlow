@@ -66,6 +66,7 @@ from app.services.proposed_visits_pfv import (
 )
 from app.services.scheduling.config import load_scheduling_config
 from app.services.scheduling.ng_weekdays import ng_weekday_detail, patient_ng_weekdays
+from app.services.scheduling.visit_frequency import prune_frequency_fields
 from app.services.scheduling.visit_week_carry import carried_visit_week, load_visit_week_by_slot
 from app.services.staff_leave import (
     StaffLeaveError,
@@ -510,7 +511,7 @@ async def _apply_patient_create(
             primary_office_id=primary_office_id,
             sex_restriction=payload.get("sex_restriction"),
             requires_multiple_staff=bool(payload.get("requires_multiple_staff", False)),
-            weekly_pattern=payload.get("weekly_pattern"),
+            weekly_pattern=prune_frequency_fields(payload.get("weekly_pattern")),
             special_weekly_pattern=payload.get("special_weekly_pattern"),
             special_week_active=payload.get("special_week_active") or [],
             note=payload.get("note"),
@@ -1084,7 +1085,10 @@ async def _apply_patient_reschedule(
                 )
             # 申請に載ったキーだけを書き換える (ng_weekdays / biweekly_anchor /
             # visit_weeks / entries など、申請が触れないキーを消さない)。
-            patient.weekly_pattern = {**(patient.weekly_pattern or {}), **new_pattern}
+            # 重ねた後の頻度に合わない訪問週・起点の週は消す (設計 §10)。
+            patient.weekly_pattern = prune_frequency_fields(
+                {**(patient.weekly_pattern or {}), **new_pattern}
+            )
 
     await db.flush()
     # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。

@@ -2637,7 +2637,7 @@ async def test_full_japanese_roundtrip_noop(client, db) -> None:
     )
     p.weekly_pattern = {
         "frequency_per_week": 3,
-        "visit_frequency": "every",
+        "visit_frequency": "monthly",
         "visit_weeks": "1,3",
         "preferred_weekdays": ["Mon", "Wed", "Fri"],
         "service_minutes": 40,

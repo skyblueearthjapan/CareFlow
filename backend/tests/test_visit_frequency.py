@@ -35,6 +35,7 @@ from app.services.scheduling.visit_frequency import (
     is_slot_visit_week,
     normalize_visit_weeks,
     nth_weekday_of_month,
+    prune_frequency_fields,
     upcoming_visit_dates,
     validate_biweekly_anchor,
 )
@@ -627,7 +628,109 @@ async def test_patient_patch_validates_frequency_keys(client, db) -> None:
     assert ok.status_code == 200, ok.text
     wp = ok.json()["weekly_pattern"]
     assert wp["visit_weeks"] == "1,3"
-    assert wp["biweekly_anchor"] == "2026-11-02"
+    # 月の第何週の方の起点の週は保存しない (設計 §10)。
+    assert "biweekly_anchor" not in wp
+
+
+def test_prune_frequency_fields() -> None:
+    both = {"biweekly_anchor": "2026-11-02", "visit_weeks": "1,3", "entries": [{"x": 1}]}
+    assert prune_frequency_fields({"visit_frequency": "every", **both}) == {
+        "visit_frequency": "every",
+        "entries": [{"x": 1}],
+    }
+    assert prune_frequency_fields({**both}) == {"entries": [{"x": 1}]}  # 未設定 = 毎週
+    assert prune_frequency_fields({"visit_frequency": None, **both}) == {
+        "visit_frequency": None,
+        "entries": [{"x": 1}],
+    }
+    assert prune_frequency_fields({"visit_frequency": "biweekly", **both}) == {
+        "visit_frequency": "biweekly",
+        "biweekly_anchor": "2026-11-02",
+        "entries": [{"x": 1}],
+    }
+    assert prune_frequency_fields({"visit_frequency": "monthly", **both}) == {
+        "visit_frequency": "monthly",
+        "visit_weeks": "1,3",
+        "entries": [{"x": 1}],
+    }
+    # 元の dict は変えない・dict でないものはそのまま。
+    src = {"visit_frequency": "every", "visit_weeks": "1,3"}
+    prune_frequency_fields(src)
+    assert src == {"visit_frequency": "every", "visit_weeks": "1,3"}
+    assert prune_frequency_fields(None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("freq", "keep_anchor", "keep_weeks"),
+    [
+        ("every", False, False),
+        (None, False, False),
+        ("biweekly", True, False),
+        ("monthly", False, True),
+    ],
+)
+async def test_patient_patch_prunes_fields_not_for_frequency(
+    client, db, freq: str | None, keep_anchor: bool, keep_weeks: bool
+) -> None:
+    """頻度を切り替えて保存すると、合わない訪問週・起点の週は DB に残らない (設計 §10)."""
+    headers = await _admin(db)
+    p = await _patient(
+        db,
+        f"VF-PRUNE-{freq}",
+        {
+            "visit_frequency": "monthly",
+            "visit_weeks": "1,3",
+            "biweekly_anchor": "2026-11-02",
+            "entries": [{"weekday": "Tue"}],
+        },
+    )
+    await db.commit()
+    res = await client.patch(
+        f"/api/v1/patients/{p.id}",
+        json={
+            "weekly_pattern": {
+                "visit_frequency": freq,
+                "visit_weeks": "1,3",
+                "biweekly_anchor": "2026-11-02",
+                "entries": [{"weekday": "Tue"}],
+            }
+        },
+        headers=headers,
+    )
+    assert res.status_code == 200, res.text
+    await db.refresh(p)
+    for wp in (res.json()["weekly_pattern"], p.weekly_pattern):
+        assert ("biweekly_anchor" in wp) is keep_anchor
+        assert ("visit_weeks" in wp) is keep_weeks
+        assert wp["entries"][0]["weekday"] == "Tue"
+    if keep_anchor:
+        assert p.weekly_pattern["biweekly_anchor"] == "2026-11-02"
+    if keep_weeks:
+        assert p.weekly_pattern["visit_weeks"] == "1,3"
+
+
+@pytest.mark.asyncio
+async def test_patient_create_prunes_fields_not_for_frequency(client, db) -> None:
+    headers = await _admin(db)
+    res = await client.post(
+        "/api/v1/patients",
+        json={
+            "code": "VF-CREATE",
+            "name": "頻度 作成",
+            "weekly_pattern": {
+                "visit_frequency": "biweekly",
+                "visit_weeks": "1,3",
+                "biweekly_anchor": "2026-11-02",
+            },
+        },
+        headers=headers,
+    )
+    assert res.status_code == 201, res.text
+    p = await db.scalar(select(Patient).where(Patient.code == "VF-CREATE"))
+    assert p is not None
+    assert p.weekly_pattern["biweekly_anchor"] == "2026-11-02"
+    assert "visit_weeks" not in p.weekly_pattern
 
 
 @pytest.mark.asyncio

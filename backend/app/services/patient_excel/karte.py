@@ -79,6 +79,7 @@ from app.services.patient_excel.schema import (
     weekdays_en_to_cell,
     weekdays_en_to_yesno_cells,
 )
+from app.services.scheduling.visit_frequency import prune_frequency_fields
 
 # ---------------------------------------------------------------------------
 # シート名 / レイアウト定数
@@ -371,6 +372,8 @@ def build_karte_workbook(
 
     # ---- 訪問条件 (weekly_pattern) ----
     wp: dict[str, Any] = patient.weekly_pattern if isinstance(patient.weekly_pattern, dict) else {}
+    # 頻度に合わない訪問週・起点の週は空で出す (設計 §10)。
+    wp = prune_frequency_fields(wp)
     ws["B9"].value = wp.get("frequency_per_week")
     vf = wp.get("visit_frequency")
     ws["D9"].value = VISIT_FREQUENCY_EN_TO_JA.get(vf, vf) if isinstance(vf, str) else None

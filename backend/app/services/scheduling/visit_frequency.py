@@ -165,6 +165,26 @@ def visit_frequency_of(weekly_pattern: Any) -> str:
     return raw if isinstance(raw, str) and raw in VISIT_FREQUENCIES else FREQ_EVERY
 
 
+def prune_frequency_fields(weekly_pattern: Any) -> Any:
+    """頻度に合わない補助の値を取り除いた weekly_pattern の写しを返す (2026-11-01).
+
+    * 月の第何週でない (毎週・隔週・未設定) → ``visit_weeks`` のキーを消す。
+    * 隔週でない → ``biweekly_anchor`` のキーを消す。
+
+    保存のたびに通し、頻度を切り替えた後に古い値が裏に残らないようにする
+    (設計 §10)。dict 以外 (None など) はそのまま返す。元の dict は変えない。
+    """
+    if not isinstance(weekly_pattern, dict):
+        return weekly_pattern
+    raw = weekly_pattern.get("visit_frequency")
+    out = dict(weekly_pattern)
+    if raw != FREQ_MONTHLY:
+        out.pop("visit_weeks", None)
+    if raw != FREQ_BIWEEKLY:
+        out.pop("biweekly_anchor", None)
+    return out
+
+
 def frequency_status(weekly_pattern: Any) -> FrequencyStatus:
     """頻度の設定が足りているか.
 
@@ -497,6 +517,7 @@ __all__ = [
     "pfv_slot",
     "pfv_slots",
     "pfv_visits_in_week",
+    "prune_frequency_fields",
     "upcoming_visit_dates",
     "validate_biweekly_anchor",
     "visit_frequency_of",

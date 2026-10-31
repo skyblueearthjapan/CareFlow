@@ -96,7 +96,12 @@ from app.services.patient_excel.schema import (
     weekday_yesno_cells_to_en,
     weekdays_cell_to_en,
 )
-from app.services.scheduling.visit_frequency import monday_of, normalize_visit_weeks
+from app.services.scheduling.visit_frequency import (
+    FREQ_BIWEEKLY,
+    monday_of,
+    normalize_visit_weeks,
+    prune_frequency_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2561,6 +2566,9 @@ def _merge_weekly_pattern(
             continue
         else:
             base[key] = value
+    # 頻度に合わない訪問週・起点の週は保存しない (設計 §10)。頻度は重ねた後の値で見る
+    # (頻度のセルが空 = いまの頻度のまま)。
+    base = prune_frequency_fields(base)
     if not base and not isinstance(existing_wp, dict):
         # 希望が何も無い方 (weekly_pattern=None) で、変わるものも無い (NG 曜日なしだけ等)。
         return existing_wp
@@ -2608,6 +2616,12 @@ def apply_weekly_check_to_row(
         and isinstance(existing_wp, dict)
         and existing_wp.get("biweekly_anchor") == new_anchor
     ):
+        return op
+    # 隔週でない方の起点の週は保存しない (設計 §10) ので、そろえた知らせも出さない。
+    freq = (weekly or {}).get("visit_frequency")
+    if freq is None and isinstance(existing_wp, dict):
+        freq = existing_wp.get("visit_frequency")
+    if freq != FREQ_BIWEEKLY:
         return op
     for info in infos:
         diff_row.changes.append(

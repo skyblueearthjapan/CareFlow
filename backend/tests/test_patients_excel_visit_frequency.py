@@ -206,9 +206,118 @@ def test_merge_keeps_other_keys_and_handles_clear_and_empty_ng() -> None:
     assert _merge_weekly_pattern(None, {"ng_weekdays": []}) is None
 
 
+def test_merge_prunes_fields_not_for_frequency() -> None:
+    """頻度に合わない訪問週・起点の週は重ねた後に消す (設計 §10)."""
+    stale = {"visit_frequency": "every", "visit_weeks": "1,3", "biweekly_anchor": "2026-11-02"}
+    # 頻度のセルが空 (= いまの頻度のまま) でも、合わない古い値は残さない。
+    assert _merge_weekly_pattern(stale, {"frequency_per_week": 1}) == {
+        "visit_frequency": "every",
+        "frequency_per_week": 1,
+    }
+    # 隔週に変えた行に第何週が書いてあっても保存しない。
+    assert _merge_weekly_pattern(
+        {"entries": []},
+        {"visit_frequency": "biweekly", "visit_weeks": "1,3", "biweekly_anchor": "2026-11-02"},
+    ) == {"entries": [], "visit_frequency": "biweekly", "biweekly_anchor": "2026-11-02"}
+    # 月の第何週は第何週を残し、起点の週は消す (いまの頻度のまま第何週だけ書いた行も同じ)。
+    assert _merge_weekly_pattern(
+        {"visit_frequency": "monthly", "biweekly_anchor": "2026-11-02"},
+        {"visit_weeks": "2"},
+    ) == {"visit_frequency": "monthly", "visit_weeks": "2"}
+
+
 # ---------------------------------------------------------------------------
 # 書き出し → 取り込み
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_blanks_fields_not_for_frequency(client, db) -> None:
+    """DB に古い値が残っていても、頻度に合わない訪問週・起点の週は空で出す."""
+    admin = await _make_user(db, "freq-stale-out@example.com")
+    stale = {"visit_weeks": "1,3", "biweekly_anchor": "2026-11-02"}
+    p_bi = await _make_patient(
+        db, code="P-STALE-BI", weekly_pattern={"visit_frequency": "biweekly", **stale}
+    )
+    p_mo = await _make_patient(
+        db, code="P-STALE-MO", weekly_pattern={"visit_frequency": "monthly", **stale}
+    )
+    p_ev = await _make_patient(
+        db, code="P-STALE-EV", weekly_pattern={"visit_frequency": "every", **stale}
+    )
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    ws = load_workbook(BytesIO(res.content))[SHEET_PATIENTS]
+    col = {k: i + 1 for k, i in PATIENT_COL_INDEX.items()}
+    by_code = {
+        ws.cell(row=r, column=col["patient_code"]).value: r for r in range(2, ws.max_row + 1)
+    }
+
+    def cell(p: Patient, key: str):
+        return ws.cell(row=by_code[p.code], column=col[key]).value
+
+    assert cell(p_bi, "biweekly_anchor") == "2026-11-02"
+    assert cell(p_bi, "visit_weeks") is None
+    assert cell(p_mo, "biweekly_anchor") is None
+    assert cell(p_mo, "visit_weeks") == "1,3"
+    assert cell(p_ev, "biweekly_anchor") is None
+    assert cell(p_ev, "visit_weeks") is None
+
+    # カルテも同じ。
+    res = await client.get(
+        f"/api/v1/patients/import-export/karte-export?patient_id={p_ev.id}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    ws_k = load_workbook(BytesIO(res.content))[SHEET_KARTE]
+    assert ws_k[KARTE_ANCHOR_CELL].value is None
+    assert ws_k[KARTE_VISIT_WEEKS_CELL].value is None
+
+
+@pytest.mark.asyncio
+async def test_import_does_not_save_fields_not_for_frequency(client, db) -> None:
+    """頻度に合わない訪問週・起点の週が書いてあっても保存しない (行エラーにはしない)."""
+    admin = await _make_user(db, "freq-stale-in@example.com")
+    p_ev = await _make_patient(
+        db,
+        code="P-IN-EV",
+        weekly_pattern={"visit_frequency": "monthly", "visit_weeks": "1,3"},
+    )
+    p_bi = await _make_patient(db, code="P-IN-BI", weekly_pattern={"frequency_per_week": 1})
+    content = _book(
+        patient_rows=[
+            {
+                "patient_id": str(p_ev.id),
+                "patient_code": p_ev.code,
+                "visit_frequency": "毎週",
+                "visit_weeks": "1,3",
+                "biweekly_anchor": date(2026, 11, 4),  # 水曜 (隔週でないので知らせもしない)
+            },
+            {
+                "patient_id": str(p_bi.id),
+                "patient_code": p_bi.code,
+                "visit_frequency": "隔週（2 週おき）",
+                "visit_weeks": "2",
+                "biweekly_anchor": date(2026, 11, 2),
+            },
+        ],
+    )
+    res = await _post(client, admin, "import", content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_error"] == 0, body
+    row_ev = next(r for r in body["patient_rows"] if r["patient_code"] == p_ev.code)
+    assert not any(c["field"] == "biweekly_anchor" for c in row_ev["changes"]), row_ev
+
+    await db.refresh(p_ev)
+    await db.refresh(p_bi)
+    assert p_ev.weekly_pattern == {"visit_frequency": "every"}
+    assert p_bi.weekly_pattern == {
+        "frequency_per_week": 1,
+        "visit_frequency": "biweekly",
+        "biweekly_anchor": "2026-11-02",
+    }
 
 
 @pytest.mark.asyncio
@@ -440,6 +549,7 @@ async def test_replace_all_keeps_visit_week_and_frequency(client, db) -> None:
 async def test_karte_shows_frequency_and_roundtrip_is_noop(client, db) -> None:
     admin = await _make_user(db, "freq-karte@example.com")
     wp = {**_WP, "visit_frequency": "monthly", "visit_weeks": "1,3"}
+    wp.pop("biweekly_anchor")  # 月の第何週の方は起点の週を持たない (設計 §10)
     p = await _make_patient(db, weekly_pattern=wp)
     await _make_pfv(db, patient_id=p.id, weekday=1, visit_week="B")
 
@@ -450,7 +560,7 @@ async def test_karte_shows_frequency_and_roundtrip_is_noop(client, db) -> None:
     assert res.status_code == 200, res.text
     ws = load_workbook(BytesIO(res.content))[SHEET_KARTE]
     assert ws["D9"].value == "月の第何週"
-    assert ws[KARTE_ANCHOR_CELL].value == "2026-11-02"
+    assert ws[KARTE_ANCHOR_CELL].value is None
     assert ws[KARTE_VISIT_WEEKS_CELL].value == "1,3"
     assert ws[KARTE_NG_CELL].value == "月,水"
 

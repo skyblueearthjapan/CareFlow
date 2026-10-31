@@ -730,9 +730,51 @@ async def test_reschedule_permanent_request_keeps_other_weekly_pattern_keys(db) 
     assert wp["ng_weekdays"] == ["Tue"]
     assert wp["visit_frequency"] == "biweekly"
     assert wp["biweekly_anchor"] == "2026-11-02"
-    assert wp["visit_weeks"] == [1, 3]
+    # 隔週の方の訪問週は頻度に合わないので片付く (設計 §10)。
+    assert "visit_weeks" not in wp
     assert wp["entries"] == [{"weekday": "Mon", "preferred_start": "09:00"}]
     assert wp["future_key"] == {"keep": True}
+
+
+@pytest.mark.asyncio
+async def test_reschedule_permanent_request_prunes_fields_not_for_frequency(db) -> None:
+    """申請で頻度が月の第何週に変わると、起点の週は残らず訪問週は残る (設計 §10)."""
+    user = await _plain_user(db, "ng-resched-prune@example.com")
+    office = await _office(db)
+    p = await _patient(
+        db,
+        code="NG-RESCHED-PRUNE",
+        office=office,
+        preferred_weekdays=["Mon"],
+        visit_frequency="biweekly",
+        biweekly_anchor="2026-11-02",
+        visit_weeks="1,3",
+    )
+    v = await _visit(db, p, weekday=0)
+    row = PendingRequest(
+        requester_user_id=user.id,
+        request_type="patient_reschedule",
+        payload={
+            "visit_id": str(v.id),
+            "new_start_time": "10:00",
+            "new_end_time": "10:30",
+            "new_weekly_pattern": {"visit_frequency": "monthly"},
+        },
+        target_patient_id=p.id,
+        scope="permanent",
+        status="pending",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    await PendingRequestApplier().apply(db, row)
+    await db.commit()
+    await db.refresh(p)
+    wp = p.weekly_pattern
+    assert wp["visit_frequency"] == "monthly"
+    assert wp["visit_weeks"] == "1,3"
+    assert "biweekly_anchor" not in wp
 
 
 @pytest.mark.asyncio
