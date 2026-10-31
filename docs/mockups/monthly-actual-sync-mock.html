@@ -1,0 +1,203 @@
+<title>月の実績タブ</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* 訪問記録 › 月の実績：上に 6 段の手順、下にその段の中身。PC は左メニュー付き、狭い画面では縦に積む */
+:root{
+  --pink:#e15a7f;--pink-d:#c4446a;--pink-l:#fde8ee;--pink-ll:#fff5f8;
+  --bg:#f6f2ef;--card:#fff;--ink:#2b2b2b;--mute:#727272;--line:#ece3de;
+  --ok:#2e7d32;--ok-l:#e8f5e9;--warn:#c62828;--warn-l:#fdecea;--amber:#b26a00;--amber-l:#fff4e0;--blue:#1565c0;--blue-l:#e8f0fb;
+  --font:"Noto Sans JP","Yu Gothic UI",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);font-size:14px}
+button{font:inherit;cursor:pointer}
+.wrap{max-width:1280px;margin:0 auto;padding-block:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.lead{color:var(--mute);font-size:12px;margin:0 0 10px}
+.app{display:grid;grid-template-columns:180px 1fr;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.side{border-right:1px solid var(--line);padding:12px 8px;display:flex;flex-direction:column;gap:2px}
+.side .brand{font-weight:700;color:var(--pink);padding:4px 10px 12px;font-size:16px}
+.side span{padding:9px 10px;border-radius:8px;color:#b3aaa6}
+.side span.on{background:var(--pink-l);color:var(--pink-d);font-weight:700}
+.main{min-width:0;padding:14px 16px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.tabs span{padding:8px 14px;color:var(--mute);border-bottom:3px solid transparent}
+.tabs span.on{color:var(--pink-d);border-bottom-color:var(--pink);font-weight:700}
+.tabs .new{font-size:10px;background:var(--pink);color:#fff;border-radius:4px;padding:0 4px;margin-left:4px}
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px}
+.head h2{margin:0;font-size:17px}
+.head select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font:inherit}
+.head .reset{margin-left:auto;border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 10px;font-size:12px}
+.steps{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:14px}
+.step{border:1px solid var(--line);border-radius:10px;padding:8px;background:#fff;text-align:left;min-width:0}
+.step small{display:block;color:var(--mute);font-size:11px}
+.step b{font-size:13px}
+.step.done{background:var(--ok-l);border-color:#b7dcb9}
+.step.done small{color:var(--ok)}
+.step.cur{border-color:var(--pink);background:var(--pink-ll);box-shadow:0 0 0 1px var(--pink) inset}
+.step.cur small{color:var(--pink-d)}
+.panel{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fff}
+.panel h3{margin:0 0 6px;font-size:15px}
+.panel p{margin:0 0 10px;line-height:1.7}
+.primary{background:var(--pink);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-weight:700}
+.primary:disabled{opacity:.4;cursor:default}
+.ghost{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 14px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.stats{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px}
+.stat{flex:1;min-width:110px;border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.stat b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.stat.red b{color:var(--warn)}.stat.amber b{color:var(--amber)}.stat.green b{color:var(--ok)}.stat.blue b{color:var(--blue)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:4px 10px;font-size:12px}
+.chip.on{background:var(--pink);border-color:var(--pink);color:#fff}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;min-width:760px}
+th{background:#fdf0f3;text-align:left;font-size:12px;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+td.t{font-variant-numeric:tabular-nums;white-space:nowrap}
+.rk{color:#ad1457;font-weight:600}.kp{color:var(--blue)}
+.d{font-weight:700;font-variant-numeric:tabular-nums}.d.big{color:var(--warn)}.d.sm{color:var(--amber)}
+.tag{display:inline-block;border-radius:6px;padding:1px 6px;font-size:11px;margin:0 3px 3px 0;white-space:nowrap}
+.tag.red{background:var(--warn-l);color:var(--warn)}.tag.amber{background:var(--amber-l);color:var(--amber)}.tag.blue{background:var(--blue-l);color:var(--blue)}.tag.ok{background:var(--ok-l);color:var(--ok)}
+.sw{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.sw button{border:none;background:#fff;padding:4px 9px;font-size:12px}
+.sw button.on.y{background:var(--pink);color:#fff}.sw button.on.n{background:#8d8480;color:#fff}
+.log{background:#1f1d1c;color:#e9e4e1;border-radius:10px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;height:180px;overflow:auto;margin-top:10px;white-space:pre-wrap}
+.bar{height:10px;background:var(--line);border-radius:6px;overflow:hidden;margin:8px 0}
+.bar i{display:block;height:100%;background:var(--pink);width:0;transition:width .3s}
+.note{font-size:12px;color:var(--mute)}
+.ok-box{background:var(--ok-l);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.files{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.file{border:1px solid var(--line);border-radius:10px;padding:10px 12px;flex:1;min-width:200px}
+.file b{display:block}
+.ask{margin-top:14px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 16px;line-height:1.8}
+.ask h3{margin:0 0 4px;font-size:14px}.ask ol{margin:0;padding-left:20px}
+:focus-visible{outline:2px solid var(--pink);outline-offset:2px}
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line);padding:6px}
+  .side span{white-space:nowrap}.side span:not(.on):not(.brand){display:none}
+  .steps{grid-template-columns:repeat(3,1fr)}
+  .tabs{overflow-x:auto}.tabs span{white-space:nowrap}
+}
+</style>
+
+<div class="wrap">
+  <p class="lead">動くモック（架空のデータ）。訪問記録の 3 つ目のタブ「月の実績」で、10 月分をカイポケへ反映するまでの流れです。カイポケには何も書きません。</p>
+  <div class="app">
+    <nav class="side"><span class="brand">らく助</span><span>ダッシュボード</span><span>スケジュール</span><span>訪問モニター</span><span>やること</span><span class="on">訪問記録</span><span>患者</span><span>連携</span></nav>
+    <div class="main">
+      <div class="tabs"><span>打刻履歴</span><span>音声記録</span><span class="on">月の実績<span class="new">新</span></span></div>
+      <div class="head"><h2>月の実績をカイポケへ</h2>
+        <select id="month" aria-label="対象の月"><option>2026 年 10 月</option></select>
+        <span class="note" id="status"></span>
+        <button class="reset" onclick="reset()">最初に戻す</button></div>
+      <div class="steps" id="steps"></div>
+      <div class="panel" id="panel"></div>
+      <div class="ask"><h3>このモックで決めたいこと</h3><ol>
+        <li>置き場所は訪問記録の 3 つ目のタブ「月の実績」（11/1 PO 了承）。打刻履歴で時刻を合わせてから、ここへ進む流れでよいか。</li>
+        <li>最初から「反映しない」にしておく行：30 分の境目をまたぐ・担当が違う・記録書Ⅱと 10 分以上ずれる・らく助かカイポケの片方にしかない。</li>
+        <li>「試しに流す」（登録しない）を挟んでから「反映する」。反映できるのは管理者だけ。</li>
+        <li>最後に、反映した後のカイポケの実績で、9 月の見本と同じ Excel・A4 を出す。</li>
+      </ol></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const STEPS = [['1','読み取る'],['2','突き合わせ'],['3','試しに流す'],['4','反映する'],['5','確かめる'],['6','一覧を出す']];
+const NAMES = ['青木 さくら','石田 健','上野 ゆり','岡本 翔','加藤 みのり','木下 誠','小林 あおい','斉藤 大地'];
+const STAFF = ['佐藤 花子','鈴木 一郎','高橋 美咲'];
+function mk(){
+  const rows=[]; let id=1;
+  const add=(o)=>rows.push(Object.assign({id:id++},o));
+  // 例の行（架空）
+  add({d:'10/01',p:NAMES[0],s:STAFF[0],rk:['14:53','15:33'],kp:['14:43','15:33'],k2:['14:33','15:33'],adj:'到着'});
+  add({d:'10/02',p:NAMES[1],s:STAFF[1],rk:['15:38','16:20'],kp:['15:30','16:05']});
+  add({d:'10/05',p:NAMES[2],s:STAFF[0],rk:['12:57','13:40'],kp:['13:00','13:35']});
+  add({d:'10/06',p:NAMES[3],s:STAFF[2],rk:['14:48','15:35'],kp:['15:00','15:35']});
+  add({d:'10/07',p:NAMES[4],s:STAFF[1],rk:['15:00','16:00'],kp:['15:00','15:35'],adj:'到着・退出'});
+  add({d:'10/16',p:NAMES[5],s:STAFF[0],rk:['16:16','16:34'],kp:['16:15','16:50'],cross:true});
+  add({d:'10/22',p:NAMES[6],s:STAFF[2],rk:['18:00','18:06'],kp:['18:00','18:55'],cross:true,adj:'到着・退出'});
+  add({d:'10/15',p:NAMES[7],s:STAFF[1],rk:['16:04','16:40'],kp:['17:20','17:55'],kpStaff:STAFF[0]});
+  add({d:'10/09',p:NAMES[0],s:STAFF[0],rk:['10:05','10:41'],kp:['10:00','10:35']});
+  add({d:'10/12',p:NAMES[1],s:STAFF[2],rk:['11:02','11:37'],kp:['11:00','11:35']});
+  add({d:'10/20',p:NAMES[3],s:STAFF[1],rk:['09:31','10:06'],kp:null,only:'rk'});
+  add({d:'10/27',p:NAMES[4],s:null,rk:null,kp:['13:00','13:35'],only:'kp',kpStaff:STAFF[2]});
+  rows.forEach(r=>{
+    const m=t=>{const[a,b]=t.split(':');return +a*60+ +b};
+    if(r.rk&&r.kp){ r.ds=m(r.rk[0])-m(r.kp[0]); r.de=m(r.rk[1])-m(r.kp[1]); }
+    r.k2off = r.k2 && r.rk ? Math.abs(m(r.rk[0])-m(r.k2[0]))>=10 : false;
+    r.staffDiff = !!r.kpStaff;
+    r.hold = r.cross || r.staffDiff || r.k2off || !!r.only;
+    r.on = !r.hold && !!(r.rk&&r.kp);
+  });
+  return rows;
+}
+let S;
+function reset(){ S={step:1,rows:mk(),filter:'all',fetched:false,dry:null,run:null,checked:false}; render(); }
+const $=s=>document.querySelector(s);
+function render(){
+  $('#steps').innerHTML = STEPS.map(([n,l],i)=>{const k=i+1;const c=k<S.step?'done':k===S.step?'cur':'';
+    return `<div class="step ${c}"><small>${k<S.step?'済み':'手順 '+n}</small><b>${l}</b></div>`}).join('');
+  $('#status').textContent = S.fetched ? 'カイポケの実績：11/1 07:29 に読み取り' : 'カイポケの実績：まだ読み取っていません';
+  $('#panel').innerHTML = [p1,p2,p3,p4,p5,p6][S.step-1]();
+}
+function p1(){ return `<h3>カイポケの実績を読み取る</h3>
+  <p>カイポケの 10 月の実績を書き出して取り込みます。読むだけで、カイポケは変わりません（1〜2 分）。らく助の側は、打刻履歴で合わせた時刻を含めた実績を使います。</p>
+  <div class="stats"><div class="stat"><span>らく助の訪問（取消を除く）</span><b>645</b></div><div class="stat"><span>到着・退出がそろっている</span><b>644</b></div><div class="stat amber"><span>QR がそろっていない</span><b>1</b></div></div>
+  <div class="row"><button class="primary" id="fetchBtn" onclick="fetchKp()">カイポケの実績を読み取る</button><span class="note" id="fetchMsg"></span></div>
+  <div class="bar"><i id="fetchBar"></i></div>`; }
+function fetchKp(){ const b=$('#fetchBtn'); b.disabled=true; let w=0; $('#fetchMsg').textContent='ロボットがカイポケから書き出しています…';
+  const t=setInterval(()=>{w+=20;$('#fetchBar').style.width=w+'%'; if(w>=100){clearInterval(t);S.fetched=true;S.step=2;render();}},300); }
+const fmt=v=>v==null?'':`<span class="d ${Math.abs(v)>5?'big':v?'sm':''}">${v>0?'+':''}${v}</span>`;
+function reasons(r){ const t=[];
+  if(r.cross) t.push('<span class="tag red">30 分の境目</span>');
+  if(r.staffDiff) t.push(`<span class="tag amber">担当が違う（カイポケ：${r.kpStaff}）</span>`);
+  if(r.k2off) t.push('<span class="tag amber">記録書Ⅱと 10 分以上</span>');
+  if(r.only==='rk') t.push('<span class="tag blue">カイポケに実績なし</span>');
+  if(r.only==='kp') t.push('<span class="tag blue">カイポケにだけ</span>');
+  if(r.adj) t.push(`<span class="tag ok">合わせた：${r.adj}</span>`);
+  return t.join(''); }
+function p2(){
+  const rows=S.rows.filter(r=>S.filter==='all'||(S.filter==='on'?r.on:S.filter==='hold'?r.hold:true));
+  const on=S.rows.filter(r=>r.on).length, hold=S.rows.filter(r=>r.hold).length;
+  const chip=(k,l)=>`<button class="chip ${S.filter===k?'on':''}" onclick="S.filter='${k}';render()">${l}</button>`;
+  return `<h3>らく助の実績とカイポケの実績を突き合わせる</h3>
+  <p>時刻まで一致した行（10 月は 375 件）は対象から外しています。下は差がある行です。行ごとに「反映する／しない」を選べます。気をつけたい印が付いた行は、最初は「しない」にしています。</p>
+  <div class="stats"><div class="stat green"><span>一致（対象外）</span><b>375</b></div><div class="stat"><span>差がある</span><b>${S.rows.length}</b></div><div class="stat red"><span>反映する</span><b>${on}</b></div><div class="stat amber"><span>人が見る（しない）</span><b>${hold}</b></div></div>
+  <div class="chips">${chip('all','すべて')}${chip('on','反映する')}${chip('hold','人が見る')}</div>
+  <div class="tbl"><table><thead><tr><th>反映</th><th>日付</th><th>利用者</th><th>らく助の担当</th><th>らく助（QR）</th><th>カイポケの実績</th><th>到着の差</th><th>退出の差</th><th>印</th></tr></thead><tbody>${
+    rows.map(r=>`<tr><td><span class="sw"><button class="y ${r.on?'on':''}" ${r.rk&&r.kp?'':'disabled'} onclick="setOn(${r.id},true)">する</button><button class="n ${r.on?'':'on'}" onclick="setOn(${r.id},false)">しない</button></span></td>
+      <td class="t">${r.d}</td><td>${r.p}</td><td>${r.s||'—'}</td>
+      <td class="t rk">${r.rk?r.rk.join('〜'):'—'}</td><td class="t kp">${r.kp?r.kp.join('〜'):'—'}${r.k2?`<div class="note">記録書Ⅱ ${r.k2.join('〜')}</div>`:''}</td>
+      <td>${fmt(r.ds)}</td><td>${fmt(r.de)}</td><td>${reasons(r)}</td></tr>`).join('')}</tbody></table></div>
+  <div class="row" style="margin-top:12px"><button class="primary" onclick="S.step=3;render()" ${on?'':'disabled'}>この ${on} 件で試しに流す</button><span class="note">「する」の行だけが次へ進みます</span></div>`; }
+function setOn(id,v){ const r=S.rows.find(x=>x.id===id); if(v&&!(r.rk&&r.kp))return; r.on=v; render(); }
+function runSim(kind){
+  const list=S.rows.filter(r=>r.on); const log=[]; let i=0;
+  $('#runBtn').disabled=true;
+  const t=setInterval(()=>{
+    if(i<list.length){ const r=list[i];
+      log.push(`${r.d} ${r.p}：実績の行を開く → 時刻 ${r.kp.join('〜')} を ${r.rk.join('〜')} に → 職員情報入力 → ${kind==='dry'?'登録せずに閉じる（試し）':'登録 ✓'}`);
+      $('#log').textContent=log.join('\n'); $('#log').scrollTop=1e9; $('#runBar').style.width=Math.round((i+1)/list.length*100)+'%'; i++;
+    } else { clearInterval(t); if(kind==='dry'){S.dry=list.length;S.step=4;} else {S.run=list.length;S.step=5;} render(); }
+  },450); }
+function p3(){ const n=S.rows.filter(r=>r.on).length; return `<h3>試しに流す（登録しない）</h3>
+  <p>ロボットがカイポケの実績の行を開き、時刻を入れるところまで行います。「登録する」は押さずに閉じます。連携の画面のライブの画面で、動きを見られます。</p>
+  <div class="row"><button class="primary" id="runBtn" onclick="runSim('dry')">${n} 件を試しに流す</button><button class="ghost" onclick="S.step=2;render()">突き合わせに戻る</button></div>
+  <div class="bar"><i id="runBar"></i></div><div class="log" id="log">（ここにロボットの進み具合が出ます）</div>`; }
+function p4(){ const n=S.rows.filter(r=>r.on).length; return `<div class="ok-box">試しに流した ${S.dry} 件は、すべて時刻を入れるところまで進みました（登録はしていません）。</div>
+  <h3>反映する</h3><p>選んだ ${n} 件の実績の時刻を、らく助の実績に合わせて登録します。管理者だけが押せます。提供時間はカイポケが計算し直します。</p>
+  <div class="row"><button class="primary" id="runBtn" onclick="runSim('run')">${n} 件をカイポケへ反映する</button><button class="ghost" onclick="S.step=2;render()">突き合わせに戻る</button></div>
+  <div class="bar"><i id="runBar"></i></div><div class="log" id="log">（ここにロボットの進み具合が出ます）</div>`; }
+function p5(){ const hold=S.rows.filter(r=>!r.on).length; return `<div class="ok-box">${S.run} 件を登録しました。</div>
+  <h3>確かめる</h3><p>もう一度カイポケの実績を読み取り、反映した行の差が 0 になったかを見ます。</p>
+  ${S.checked?`<div class="stats"><div class="stat green"><span>差が 0 になった</span><b>${S.run}</b></div><div class="stat red"><span>まだ差がある</span><b>0</b></div><div class="stat amber"><span>人が見る（反映しなかった）</span><b>${hold}</b></div></div>
+    <p class="note">反映しなかった ${hold} 件は、突き合わせの一覧に残ります。事務所がカイポケで合わせたら、もう一度読み取ると消えます。</p>
+    <div class="row"><button class="primary" onclick="S.step=6;render()">月の一覧を出す</button></div>`
+  :`<div class="row"><button class="primary" id="chk" onclick="this.disabled=true;setTimeout(()=>{S.checked=true;render()},900)">カイポケの実績を読み取り直す</button></div>`}`; }
+function p6(){ return `<h3>月の一覧を出す</h3><p>反映した後のカイポケの実績をもとに、9 月の見本と同じ形の一覧を出します。カイポケの提供時間・サービス内容の列も足します。</p>
+  <div class="files"><div class="file"><b>Excel</b><span class="note">QR読み取りあり・全予定・看護師別・読み方 の 4 シート</span></div><div class="file"><b>A4（印刷用）</b><span class="note">看護師ごとに 1 枚</span></div></div>
+  <p class="note" style="margin-top:10px">実際のページでは、ここに書き出しのボタンが付きます（モックでは出しません）。</p>`; }
+reset();
+</script>
