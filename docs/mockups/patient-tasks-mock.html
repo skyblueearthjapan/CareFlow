@@ -128,6 +128,60 @@ tr.isdone td{color:var(--mute)}
 .ask{margin:0 20px 24px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 18px;line-height:1.8}
 .ask h3{margin:0 0 6px;font-size:14px}
 .ask ol{margin:0;padding-left:20px}
+.pc-shell{display:grid;grid-template-columns:190px 1fr}
+.side{border-right:1px solid var(--line);padding:12px 8px;display:flex;flex-direction:column;gap:2px;background:#fff}
+.side .brand{font-weight:700;color:var(--pink);padding:4px 10px 12px;font-size:16px}
+.side button{display:flex;align-items:center;gap:8px;border:none;background:none;text-align:left;padding:9px 10px;border-radius:8px;color:var(--ink)}
+.side button.off{color:#b3aaa6;cursor:default}
+.side button.on{background:var(--pink-l);color:var(--pink-d);font-weight:700}
+.side .new{font-size:10px;background:var(--pink);color:#fff;border-radius:4px;padding:0 4px}
+.side .cnt{margin-left:auto;min-width:20px;padding:0 6px;border-radius:10px;background:var(--warn);color:#fff;font-size:11px;line-height:20px;text-align:center}
+.pc-main{min-width:0}
+.pc-title{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.pc-title h2{margin:0;font-size:17px}
+.pc-title .sub{color:var(--mute);font-size:12px}
+.pc-title .act{margin-left:auto}
+.addpanel{background:var(--pink-ll);border:1px solid var(--pink);border-radius:12px;padding:12px;margin-bottom:12px}
+.addpanel .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.where{margin-top:8px;font-size:12px;background:#fff;border:1px dashed var(--line);border-radius:8px;padding:6px 8px}
+.switch{display:none}
+.tbl{overflow-x:auto}
+body{padding-left:max(0px,env(safe-area-inset-left,0px));padding-right:max(0px,env(safe-area-inset-right,0px))}
+:focus-visible{outline:2px solid var(--pink);outline-offset:2px}
+@media (max-width:900px){
+  body{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+  .top{flex-wrap:wrap;padding:12px 0;gap:8px;background:none;border:none}
+  .top .note{font-size:12px;flex-basis:100%}
+  .top .reset{margin-left:0}
+  .switch{display:flex;position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding:8px 0;gap:0}
+  .switch button{flex:1;border:1px solid var(--pink);background:#fff;color:var(--pink-d);padding:10px 0;font-weight:700}
+  .switch button:first-child{border-radius:10px 0 0 10px}
+  .switch button:last-child{border-radius:0 10px 10px 0}
+  .switch button.on{background:var(--pink);color:#fff}
+  .stage{flex-direction:column;padding:8px 0 16px;gap:12px}
+  body:not(.show-pc) .pc{display:none}
+  body.show-pc .phone{display:none}
+  .phone{width:100%}
+  .phone-cap{flex-wrap:wrap}
+  .device{width:100%;height:auto;min-height:70vh;border:1px solid var(--line);border-radius:14px;box-shadow:none}
+  .m-body{overflow:visible}
+  .pc-shell{grid-template-columns:1fr}
+  .side{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line);padding:6px}
+  .side .brand{padding:9px 8px}
+  .side button{white-space:nowrap}
+  .side button.off{display:none}
+  .pc-title{flex-wrap:wrap}
+  .addpanel .row{grid-template-columns:1fr}
+  .pc-body{flex-direction:column;min-height:0}
+  .lane{grid-template-columns:1fr}
+  .lane .who{border-right:none;padding-bottom:0}
+  .vcard{width:calc(50% - 4px)}
+  .detail{width:auto;border-left:none;border-top:1px solid var(--line)}
+  .summary{flex-wrap:wrap}
+  .stat{min-width:90px}
+  .ask{margin:0 0 24px}
+  .toast{bottom:calc(24px + env(safe-area-inset-bottom,0px))}
+}
 </style>
 </head>
 <body>
@@ -136,15 +190,20 @@ tr.isdone td{color:var(--mute)}
   <span class="note">左が PC（事務所）、右がスマホ（看護師）。どちらで操作しても、もう片方に反映されます。名前はすべて架空です。</span>
   <button class="reset" onclick="resetAll()">最初に戻す</button>
 </div>
+<div class="switch" role="tablist">
+  <button id="swPhone" class="on" onclick="showSide('phone')">スマホ（看護師）</button>
+  <button id="swPc" onclick="showSide('pc')">PC（事務所）</button>
+</div>
 
 <div class="stage">
   <section class="pc">
-    <div class="pc-head">
-      <span class="brand">らく助</span>
-      <button class="tab on" data-view="monitor" onclick="pcView('monitor')">訪問モニター</button>
-      <button class="tab" data-view="list" onclick="pcView('list')">やること一覧 <span class="cnt" id="pcCnt"></span></button>
+    <div class="pc-shell">
+      <nav class="side" id="side"></nav>
+      <div class="pc-main">
+        <div class="pc-title" id="pcTitle"></div>
+        <div class="pc-body" id="pcBody"></div>
+      </div>
     </div>
-    <div class="pc-body" id="pcBody"></div>
   </section>
 
   <section class="phone">
@@ -162,7 +221,7 @@ tr.isdone td{color:var(--mute)}
 <div class="ask">
   <h3>このモックで決めたいこと</h3>
   <ol>
-    <li>やることを付ける場所：訪問モニターの訪問の詳細（右の欄）と、「やること一覧」の「付ける」の両方でよいか。</li>
+    <li>やることを付ける場所：訪問モニターの訪問の詳細（右の欄）と、左のメニューに足す新しいページ「やること」の「＋ やることを付ける」の両方（11/1 PO 了承）。</li>
     <li>スマホの見せ方：今日の一覧の上の帯と、訪問ごとの「やること 2 件」の印、訪問を開いたときの「事務所からのお願い」の欄。</li>
     <li>完了していないものは、期日の翌日以降も、その方の次の訪問に「持ち越し」として出し続ける。</li>
     <li>項目（配布物・実費集金・GAF 入力など）は、一覧の下の「項目の設定」で事務所が増やしたり消したりできる。</li>
@@ -236,13 +295,39 @@ function nextVisit(patient, from){
 function label(t){ return t.type || '伝言'; }
 
 function render(){ renderPC(); renderPhone(); }
+function showSide(s){
+  document.body.classList.toggle('show-pc', s==='pc');
+  $('#swPhone').classList.toggle('on', s!=='pc'); $('#swPc').classList.toggle('on', s==='pc');
+  window.scrollTo({top:0});
+}
 
 /* ---------- PC ---------- */
-function pcView(v){ state.pcView=v; document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on', b.dataset.view===v)); renderPC(); }
+function pcView(v){ state.pcView=v; renderPC(); }
+const MENU = [
+  ['ダッシュボード',null],['スケジュール',null],['受け入れ枠',null],['訪問モニター','monitor'],
+  ['やること','list'],['訪問記録',null],['拠点',null],['スタッフ',null],['患者',null],['連携',null]
+];
 function renderPC(){
   const open = state.tasks.filter(t=>!t.done && !t.cancelled).length;
-  $('#pcCnt').textContent = open; $('#pcCnt').style.display = open? '' : 'none';
+  $('#side').innerHTML = '<div class="brand">らく助</div>' + MENU.map(([l,v])=>
+    `<button class="${v? (state.pcView===v?'on':'') : 'off'}" ${v?`onclick="pcView('${v}')"`:'tabindex="-1"'}>${l}${v==='list'?' <span class="new">新</span>':''}${v==='list'&&open?`<span class="cnt">${open}</span>`:''}</button>`).join('');
+  $('#pcTitle').innerHTML = state.pcView==='monitor'
+    ? `<h2>訪問モニター</h2><span class="sub">今の画面に、詳細の「事務所からのやること」とカードの印を足します</span>`
+    : `<h2>やること</h2><span class="sub">新しいページ：未完了・期日切れ・先の日付の分を追い、ここからも付けられます</span><span class="act"><button class="primary" onclick="state.addOpen=!state.addOpen;state.form={types:[],due:TODAY,memo:'',patient:state.form.patient||'p4'};renderPC()">＋ やることを付ける</button></span>`;
   $('#pcBody').innerHTML = state.pcView==='monitor' ? monitorHTML() : listHTML();
+}
+function addPanelHTML(){
+  const f=state.form; const nv = nextVisit(f.patient, f.due);
+  return `<div class="addpanel"><div class="row">
+      <div><label class="f">患者様</label><select onchange="state.form.patient=this.value;renderPC()">${Object.entries(PATIENTS).map(([k,n])=>`<option value="${k}" ${f.patient===k?'selected':''}>${esc(n)}</option>`).join('')}</select></div>
+      <div><label class="f">期日</label><input type="date" value="${f.due}" onchange="state.form.due=this.value;renderPC()"></div></div>
+    <div class="where">出す訪問：${nv?`<b>${md(nv.date)}（${wd(nv.date)}）${nv.start}</b>・${nv.staff.map(sname).join('・')}`:'<span class="pill over">期日以降の訪問がありません（訪問が入ったら出ます）</span>'}</div>
+    <label class="f">項目（いくつでも）</label>
+    <div class="chips">${state.types.map(x=>`<button class="chip ${f.types.includes(x)?'on':''}" onclick="toggleType('${esc(x)}')">${esc(x)}</button>`).join('')}</div>
+    <label class="f">伝言（任意）</label>
+    <textarea placeholder="例：デスクの上に資料を置いています。持っていってください。" oninput="state.form.memo=this.value;syncAddBtn()">${esc(f.memo)}</textarea>
+    <div style="margin-top:10px;display:flex;gap:8px"><button class="primary" id="addBtn" onclick="addTasks(state.form.patient);state.addOpen=false;renderPC()" ${f.types.length||f.memo.trim()?'':'disabled'}>付ける</button>
+    <button class="mini" onclick="state.addOpen=false;renderPC()">閉じる</button></div></div>`;
 }
 function monitorHTML(){
   const lanes = STAFF.map(s=>{
@@ -290,15 +375,16 @@ function taskRowPC(t, onDate){
       ? `<button class="mini" onclick="undo('${t.id}')">完了を戻す</button>`
       : `<button class="mini ok" onclick="complete('${t.id}','事務所（松岡）')">完了にする</button><button class="mini" onclick="cancelTask('${t.id}')">取り消す</button>`}</div></div>`;
 }
-function selVisit(id){ state.sel=id; state.form={types:[], due:visitById(id).date, memo:''}; renderPC(); }
+function selVisit(id){ state.sel=id; state.form={types:[], due:visitById(id).date, memo:''}; renderPC();
+  if(window.matchMedia('(max-width:900px)').matches){ const d=document.querySelector('.detail'); if(d) d.scrollIntoView({behavior:'smooth'}); } }
 function toggleType(x){ const a=state.form.types; const i=a.indexOf(x); i<0?a.push(x):a.splice(i,1); renderPC(); }
 function syncAddBtn(){ const b=$('#addBtn'); if(b) b.disabled=!(state.form.types.length||state.form.memo.trim()); }
 function addTasks(patient){
-  const f=state.form; const memo=f.memo.trim();
+  const f=state.form; const memo=(f.memo||'').trim();
   const list = f.types.length ? f.types.map((x,i)=>({type:x, memo:i===0?memo:''})) : [{type:'', memo}];
   list.forEach(x=>state.tasks.push({id:'t'+(state.seq++), patient, due:f.due, type:x.type, memo:x.memo, by:'松岡', done:null}));
   const v = nextVisit(patient, f.due); if(v) v.staff.forEach(s=>state.notif[s]=(state.notif[s]||0)+1);
-  state.form={types:[], due:f.due, memo:''};
+  state.form={types:[], due:f.due, memo:'', patient:f.patient};
   toast(`${PATIENTS[patient]} 様に ${list.length} 件を付けました`); render();
 }
 function complete(id, who){
@@ -321,17 +407,17 @@ function listHTML(){
   const all = state.tasks.filter(t=>!t.cancelled);
   const st = {open:all.filter(t=>!t.done).length, over:all.filter(t=>isOver(t,TODAY)).length, done:all.filter(t=>t.done).length};
   const seg = (k,l)=>`<button class="${F.status===k?'on':''}" onclick="state.filter.status='${k}';renderPC()">${l}</button>`;
-  return `<div class="list-wrap">
+  return `<div class="list-wrap">${state.addOpen?addPanelHTML():''}
     <div class="summary"><div class="stat"><span>未完了</span><b>${st.open}</b></div><div class="stat red"><span>期日を過ぎた</span><b>${st.over}</b></div><div class="stat green"><span>完了</span><b>${st.done}</b></div></div>
     <div class="filters"><span class="seg">${seg('open','未完了')}${seg('over','期日を過ぎた')}${seg('done','完了')}${seg('all','すべて')}</span>
       <select onchange="state.filter.staff=this.value;renderPC()"><option value="">看護師：すべて</option>${STAFF.map(s=>`<option value="${s.id}" ${F.staff===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}</select>
       <span style="color:var(--mute);font-size:12px">${shown.length} 件</span></div>
-    <table><thead><tr><th>期日</th><th>患者様</th><th>やること・伝言</th><th>出す訪問（次の訪問）</th><th>状態</th><th></th></tr></thead><tbody>${
+    <div class="tbl"><table style="min-width:640px"><thead><tr><th>期日</th><th>患者様</th><th>やること・伝言</th><th>出す訪問（次の訪問）</th><th>状態</th><th></th></tr></thead><tbody>${
       shown.map(({t,nv})=>`<tr class="${t.done?'isdone':''}"><td>${md(t.due)}（${wd(t.due)}）</td><td>${esc(PATIENTS[t.patient])}</td>
         <td>${t.type?`<b>${esc(t.type)}</b>`:'<span class="pill msg">伝言</span>'}${t.memo?`<div>${esc(t.memo)}</div>`:''}</td>
         <td>${nv?`${md(nv.date)} ${nv.start}・${nv.staff.map(sname).join('・')}`:t.done?'—':'<span class="pill over">次の訪問がありません</span>'}</td>
         <td>${t.done?`<span class="pill ok">完了</span><div class="meta" style="font-size:11px;color:var(--mute)">${esc(t.done.who)} ${t.done.at}</div>`:isOver(t,TODAY)?`<span class="pill over">期日を過ぎた</span>`:'<span class="pill carry">未完了</span>'}</td>
-        <td>${t.done?`<button class="mini" onclick="undo('${t.id}')">戻す</button>`:`<button class="mini ok" onclick="complete('${t.id}','事務所（松岡）')">完了</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">該当するやることはありません。</td></tr>'}</tbody></table>
+        <td>${t.done?`<button class="mini" onclick="undo('${t.id}')">戻す</button>`:`<button class="mini ok" onclick="complete('${t.id}','事務所（松岡）')">完了</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">該当するやることはありません。</td></tr>'}</tbody></table></div>
     <details class="types"><summary>項目の設定（事務所で増やす・消す）</summary>
       <div class="chips" style="margin-top:8px">${state.types.map((x,i)=>`<span class="chip">${esc(x)} <a href="#" onclick="state.types.splice(${i},1);renderPC();return false" style="color:var(--mute);text-decoration:none">×</a></span>`).join('')}</div>
       <div class="typeedit"><input type="text" id="newType" placeholder="新しい項目（例：訪問看護計画書の控えを渡す）"><button class="mini pk" onclick="const v=$('#newType').value.trim();if(v){state.types.push(v);renderPC();}">足す</button></div>
