@@ -59,6 +59,7 @@ from app.api.v1 import (
     staff_shifts,
     substitute_candidates,
     sync_report,
+    tasks,
     template_ws,
     visit_history,
     visit_monitor,
@@ -159,6 +160,9 @@ api_router.include_router(staff.router, prefix="/staff", tags=["staff"])
 api_router.include_router(visit_photos.router, prefix="/visits", tags=["visit-photos"])
 # /visits/{visit_id}/review (確認済み) — visits.router の前に登録 (Phase 5-3)。
 api_router.include_router(visit_review.router, prefix="/visits", tags=["visit-review"])
+# 事務所からのやること (patient-tasks-design-2026-11-01)。/tasks・/task-item-types・
+# /visits/{visit_id}/tasks を持つので prefix は付けない (visits.router の前に登録)。
+api_router.include_router(tasks.router, tags=["tasks"])
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 # 訪問の音声記録 (visit-voice-record-design-2026-09-17 §10-3)。router 自身が
 # prefix "/visit-recordings" を持つのでここでは付けない。/visits/... とは
