@@ -664,7 +664,10 @@ def test_migration_0103_revision_chain() -> None:
     assert rev is not None
     assert rev.down_revision == "0102_pfv_visit_week"
     assert len(_REVISION) <= 32
-    assert list(script.get_heads()) == [_REVISION]
+    # head は 1 つ（後の migration が足されても 0103 がその祖先であること）。
+    heads = list(script.get_heads())
+    assert len(heads) == 1
+    assert _REVISION in {r.revision for r in script.iterate_revisions(heads[0], "base")}
 
 
 def test_migration_0103_upgrade_downgrade(tmp_path: Path) -> None:
