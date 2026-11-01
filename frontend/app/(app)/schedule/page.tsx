@@ -222,7 +222,13 @@ function SchedulePageInner() {
         <FeasibilityBand
           scopeLabel="この週"
           className="lg:shrink-0"
-          cardTestIdPrefixes={['wtl-visit-', 'staff-week-visit-', 'tl-visit-', 'tl-bar-']}
+          cardTestIdPrefixes={[
+            'wtl-visit-',
+            'staff-week-visit-',
+            'tl-visit-linked-',
+            'tl-visit-',
+            'tl-bar-',
+          ]}
           notFoundMessage="このカードは今の表示にありません。職員・その日のタイムラインで見られます"
         />
         <CourseDayTablePanel

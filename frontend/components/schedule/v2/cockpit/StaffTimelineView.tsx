@@ -1758,7 +1758,8 @@ const Bar = React.memo(function Bar({
     <>
       {bar}
       <div
-        className="pointer-events-none absolute z-[5]"
+        // 氏名の列 (z-[5]) より下にして、横に送ったときに氏名の上へ重ならないようにする。
+        className="pointer-events-none absolute z-[4]"
         style={{
           left: `${leftPct(startMin)}%`,
           width: `${widthPct(durationMin)}%`,
