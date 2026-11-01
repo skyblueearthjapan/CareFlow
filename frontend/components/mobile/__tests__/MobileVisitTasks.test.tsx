@@ -167,4 +167,23 @@ describe('MobileVisitTasks', () => {
     fireEvent.click(screen.getByTestId('mobile-message-read-m1'));
     expect(toastError).toHaveBeenCalledWith('読みましたにできませんでした', expect.any(Object));
   });
+
+  it('先の日 (readOnly) は見せるが、完了も「読みました」も押せない', () => {
+    tasks = [
+      makeTask({ id: 'r1', memo: 'サインをもらう' }),
+      makeTask({ id: 'm1', is_message: true, item_type_id: null, item_type_name: null, memo: 'x' }),
+    ];
+    render(<MobileVisitTasks visitId="v1" readOnly />);
+    expect(screen.getByTestId('mobile-visit-requests').textContent).toContain('サインをもらう');
+    const box = screen.getByTestId('mobile-task-r1');
+    expect(box).toBeDisabled();
+    fireEvent.click(box);
+    expect(completeMutate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mobile-visit-requests-hint').textContent).toContain(
+      '完了は当日の訪問で押せます',
+    );
+    expect(screen.getByTestId('mobile-visit-messages').textContent).toContain('x');
+    expect(screen.queryByTestId('mobile-message-read-m1')).toBeNull();
+    expect(screen.getByTestId('mobile-message-readonly-m1')).toBeInTheDocument();
+  });
 });

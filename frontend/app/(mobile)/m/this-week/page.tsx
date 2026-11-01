@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Mic } from 'lucide-react';
+import { AlertTriangle, Mic } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -35,11 +35,23 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as cons
 
 /**
  * 表示する週。先週は、本人が 7 日以内の訪問の時刻を合わせられるように開く入口
- * (設計 `pc-actual-time-edit-design-2026-10-06.md` Q5)。URL の `?week=last` で覚える
- * (訪問詳細から戻ったときに先週のまま)。`useSearchParams` で読む (初回描画で
+ * (設計 `pc-actual-time-edit-design-2026-10-06.md` Q5)。来週は先回りして予定を見る入口
+ * (mobile-future-days・PO 2026-11-01・見るだけ)。URL の `?week=last` / `?week=next` で覚える
+ * (訪問詳細から戻ったときに同じ週のまま)。`useSearchParams` で読む (初回描画で
  * `window.location` を読むとサーバの描画と食い違う)。
  */
-type WeekChoice = 'this' | 'last';
+type WeekChoice = 'last' | 'this' | 'next';
+
+const WEEK_OFFSET: Record<WeekChoice, number> = { last: -7, this: 0, next: 7 };
+const WEEK_TITLE: Record<WeekChoice, string> = {
+  last: '先週の予定',
+  this: '今週の予定',
+  next: '来週の予定',
+};
+
+function parseWeekChoice(raw: string | null | undefined): WeekChoice {
+  return raw === 'last' || raw === 'next' ? raw : 'this';
+}
 
 /** 1 日の中身 = 訪問とイベントを開始時刻順に混ぜた行 (design §3 C-3)。 */
 type DayRow =
@@ -126,8 +138,9 @@ function shortTime(t: string): string {
  *
  * 実績のある訪問と今日の訪問は**押せる** (設計 2026-09-30 §7-8): 訪問詳細へ進み、
  * 実績の時刻を確認して合わせられる。実績の時刻は右に出す
- * (「✓ 09:33–10:08」「到着 11:08・訪問中」/ 過ぎた日は「到着 11:08・退出なし」)。それ以外 (先の日の予定など) は
- * 従来どおり見るだけ。
+ * (「✓ 09:33–10:08」「到着 11:08・訪問中」/ 過ぎた日は「到着 11:08・退出なし」)。
+ * 先の日の訪問も押せる (mobile-future-days): 詳細は見るだけで、打刻などの操作は出ない。
+ * 過ぎた日で実績の無い訪問だけは、従来どおり押せない。
  */
 function VisitChip({
   visit: v,
@@ -138,8 +151,8 @@ function VisitChip({
   visit: MyVisit;
   hasRecording?: boolean;
   today: string;
-  /** 訪問詳細の戻り先 (`week` = 今週 / `lastweek` = 先週)。 */
-  fromParam?: 'week' | 'lastweek';
+  /** 訪問詳細の戻り先 (`week` = 今週 / `lastweek` = 先週 / `nextweek` = 来週)。 */
+  fromParam?: 'week' | 'lastweek' | 'nextweek';
 }) {
   const cancelled = v.status === 'cancelled';
   const pal = genderPalette(v.patient_sex ?? null);
@@ -148,7 +161,7 @@ function VisitChip({
     v.status === 'no_show' ? null : actualTimeParts(v.actual_arrival_at, v.actual_departure_at);
   const adjusted =
     !!v.actual_arrival_adjusted || !!v.actual_departure_adjusted || !!v.actual_departure_manual;
-  const tappable = actual != null || v.visit_date === today;
+  const tappable = actual != null || v.visit_date >= today;
   // 到着だけの訪問: 今日なら「訪問中」。「退出なし」は、退出の読み取りが無いまま
   // 過ぎた日だけ (今日の訪問中に警告色で出すと、読み忘れに見えてしまう)。
   const inProgressToday = actual != null && !actual.done && v.visit_date === today;
@@ -259,16 +272,15 @@ export default function MobileThisWeekPage() {
 
 function ThisWeekContent() {
   const searchParams = useSearchParams();
-  const [week, setWeek] = useState<WeekChoice>(() =>
-    searchParams?.get('week') === 'last' ? 'last' : 'this',
-  );
+  const [week, setWeek] = useState<WeekChoice>(() => parseWeekChoice(searchParams?.get('week')));
   const isLast = week === 'last';
-  const weekStart = isLast ? addDays(currentWeekStartIso(), -7) : currentWeekStartIso();
+  const isNext = week === 'next';
+  const weekStart = addDays(currentWeekStartIso(), WEEK_OFFSET[week]);
   const today = todayIso();
   const chooseWeek = (next: WeekChoice) => {
     setWeek(next);
     // 戻ったときに同じ週を開けるよう URL に残す (画面は遷移させない・押したときだけ)。
-    const url = next === 'last' ? '/m/this-week?week=last' : '/m/this-week';
+    const url = next === 'this' ? '/m/this-week' : `/m/this-week?week=${next}`;
     window.history.replaceState(window.history.state, '', url);
   };
   const {
@@ -316,10 +328,15 @@ function ThisWeekContent() {
   return (
     <MobileSection
       pose="calendar"
-      title={isLast ? '先週の予定' : '今週の予定'}
+      title={WEEK_TITLE[week]}
       subtitle={`${weekStart} 週`}
+      // 来週は背景の色を変える (今週と取り違えないため)。
+      className={cn(isNext && 'rounded-xl bg-warning-bg p-3')}
+      data-testid="this-week-section"
+      data-week={week}
     >
-      {/* 先週への切り替え (Q5)。終わった訪問の時刻を 7 日以内なら合わせられる。 */}
+      {/* 先週への切り替え (Q5)。終わった訪問の時刻を 7 日以内なら合わせられる。
+          来週は先回りして予定を見るだけ (mobile-future-days)。 */}
       <div
         role="group"
         aria-label="表示する週"
@@ -330,6 +347,7 @@ function ThisWeekContent() {
           [
             ['last', '先週'],
             ['this', '今週'],
+            ['next', '来週'],
           ] as const
         ).map(([value, label], i) => (
           <button
@@ -339,7 +357,7 @@ function ThisWeekContent() {
             onClick={() => chooseWeek(value)}
             data-testid={`this-week-switch-${value}`}
             className={cn(
-              'min-h-11 px-5 text-sm',
+              'min-h-11 px-4 text-sm',
               i > 0 && 'border-l border-border-default',
               week === value
                 ? 'bg-brand-primary font-bold text-white'
@@ -350,6 +368,17 @@ function ThisWeekContent() {
           </button>
         ))}
       </div>
+
+      {isNext && (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-md border-2 border-warning-strong bg-bg-base px-3 py-2.5 text-[15px] font-bold text-warning-strong"
+          data-testid="this-week-next-notice"
+        >
+          <AlertTriangle className="h-5 w-5 shrink-0" aria-hidden="true" />
+          <span>来週の予定です。今日ではありません</span>
+        </div>
+      )}
 
       {isLoading && (
         <div className="space-y-3">
@@ -371,7 +400,7 @@ function ThisWeekContent() {
         <Card className="p-6">
           <RakusukeNote
             pose="calendar"
-            title={isLast ? '先週の訪問はありません' : '今週の訪問はありません'}
+            title={`${WEEK_TITLE[week].replace('の予定', '')}の訪問はありません`}
             comment="新しい予定が入ったら、ここでお知らせしますね"
           />
         </Card>
@@ -379,8 +408,15 @@ function ThisWeekContent() {
 
       {groups.length > 0 && (
         <p className="rounded-md border border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-xs text-brand-primary-hover">
-          終わった訪問を押すと、実績の時刻を確認して合わせられます
-          {isLast ? '（合わせられるのは 7 日前までの訪問です）' : ''}。
+          {isNext ? (
+            '先の日の訪問は、押すと住所や時刻を見られます（打刻や記録は当日に）。'
+          ) : (
+            <>
+              終わった訪問を押すと、実績の時刻を確認して合わせられます
+              {isLast ? '（合わせられるのは 7 日前までの訪問です）' : ''}。
+              {!isLast && '先の日の訪問は見るだけです。'}
+            </>
+          )}
         </p>
       )}
 
@@ -388,10 +424,28 @@ function ThisWeekContent() {
         {/* R-9b (PO要望): 今週は「見渡す」画面 — 高密度チップを敷き詰める。
             実績のある訪問と今日の訪問だけ押せる (設計 2026-09-30 §7-8)。 */}
         {groups.map((g) => (
-          <section key={g.date}>
-            <header className="mb-1.5 flex items-baseline justify-between gap-2">
-              <h2 className="font-serif text-base font-bold text-text-primary">
+          <section key={g.date} data-testid={`this-week-day-${g.date}`}>
+            {/* 今日と先の日は見出しで区別する (先の日は色を付けて「見るだけ」)。 */}
+            <header
+              className={cn(
+                'mb-1.5 flex items-baseline justify-between gap-2',
+                g.date > today && 'rounded-md bg-warning-bg px-2 py-1',
+                g.date === today && 'rounded-md bg-brand-primary-50 px-2 py-1',
+              )}
+              data-day-tone={g.date === today ? 'today' : g.date > today ? 'future' : 'past'}
+            >
+              <h2 className="flex items-baseline gap-1.5 font-serif text-base font-bold text-text-primary">
                 {formatDateLabel(g.date)}
+                {g.date === today && (
+                  <span className="rounded bg-brand-primary px-1.5 font-sans text-[11px] font-bold text-white">
+                    今日
+                  </span>
+                )}
+                {g.date > today && (
+                  <span className="rounded border border-warning-strong px-1.5 font-sans text-[11px] font-bold text-warning-strong">
+                    見るだけ
+                  </span>
+                )}
               </h2>
               <div className="flex items-baseline gap-1.5">
                 {/* 休み / 時間変更 (design §3 C-3)。 */}
@@ -417,7 +471,7 @@ function ThisWeekContent() {
                     visit={row.visit}
                     hasRecording={recordedVisitIds.has(row.visit.id)}
                     today={today}
-                    fromParam={isLast ? 'lastweek' : 'week'}
+                    fromParam={isLast ? 'lastweek' : isNext ? 'nextweek' : 'week'}
                   />
                 ),
               )}

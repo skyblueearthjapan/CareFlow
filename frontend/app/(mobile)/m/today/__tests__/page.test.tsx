@@ -16,8 +16,11 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type * as ReactQueryModule from '@tanstack/react-query';
 
 const routerPush = vi.fn();
+// `?date=` (見ている日・mobile-future-days) は useSearchParams で読む。既定は無し (= 今日)。
+const { searchDate } = vi.hoisted(() => ({ searchDate: { value: null as string | null } }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: routerPush, replace: vi.fn() }),
+  useSearchParams: () => ({ get: (key: string) => (key === 'date' ? searchDate.value : null) }),
 }));
 
 // 実カメラ (html5-qrcode) は jsdom で動かないためコンポーネントごと差し替える。
@@ -142,6 +145,7 @@ beforeEach(() => {
   window.localStorage.clear();
   voiceFlushStub.pendingCount = 0;
   voiceFlushStub.failedCount = 0;
+  searchDate.value = null;
 });
 
 describe('今日の訪問 — 未送信の再送', () => {
@@ -462,5 +466,76 @@ describe('今日の訪問 — 予定に無い訪問を記録', () => {
 
     expect(useUpdateRecording).toHaveBeenCalledWith('rec-1');
     expect(mutate).toHaveBeenCalledWith({ patient_id: 'p-1' }, expect.anything());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 日付を送る (mobile-future-days・PO 2026-11-01)。今日 = 2026-08-16 (日)。
+// 見られる範囲は先週の月曜 2026-08-03 〜 来週の日曜 2026-08-23。
+// ---------------------------------------------------------------------------
+describe('今日の訪問 — 先の日・過ぎた日を見る', () => {
+  const lastQueriedDate = () => {
+    const calls = asMock(useMyVisits).mock.calls;
+    return (calls[calls.length - 1]?.[0] as { date?: string } | undefined)?.date;
+  };
+
+  it('今日は注意も「今日へ戻る」も出さない', async () => {
+    await renderToday();
+    expect(screen.getByTestId('today-section')).toHaveAttribute('data-day-tone', 'today');
+    expect(screen.queryByTestId('today-other-day-notice')).toBeNull();
+    expect(screen.queryByTestId('today-back-to-today')).toBeNull();
+    expect(lastQueriedDate()).toBe('2026-08-16');
+  });
+
+  it('▶ で明日へ送ると、見出し・注意・色が変わり、QR と予定外の記録は出ない', async () => {
+    asMock(useMyVisits).mockImplementation(() => withData([makeVisit()]));
+    await renderToday();
+    fireEvent.click(screen.getByTestId('today-day-next'));
+    expect(lastQueriedDate()).toBe('2026-08-17');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('8/17（月）の訪問');
+    expect(screen.getByTestId('today-other-day-notice')).toHaveTextContent(
+      '8/17（月）の予定です。今日ではありません',
+    );
+    expect(screen.getByTestId('today-section')).toHaveAttribute('data-day-tone', 'future');
+    expect(screen.queryByRole('button', { name: 'QRを読み取る' })).toBeNull();
+    expect(screen.queryByTestId('today-record-new')).toBeNull();
+    // 訪問カードは開ける (詳細は見るだけ)。戻り先の日を添える。
+    expect(screen.getByRole('link', { name: '山田 花子 の訪問詳細' })).toHaveAttribute(
+      'href',
+      '/m/today/visit-1?from=day&date=2026-08-17',
+    );
+  });
+
+  it('「今日の訪問へ戻る」で今日に戻る', async () => {
+    searchDate.value = '2026-08-20';
+    await renderToday();
+    expect(lastQueriedDate()).toBe('2026-08-20');
+    fireEvent.click(screen.getByTestId('today-back-to-today'));
+    expect(lastQueriedDate()).toBe('2026-08-16');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('今日の訪問');
+    expect(screen.getByRole('button', { name: 'QRを読み取る' })).toBeInTheDocument();
+  });
+
+  it('先は来週の日曜まで (▶ が押せない)', async () => {
+    searchDate.value = '2026-08-23';
+    await renderToday();
+    expect(lastQueriedDate()).toBe('2026-08-23');
+    expect(screen.getByTestId('today-day-next')).toBeDisabled();
+    expect(screen.getByTestId('today-day-prev')).not.toBeDisabled();
+  });
+
+  it('前は先週の月曜まで (◀ が押せない)・過ぎた日は落ち着いた色', async () => {
+    searchDate.value = '2026-08-03';
+    await renderToday();
+    expect(screen.getByTestId('today-day-prev')).toBeDisabled();
+    expect(screen.getByTestId('today-section')).toHaveAttribute('data-day-tone', 'past');
+    expect(screen.getByTestId('today-other-day-notice')).toHaveAttribute('data-tone', 'past');
+  });
+
+  it('範囲の外の日付 (URL を書き換えた) は今日を見る', async () => {
+    searchDate.value = '2026-08-24';
+    await renderToday();
+    expect(lastQueriedDate()).toBe('2026-08-16');
+    expect(screen.queryByTestId('today-other-day-notice')).toBeNull();
   });
 });

@@ -296,11 +296,19 @@ describe('今週の予定 — 実績の時刻とチップから訪問詳細へ',
     expect(screen.queryByTestId('this-week-actual-today')).toBeNull();
   });
 
-  it('実績の無い、今日以外の予定は押せない (見るだけ)', () => {
-    renderWith([makeVisit({ id: 'future', visit_date: '2026-09-11' })]);
-    expect(screen.getByText('患者future')).toBeInTheDocument();
-    expect(screen.queryByTestId('this-week-visit-link-future')).toBeNull();
+  it('実績の無い、過ぎた日の予定は押せない', () => {
+    renderWith([makeVisit({ id: 'past', visit_date: '2026-09-07' })]);
+    expect(screen.getByText('患者past')).toBeInTheDocument();
+    expect(screen.queryByTestId('this-week-visit-link-past')).toBeNull();
     expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('先の日の予定は開ける (詳細は見るだけ・mobile-future-days)', () => {
+    renderWith([makeVisit({ id: 'future', visit_date: '2026-09-11' })]);
+    expect(screen.getByTestId('this-week-visit-link-future')).toHaveAttribute(
+      'href',
+      '/m/today/future?from=week',
+    );
   });
 
   it('未訪問 (no_show) は到着の読み取りがあっても実績を出さない', () => {

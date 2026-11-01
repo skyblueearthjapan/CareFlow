@@ -7,6 +7,9 @@
  * お願い = 項目のあるやること。四角を押すと完了、もう一度押すと戻せる (自分で
  * 完了にしたものだけ・BE の can_reopen)。伝言 = 項目の無いやること。「読みました」で完了。
  * 見られるのは担当の訪問だけ (BE が絞る・見えない訪問は 404 なので何も出さない)。
+ *
+ * `readOnly` (先の日の訪問・mobile-future-days) では中身は見せるが、完了・戻す・
+ * 「読みました」は押せない (今日の訪問だけで押す)。
  */
 import { ClipboardList, MessageSquare } from 'lucide-react';
 
@@ -16,7 +19,14 @@ import { useCompleteTask, useReopenTask, useVisitTasks } from '@/lib/queries/tas
 import type { PatientTaskRead } from '@/lib/schemas/patient-task';
 import { taskActionErrorMessage, taskDoneLabel, taskMd } from '@/components/tasks/taskFormat';
 
-export function MobileVisitTasks({ visitId }: { visitId: string }) {
+export function MobileVisitTasks({
+  visitId,
+  readOnly = false,
+}: {
+  visitId: string;
+  /** 先の日の訪問: 見るだけ (完了・読みましたを押せない)。 */
+  readOnly?: boolean;
+}) {
   const { data, isError } = useVisitTasks(visitId);
   const complete = useCompleteTask();
   const reopen = useReopenTask();
@@ -36,7 +46,7 @@ export function MobileVisitTasks({ visitId }: { visitId: string }) {
     );
 
   const toggle = (t: PatientTaskRead) => {
-    if (busy) return;
+    if (busy || readOnly) return;
     if (t.status !== 'done') {
       doComplete(t, '完了にしました', '完了にできませんでした');
       return;
@@ -74,13 +84,14 @@ export function MobileVisitTasks({ visitId }: { visitId: string }) {
                     aria-checked={done}
                     // ほかの人が完了にしたものは戻せない (押すと案内だけ出す)。
                     aria-disabled={done && !t.can_reopen ? true : undefined}
-                    disabled={busy}
+                    disabled={busy || readOnly}
                     onClick={() => toggle(t)}
                     className={cn(
                       'flex min-h-12 w-full items-start gap-3 rounded-md border px-3 py-2.5 text-left',
                       done
                         ? 'border-success bg-success-bg'
                         : 'border-border-default bg-bg-base active:bg-bg-muted',
+                      readOnly && 'cursor-not-allowed opacity-70',
                     )}
                     data-testid={`mobile-task-${t.id}`}
                   >
@@ -127,7 +138,11 @@ export function MobileVisitTasks({ visitId }: { visitId: string }) {
               );
             })}
           </ul>
-          <p className="m-0 text-xs text-text-muted">四角を押すと完了。もう一度押すと戻せます。</p>
+          <p className="m-0 text-xs text-text-muted" data-testid="mobile-visit-requests-hint">
+            {readOnly
+              ? '先の日の訪問です。完了は当日の訪問で押せます。'
+              : '四角を押すと完了。もう一度押すと戻せます。'}
+          </p>
         </section>
       )}
 
@@ -154,6 +169,13 @@ export function MobileVisitTasks({ visitId }: { visitId: string }) {
                 {t.status === 'done' ? (
                   <span className="inline-block rounded-full bg-success-bg px-2 py-0.5 text-xs font-bold text-success">
                     読みました {taskDoneLabel(t)}
+                  </span>
+                ) : readOnly ? (
+                  <span
+                    className="text-xs text-text-muted"
+                    data-testid={`mobile-message-readonly-${t.id}`}
+                  >
+                    「読みました」は当日の訪問で押せます
                   </span>
                 ) : (
                   <button

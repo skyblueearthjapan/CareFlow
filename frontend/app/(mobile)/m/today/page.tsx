@@ -1,9 +1,18 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { AlertTriangle, Clock, Link2, Mic, QrCode } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Link2,
+  Mic,
+  QrCode,
+  RotateCcw,
+} from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -21,6 +30,13 @@ import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileEventChip, MobileOverrideBadge } from '@/components/mobile/MobileEventChip';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
+import {
+  clampMobileDate,
+  mobileDayLabel,
+  mobileViewBounds,
+  OtherDayNotice,
+  shiftIsoDate,
+} from '@/components/mobile/OtherDayNotice';
 import { PatientPickerSheet } from '@/components/mobile/PatientPickerSheet';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { TodayTasksBand } from '@/components/mobile/TodayTasksBand';
@@ -28,6 +44,7 @@ import { VoiceFailedSheet } from '@/components/mobile/VoiceFailedSheet';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { summaryTextFirstLine } from '@/components/records/recordFormat';
 import { extractQrToken } from '@/lib/qr-token';
+import { cn } from '@/lib/utils';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { foldStaffEvents } from '@/lib/schedule/foldStaffEvents';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
@@ -184,18 +201,42 @@ function UnlinkedRecordingsSheet({
   );
 }
 
+/**
+ * `useSearchParams` (`?date=`) を使うので Suspense で包む (Next.js の規則・今週の画面と同じ)。
+ */
 export default function MobileTodayPage() {
+  return (
+    <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+      <TodayContent />
+    </Suspense>
+  );
+}
+
+function TodayContent() {
   const today = todayIso();
   // 要紐付けバナーの遡り幅 (日)。
   const unlinkedFrom = addDays(today, -UNLINKED_LOOKBACK_DAYS);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // 見ている日 (mobile-future-days・PO 2026-11-01)。◀▶ で先週の月曜〜来週の日曜まで送れる。
+  // 訪問詳細から戻ったときに同じ日を開けるよう `?date=` に残す。範囲の外は今日に寄せる。
+  const [viewDate, setViewDate] = useState(() => clampMobileDate(searchParams?.get('date'), today));
+  const isViewToday = viewDate === today;
+  const isViewFuture = viewDate > today;
+  const bounds = mobileViewBounds(today);
+  const moveTo = (next: string) => {
+    const date = clampMobileDate(next, today);
+    setViewDate(date);
+    const url = date === today ? '/m/today' : `/m/today?date=${date}`;
+    window.history.replaceState(window.history.state, '', url);
+  };
   const {
     data: visits,
     isLoading,
     isError,
     error,
   } = useMyVisits({
-    date: today,
+    date: viewDate,
   });
 
   // 患者ステータス連動の取消 (source='status_cancel') は一覧から消す
@@ -204,15 +245,15 @@ export default function MobileTodayPage() {
     .filter((v) => classifyVisitDisplay(v) !== 'hidden')
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
-  // 職員イベント / 休み・時間変更も当日分を取る。**補助情報**なので取得に失敗
+  // 職員イベント / 休み・時間変更も見ている日の分を取る。**補助情報**なので取得に失敗
   // しても Alert は出さず、訪問だけ静かに描く (design §3 C-3)。
-  const range = { from: today, to: today };
+  const range = { from: viewDate, to: viewDate };
   const { data: events } = useMyStaffEvents(range);
   const { data: overrides } = useMyOverrides(range);
-  const todayOverride = (overrides ?? []).find((o) => o.date === today) ?? null;
+  const todayOverride = (overrides ?? []).find((o) => o.date === viewDate) ?? null;
   // 事務所からのやること (patient-tasks-design §3)。BE が自分の訪問だけに絞る。
   // 補助情報なので失敗しても何も出さない。
-  const { data: taskCounts } = useVisitTaskCounts(today);
+  const { data: taskCounts } = useVisitTaskCounts(viewDate);
 
   // 訪問とイベントを開始時刻順に混ぜる (同時刻なら訪問が先 = 現場の主役)。
   const rows: TodayRow[] = [
@@ -247,8 +288,8 @@ export default function MobileTodayPage() {
   const staffId = session?.user?.staffId ?? null;
   const { data: recordingList } = useVisitRecordings({
     staffId,
-    from: today,
-    to: today,
+    from: viewDate,
+    to: viewDate,
     limit: 200,
   });
   const recordedVisitIds = new Set(
@@ -316,8 +357,15 @@ export default function MobileTodayPage() {
   return (
     <MobileSection
       pose="visit"
-      title="今日の訪問"
-      subtitle={`${today} ・ ${sorted.length}件`}
+      // 今日以外は見出しに日付と曜日を大きく、背景の色を変える (取り違えを防ぐ)。
+      title={isViewToday ? '今日の訪問' : `${mobileDayLabel(viewDate)}の訪問`}
+      subtitle={`${viewDate} ・ ${sorted.length}件`}
+      className={cn(
+        !isViewToday && 'rounded-xl p-3',
+        !isViewToday && (isViewFuture ? 'bg-warning-bg' : 'bg-info-bg'),
+      )}
+      data-testid="today-section"
+      data-day-tone={isViewToday ? 'today' : isViewFuture ? 'future' : 'past'}
       /* 休み / 時間変更は見出しの右へ (design §3 C-3)。 */
       action={
         todayOverride ? (
@@ -325,6 +373,53 @@ export default function MobileTodayPage() {
         ) : undefined
       }
     >
+      {/* 日付を送る (先週の月曜〜来週の日曜)。今日以外では「今日へ戻る」を目立たせる。 */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2" data-testid="today-day-nav">
+          <button
+            type="button"
+            onClick={() => moveTo(shiftIsoDate(viewDate, -1))}
+            disabled={viewDate <= bounds.min}
+            aria-label="前の日"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border-default bg-bg-base text-text-secondary disabled:opacity-40"
+            data-testid="today-day-prev"
+          >
+            <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+          </button>
+          <p
+            className="min-w-0 flex-1 text-center font-serif text-lg font-bold text-text-primary"
+            data-testid="today-day-label"
+          >
+            {mobileDayLabel(viewDate)}
+            {isViewToday && <span className="ml-1 text-sm text-brand-primary">今日</span>}
+          </p>
+          <button
+            type="button"
+            onClick={() => moveTo(shiftIsoDate(viewDate, 1))}
+            disabled={viewDate >= bounds.max}
+            aria-label="次の日"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border-default bg-bg-base text-text-secondary disabled:opacity-40"
+            data-testid="today-day-next"
+          >
+            <ChevronRight className="h-5 w-5" aria-hidden="true" />
+          </button>
+        </div>
+        {!isViewToday && (
+          <>
+            <OtherDayNotice date={viewDate} today={today} testId="today-other-day-notice" />
+            <button
+              type="button"
+              onClick={() => moveTo(today)}
+              className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-brand-primary px-4 text-base font-bold text-white active:bg-brand-primary-hover"
+              data-testid="today-back-to-today"
+            >
+              <RotateCcw className="h-5 w-5" aria-hidden="true" />
+              今日の訪問へ戻る
+            </button>
+          </>
+        )}
+      </div>
+
       {pendingCount > 0 && (
         <div
           className="flex items-center gap-2 rounded-md bg-warning/10 px-3 py-2 text-xs text-warning"
@@ -378,29 +473,35 @@ export default function MobileTodayPage() {
         rows={unlinkedRows}
       />
 
-      {/* 事務所からのやること (patient-tasks-design §3)。今日の一覧の上に出す。 */}
-      <TodayTasksBand counts={taskCounts?.counts} visitIds={sorted.map((v) => v.id)} />
+      {/* 事務所からのやること (patient-tasks-design §3)。今日の一覧の上に出す。
+          今日以外は帯を出さない (件数は各カードの印で分かる)。 */}
+      {isViewToday && (
+        <TodayTasksBand counts={taskCounts?.counts} visitIds={sorted.map((v) => v.id)} />
+      )}
 
       {/* 一覧の状態 (読込中/エラー/0件) に関わらず常に出す — 予定に無い訪問こそ
-          「本日の患者訪問はありません」の画面から入ることが多い。 */}
-      <div className="space-y-1.5">
-        <CheckInButton tone="outline" onClick={() => setScanning(true)}>
-          <QrCode className="h-5 w-5" />
-          QRを読み取る
-        </CheckInButton>
-        <p className="text-center text-xs text-text-muted">
-          予定に無い訪問・担当外の訪問はこちらから
-        </p>
-        {/* QR が無い予定外訪問 (設計 §2-1 導線 C)。先に録音し、患者は後で選ぶ。 */}
-        <CheckInButton
-          tone="outline"
-          data-testid="today-record-new"
-          onClick={() => router.push('/m/record/new')}
-        >
-          <Mic className="h-5 w-5" />
-          予定に無い訪問を記録
-        </CheckInButton>
-      </div>
+          「本日の患者訪問はありません」の画面から入ることが多い。
+          QR の読み取りと予定外の記録は今日だけ (先の日・過ぎた日では出さない)。 */}
+      {isViewToday && (
+        <div className="space-y-1.5">
+          <CheckInButton tone="outline" onClick={() => setScanning(true)}>
+            <QrCode className="h-5 w-5" />
+            QRを読み取る
+          </CheckInButton>
+          <p className="text-center text-xs text-text-muted">
+            予定に無い訪問・担当外の訪問はこちらから
+          </p>
+          {/* QR が無い予定外訪問 (設計 §2-1 導線 C)。先に録音し、患者は後で選ぶ。 */}
+          <CheckInButton
+            tone="outline"
+            data-testid="today-record-new"
+            onClick={() => router.push('/m/record/new')}
+          >
+            <Mic className="h-5 w-5" />
+            予定に無い訪問を記録
+          </CheckInButton>
+        </div>
+      )}
 
       {isLoading && (
         <div className="space-y-2">
@@ -424,11 +525,19 @@ export default function MobileTodayPage() {
           「本日の訪問はありません」の下にイベントが並ぶのは矛盾した画面。 */}
       {!isLoading && !isError && rows.length === 0 && (
         <Card className="p-6">
-          <RakusukeNote
-            pose="joy"
-            title="本日の患者訪問はありません"
-            comment="おつかれさまでした！ゆっくり休んでくださいね"
-          />
+          {isViewToday ? (
+            <RakusukeNote
+              pose="joy"
+              title="本日の患者訪問はありません"
+              comment="おつかれさまでした！ゆっくり休んでくださいね"
+            />
+          ) : (
+            <RakusukeNote
+              pose="calendar"
+              title={`${mobileDayLabel(viewDate)}の訪問はありません`}
+              comment="予定が変わることもあるので、前の日にもう一度見てくださいね"
+            />
+          )}
         </Card>
       )}
 
@@ -440,7 +549,9 @@ export default function MobileTodayPage() {
             <MobileVisitCard
               key={row.visit.id}
               visit={row.visit}
-              highlight={isUnvisited(row.visit)}
+              highlight={isViewToday && isUnvisited(row.visit)}
+              // 今日以外は戻り先の日を詳細へ渡す (詳細の「戻る」で同じ日を開く)。
+              href={isViewToday ? undefined : `/m/today/${row.visit.id}?from=day&date=${viewDate}`}
               hasRecording={recordedVisitIds.has(row.visit.id)}
               taskCount={taskCounts?.counts[row.visit.id]}
             />

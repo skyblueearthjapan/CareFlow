@@ -51,9 +51,17 @@ interface MobileVisitCardProps {
   hasRecording?: boolean;
   /** 事務所からのやることの件数 (patient-tasks-design §3)。無ければ出さない。 */
   taskCount?: VisitTaskCount;
+  /** 訪問詳細へのリンク先 (今日以外の日から開くとき、戻り先の日を添える)。 */
+  href?: string;
 }
 
-export function MobileVisitCard({ visit, address, hasRecording, taskCount }: MobileVisitCardProps) {
+export function MobileVisitCard({
+  visit,
+  address,
+  hasRecording,
+  taskCount,
+  href,
+}: MobileVisitCardProps) {
   const meta = statusMeta(visit.status);
   // 表示の保険 (design 2026-09-09 §3-4): 一覧に来ている = 描くと決まった訪問。
   const displayKind = classifyVisitDisplay(visit, { showInactive: true });
@@ -100,7 +108,7 @@ export function MobileVisitCard({ visit, address, hasRecording, taskCount }: Mob
     // 地図ボタンは <Link> の外の兄弟に置く (a の中に a を入れない)。
     <div className="relative">
       <Link
-        href={`/m/today/${visit.id}`}
+        href={href ?? `/m/today/${visit.id}`}
         className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary rounded-lg"
         aria-label={`${visit.patient_name ?? '患者'} の訪問詳細`}
       >

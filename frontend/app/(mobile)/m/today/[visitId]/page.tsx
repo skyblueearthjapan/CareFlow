@@ -72,6 +72,11 @@ import { ArrivedAdjustCard } from '@/components/mobile/ArrivedAdjustCard';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitTasks } from '@/components/mobile/MobileVisitTasks';
+import {
+  clampMobileDate,
+  mobileDayLabel,
+  OtherDayNotice,
+} from '@/components/mobile/OtherDayNotice';
 import { Rakusuke } from '@/components/brand/Rakusuke';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { SignaturePad } from '@/components/mobile/SignaturePad';
@@ -372,12 +377,30 @@ function MobileVisitDetailPageInner() {
   // 先週へ戻す (pc-actual-time-edit-design Q5)。
   const fromParam = searchParams?.get('from');
   const fromLastWeek = fromParam === 'lastweek';
-  const fromWeek = fromParam === 'week' || fromLastWeek;
+  const fromNextWeek = fromParam === 'nextweek';
+  const fromWeek = fromParam === 'week' || fromLastWeek || fromNextWeek;
+  // 「今日」の画面で別の日を見ていたとき (`from=day&date=`)。範囲の外は今日に寄せる。
+  const fromDayRaw = fromParam === 'day' ? searchParams?.get('date') : null;
+  const fromDay = fromDayRaw ? clampMobileDate(fromDayRaw, todayIso()) : null;
+  const fromOtherDay = fromDay != null && fromDay !== todayIso() ? fromDay : null;
   const backLabel = fromLastWeek
     ? '先週の予定に戻る'
-    : fromWeek
-      ? '今週の予定に戻る'
-      : '今日の訪問に戻る';
+    : fromNextWeek
+      ? '来週の予定に戻る'
+      : fromWeek
+        ? '今週の予定に戻る'
+        : fromOtherDay
+          ? `${mobileDayLabel(fromOtherDay)}の訪問に戻る`
+          : '今日の訪問に戻る';
+  const backHref = fromLastWeek
+    ? '/m/this-week?week=last'
+    : fromNextWeek
+      ? '/m/this-week?week=next'
+      : fromWeek
+        ? '/m/this-week'
+        : fromOtherDay
+          ? `/m/today?date=${fromOtherDay}`
+          : '/m/today';
 
   const { data: queryVisit, isLoading, isError, error } = useMyVisit(visitId, readToken);
   // 打刻・時刻を合わせる API の応答 (どれも VisitRead)。['me'] の再取得が届くまでの
@@ -1258,8 +1281,8 @@ function MobileVisitDetailPageInner() {
       },
     };
   })();
-  /** サーバに届いた実績を合わせられる (= ボタンを出す)。 */
-  const canAdjustOnServer = !!actualModel && !actualModel.queued;
+  /** サーバに届いた実績を合わせられる (= ボタンを出す)。先の日は見るだけ。 */
+  const canAdjustOnServer = !!actualModel && !actualModel.queued && !isFutureDay;
 
   // シートに渡す対象。開いている間は、直前の値を持ち続ける。退避した到着の再送が
   // 成功すると、控えが消えてから詳細の再取得が届くまで `actualModel` が一瞬 null に
@@ -1371,10 +1394,13 @@ function MobileVisitDetailPageInner() {
   return (
     <MobileSection
       title="訪問詳細"
+      // 先の日の訪問は背景の色を変える (今日の訪問と取り違えないため・見るだけ)。
+      className={cn(isFutureDay && 'rounded-xl bg-warning-bg p-3')}
+      data-testid="mobile-detail-section"
       action={
         // 無言の矢印だけでは戻り先が分からない (PO要望 2026-07-10) → テキスト付きボタンへ
         <Link
-          href={fromLastWeek ? '/m/this-week?week=last' : fromWeek ? '/m/this-week' : '/m/today'}
+          href={backHref}
           className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-brand-primary-light bg-brand-primary-50 px-3 text-xs font-medium text-brand-primary hover:bg-brand-primary-light"
           aria-label={backLabel}
         >
@@ -1406,13 +1432,27 @@ function MobileVisitDetailPageInner() {
         </Alert>
       )}
 
+      {/* 今日以外の訪問は上に大きく注意を出す (mobile-future-days)。 */}
+      {visit && !isToday && (
+        <OtherDayNotice date={visit.visit_date} today={today} testId="mobile-detail-other-day" />
+      )}
+
       {visit && (
         <>
           <Card className="p-4 space-y-3">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="font-serif text-lg font-bold text-text-primary">{patientName}</p>
-                <p className="text-xs text-text-muted">{visit.visit_date}</p>
+                <p
+                  className={cn(
+                    'text-xs text-text-muted',
+                    !isToday && 'text-sm font-bold text-text-primary',
+                  )}
+                >
+                  {isToday
+                    ? visit.visit_date
+                    : `${mobileDayLabel(visit.visit_date)} ${visit.visit_date}`}
+                </p>
               </div>
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                 {substituteMode && (
@@ -1558,11 +1598,13 @@ function MobileVisitDetailPageInner() {
                   </a>
                 </div>
               )}
-              {/* 電話番号は患者マスタにまだ無いので案内だけ。 */}
-              <div className="flex items-center gap-2 text-text-muted">
-                <QrCode className="h-4 w-4 shrink-0" />
-                <span>玄関の固定QRを読み取って打刻してください</span>
-              </div>
+              {/* 電話番号は患者マスタにまだ無いので案内だけ。先の日は打刻の案内を出さない。 */}
+              {!isFutureDay && (
+                <div className="flex items-center gap-2 text-text-muted">
+                  <QrCode className="h-4 w-4 shrink-0" />
+                  <span>玄関の固定QRを読み取って打刻してください</span>
+                </div>
+              )}
               <div className="flex items-center gap-2 text-text-muted">
                 <Phone className="h-4 w-4 shrink-0" />
                 <span>連絡先は患者マスタを参照</span>
@@ -1571,7 +1613,8 @@ function MobileVisitDetailPageInner() {
           </Card>
 
           {/* ---- 事務所からのお願い・伝言 (patient-tasks-design §3) ------------ */}
-          <MobileVisitTasks visitId={visit.id} />
+          {/* 先の日は見るだけ (完了・読みましたは当日の訪問で押す)。 */}
+          <MobileVisitTasks visitId={visit.id} readOnly={isFutureDay} />
 
           {/* ---- Preview / confirm overlay (BEFORE the single POST) ------- */}
           {flow.step === 'preview' && (
@@ -1643,7 +1686,10 @@ function MobileVisitDetailPageInner() {
                 !effectiveCheckedIn &&
                 !effectiveCompleted &&
                 isFutureDay && (
-                  <Card className="p-4 text-[13px] text-text-secondary">
+                  <Card
+                    className="p-4 text-[13px] text-text-secondary"
+                    data-testid="mobile-detail-future-note"
+                  >
                     当日になると到着を記録できます。
                   </Card>
                 )}
@@ -1778,8 +1824,9 @@ function MobileVisitDetailPageInner() {
               {/* ---- 音声記録 (設計 §2-1 導線 A / §10-5) ------------------
                   到着前でも訪問中でも**同じ 1 つ**を置く。分岐して別々に置くと
                   到着打刻の瞬間に片方が unmount され、停止したまま保存前だった
-                  録音が巻き添えで消える (レビュー H-C)。見出しだけ出し分ける。 */}
-              {visit.status !== 'cancelled' && !effectiveCompleted && (
+                  録音が巻き添えで消える (レビュー H-C)。見出しだけ出し分ける。
+                  先の日は出さない (見るだけ・mobile-future-days)。 */}
+              {visit.status !== 'cancelled' && !effectiveCompleted && !isFutureDay && (
                 <VoiceRecorderPanel
                   visitId={visitId}
                   patientId={visit.patient_id}
@@ -1866,8 +1913,8 @@ function MobileVisitDetailPageInner() {
                 </Alert>
               )}
 
-              {/* Photo capture (existing visit-photos backend). */}
-              {visit.status !== 'cancelled' && !effectiveCompleted && (
+              {/* Photo capture (existing visit-photos backend). 先の日は出さない。 */}
+              {visit.status !== 'cancelled' && !effectiveCompleted && !isFutureDay && (
                 <>
                   <button
                     type="button"

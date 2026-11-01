@@ -151,8 +151,11 @@ vi.mock('@/components/mobile/VisitRecordCard', () => ({
 }));
 
 // 事務所からのお願い・伝言は専用テスト (MobileVisitTasks.test.tsx) が担保する。
+// ここでは「先の日は見るだけ (readOnly)」で渡しているかだけ見る。
 vi.mock('@/components/mobile/MobileVisitTasks', () => ({
-  MobileVisitTasks: () => null,
+  MobileVisitTasks: ({ readOnly }: { readOnly?: boolean }) => (
+    <div data-testid="mobile-visit-tasks" data-readonly={String(!!readOnly)} />
+  ),
 }));
 
 // 距離プレビューの public しきい値取得 (Phase 4)。既定では 100/300/50 を返す。
@@ -1309,6 +1312,58 @@ describe('過去の日の訪問詳細 (設計 §7-8)', () => {
     render(<MobileVisitDetailPage />);
     expect(screen.queryByText('QRで到着を記録')).toBeNull();
     expect(screen.getByText('当日になると到着を記録できます。')).toBeInTheDocument();
+  });
+
+  it('先の日の訪問は見るだけ: 注意を出し、音声記録・写真・QR の案内を出さない', () => {
+    setVisit({ ...makeVisit('planned'), visit_date: '2026-07-01' });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-other-day')).toHaveTextContent(
+      '7/1（水）の予定です。今日ではありません',
+    );
+    expect(screen.getByTestId('mobile-detail-other-day')).toHaveAttribute('data-tone', 'future');
+    expect(screen.queryByTestId('voice-recorder-panel')).toBeNull();
+    expect(screen.queryByText('写真を撮影 / 選択')).toBeNull();
+    expect(screen.queryByText('玄関の固定QRを読み取って打刻してください')).toBeNull();
+    expect(screen.queryByText('訪問できなかった（理由を記録）')).toBeNull();
+    expect(screen.getByTestId('mobile-visit-tasks')).toHaveAttribute('data-readonly', 'true');
+  });
+
+  it('今日の訪問には注意を出さず、お願いも押せる', () => {
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByTestId('mobile-detail-other-day')).toBeNull();
+    expect(screen.getByTestId('mobile-visit-tasks')).toHaveAttribute('data-readonly', 'false');
+    expect(screen.getByTestId('voice-recorder-panel')).toBeInTheDocument();
+  });
+
+  it('来週の予定から開いたら、戻るリンクは「来週の予定に戻る」', () => {
+    searchParamsGet.mockImplementation((key: string) => (key === 'from' ? 'nextweek' : null));
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByRole('link', { name: '来週の予定に戻る' })).toHaveAttribute(
+      'href',
+      '/m/this-week?week=next',
+    );
+  });
+
+  it('「今日」の画面で別の日から開いたら、その日へ戻る', () => {
+    searchParamsGet.mockImplementation((key: string) =>
+      key === 'from' ? 'day' : key === 'date' ? '2026-07-02' : null,
+    );
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByRole('link', { name: '7/2（木）の訪問に戻る' })).toHaveAttribute(
+      'href',
+      '/m/today?date=2026-07-02',
+    );
+  });
+
+  it('戻り先の日が範囲の外なら今日へ戻す', () => {
+    searchParamsGet.mockImplementation((key: string) =>
+      key === 'from' ? 'day' : key === 'date' ? '2026-09-01' : null,
+    );
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByRole('link', { name: '今日の訪問に戻る' })).toHaveAttribute(
+      'href',
+      '/m/today',
+    );
   });
 
   it('今週の予定から開いたら、戻るリンクは「今週の予定に戻る」', () => {
