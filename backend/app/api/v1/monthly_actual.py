@@ -75,7 +75,8 @@ class ApplyRequest(BaseModel):
 class ScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    dry_run: bool = False
+    #: 既定は試し (反映の API とそろえる)。本番の予約は画面が明示で false を送る。
+    dry_run: bool = True
     #: 流す時刻 (省略 = 今夜 22:00 JST。過ぎていれば翌日の 22:00)。
     at: datetime | None = None
 

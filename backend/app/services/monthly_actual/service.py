@@ -91,8 +91,17 @@ RPA_FAILED: Final = "failed"
 RPA_ERROR: Final = "error"
 #: 送り待ち (らく助だけの状態)。
 APPLY_QUEUED: Final = "queued"
+#: RPA を始めた後に止まり、書き換えたか分からない (らく助だけの状態・カイポケで要目視)。
+APPLY_UNKNOWN: Final = "unknown"
 #: 成功と同じに扱う理由 (再実行で二重に触らない)。
 REASON_ALREADY_APPLIED: Final = "already_applied"
+#: 書き換えたか分からない結果 (カイポケで確かめてから。流し直しの対象にしない)。
+CHECK_STATUSES: Final = frozenset({RPA_ERROR, APPLY_UNKNOWN})
+CHECK_REASONS: Final = frozenset({"verify_failed", "dialog_left_open", "no_detail"})
+#: 本番が試しを通っていないときの理由 (画面にそのまま出す)。
+MSG_NEED_DRY_RUN: Final = (
+    "試しを通っていない行があります。先に「試しに流す」を押して、試しに流してから反映してください"
+)
 
 _ACTIVE: Final = ("pending", "running")
 _RUNNING: Final = "running"
@@ -279,9 +288,20 @@ async def active_job(db: AsyncSession, job_id: uuid.UUID | None) -> KaipokeJob |
 
 
 def _selection_key(visit_id: uuid.UUID | str | None, item_key: str | None) -> str | None:
-    if visit_id is not None:
-        return f"v:{visit_id}"
-    return f"k:{item_key}" if item_key else None
+    """選び直しを引き継ぐ鍵 = 訪問＋カイポケの行の鍵 (別のカイポケの行へ引き継がない)。"""
+    if visit_id is None or not item_key:
+        return None
+    return f"v:{visit_id}|k:{item_key}"
+
+
+def dry_run_sig(row: MonthlyActualRow) -> str:
+    """試しを通ったかを見る印 = 送る鍵と新しい時刻。"""
+    return f"{row.item_key}|{row.new_start}-{row.new_end}"
+
+
+def needs_kaipoke_check(row: MonthlyActualRow) -> bool:
+    """書き換えたか分からない結果 (カイポケで確かめてから)。"""
+    return row.apply_status in CHECK_STATUSES or row.apply_reason in CHECK_REASONS
 
 
 def _row_from_judged(run_id: uuid.UUID, seq: int, j: rules.JudgedRow) -> MonthlyActualRow:
@@ -318,13 +338,19 @@ def _row_from_judged(run_id: uuid.UUID, seq: int, j: rules.JudgedRow) -> Monthly
 
 
 async def judge_month(
-    db: AsyncSession, month: str, *, snapshot: KaipokeCsvSnapshot | None = None
+    db: AsyncSession,
+    month: str,
+    *,
+    snapshot: KaipokeCsvSnapshot | None = None,
+    keep_checks: bool = False,
 ) -> MonthlyActualRun:
     """らく助とカイポケの実績を突き合わせて判定し、作業の行を作り直す (commit は呼び出し側)。
 
-    管理者が変えた「反映する／しない」(``selected_by`` あり) は、同じ訪問 (無ければ同じ鍵) の
-    行へ引き継ぐ。送った結果は同じ鍵 (カイポケの旧時刻が同じ) の行へ引き継ぐ。
-    カイポケの実績がまだ無ければ 422。
+    管理者が変えた「反映する／しない」(``selected_by`` あり) は、同じ訪問かつ同じ鍵の行へ
+    引き継ぐ。送った結果と試しを通った印は同じ鍵 (カイポケの旧時刻が同じ) の行へ引き継ぐ。
+    ただし「カイポケで確かめてから」の結果は、その後に管理者がカイポケの実績を読み取り直して
+    いれば引き継がない (読み取り直しが確かめになる)。反映の直後の確かめ (``keep_checks``・
+    その読み取りの実績) では引き継ぐ。カイポケの実績がまだ無ければ 422。
     """
     snap = snapshot or await latest_actual_snapshot(db, month)
     if snap is None:
@@ -350,6 +376,11 @@ async def judge_month(
         if r.selected_by is not None and (key := _selection_key(r.visit_id, r.item_key)) is not None
     }
     applied = {r.item_key: r for r in previous if r.item_key and r.apply_status}
+    passed = {r.item_key: r.dry_run_ok_sig for r in previous if r.item_key and r.dry_run_ok_sig}
+    snap_at = _aware(snap.fetched_at)
+    keep_checks = keep_checks or (
+        str(snap.id) == str((run.verify_result or {}).get("snapshot_id") or "")
+    )
     await db.execute(delete(MonthlyActualRow).where(MonthlyActualRow.run_id == run.id))
 
     rows: list[MonthlyActualRow] = []
@@ -360,7 +391,17 @@ async def judge_month(
             row.selected = prev.selected
             row.selected_by = prev.selected_by
             row.selected_at = prev.selected_at
+        row.dry_run_ok_sig = passed.get(row.item_key or "")
         done = applied.get(row.item_key or "")
+        if (
+            done is not None
+            and not keep_checks
+            and needs_kaipoke_check(done)
+            and snap_at is not None
+            and (done_at := _aware(done.applied_at)) is not None
+            and snap_at > done_at
+        ):
+            done = None
         if done is not None and done.apply_status != APPLY_QUEUED:
             row.apply_status = done.apply_status
             row.apply_reason = done.apply_reason
@@ -396,10 +437,13 @@ def is_sendable(row: MonthlyActualRow) -> bool:
 
 
 def is_applied(row: MonthlyActualRow) -> bool:
-    """本番で書き換え済み (成功・すでに反映済み)。二度送らない。"""
-    if row.apply_dry_run is not False:
-        return False
-    return row.apply_status == RPA_SUCCESS or row.apply_reason == REASON_ALREADY_APPLIED
+    """書き換え済み (本番の成功・すでに反映済み)。二度送らない。
+
+    ``already_applied`` はカイポケがもう新しい時刻なので、試しで返っても済みとする。
+    """
+    if row.apply_reason == REASON_ALREADY_APPLIED:
+        return True
+    return row.apply_dry_run is False and row.apply_status == RPA_SUCCESS
 
 
 def row_view(row: MonthlyActualRow) -> dict[str, Any]:
@@ -440,6 +484,8 @@ def row_view(row: MonthlyActualRow) -> dict[str, Any]:
         "apply_message": row.apply_message,
         "apply_dry_run": row.apply_dry_run,
         "applied_at": _iso(row.applied_at),
+        "needs_kaipoke_check": needs_kaipoke_check(row),
+        "dry_run_passed": row.dry_run_ok_sig is not None and row.dry_run_ok_sig == dry_run_sig(row),
     }
 
 
@@ -476,6 +522,7 @@ def apply_counts(rows: list[MonthlyActualRow]) -> dict[str, int]:
         "failed": 0,
         "error": 0,
         "queued": 0,
+        "unknown": 0,
     }
     for row in rows:
         if row.apply_status is None:
@@ -552,10 +599,11 @@ def choose_rows(
     row_ids: list[uuid.UUID] | None = None,
     only_failed: bool = False,
 ) -> list[MonthlyActualRow]:
-    """送る行 = 選んだ (反映する) 行のうち、送れて、本番でまだ書き換えていないもの。
+    """送る行 = 選んだ (反映する) 行のうち、送れて、まだ書き換えていないもの。
 
     ``row_ids`` を渡したらその行だけ (選んでいない行・送れない行は 422)。
-    ``only_failed`` なら前に失敗した行だけ (流し直し)。
+    ``only_failed`` なら前に失敗した行だけ (流し直し)。本番で「カイポケで確かめてから」に
+    なった行は送らない (書き換えたか分からないため・読み取り直すと戻る)。
     """
     if row_ids is not None:
         wanted = set(row_ids)
@@ -569,10 +617,21 @@ def choose_rows(
             raise MonthlyActualError(422, f"反映しない行・反映できない行が {len(bad)} 件あります")
     else:
         picked = [r for r in rows if r.selected and is_sendable(r)]
-    picked = [r for r in picked if not is_applied(r)]
+    picked = [
+        r
+        for r in picked
+        if not is_applied(r) and not (r.apply_dry_run is False and needs_kaipoke_check(r))
+    ]
     if only_failed:
-        picked = [r for r in picked if r.apply_status in (RPA_FAILED, RPA_ERROR)]
+        picked = [r for r in picked if r.apply_status == RPA_FAILED and not needs_kaipoke_check(r)]
     return picked
+
+
+def ensure_dry_run_passed(rows: list[MonthlyActualRow]) -> None:
+    """本番は試しを通った行だけ: 送る行すべてに、今の鍵と新しい時刻で ``dry_run_ok`` がある。"""
+    bad = [r for r in rows if r.dry_run_ok_sig is None or r.dry_run_ok_sig != dry_run_sig(r)]
+    if bad:
+        raise MonthlyActualError(422, f"{MSG_NEED_DRY_RUN}（{len(bad)} 件）")
 
 
 def duplicate_keys(rows: list[MonthlyActualRow]) -> list[str]:
@@ -634,9 +693,35 @@ async def start_apply(
     rows = choose_rows(await load_rows(db, run.id), row_ids=row_ids, only_failed=only_failed)
     if not rows:
         raise MonthlyActualError(422, "反映する行がありません")
-    build_rpa_items(rows)  # 鍵の重なりをここで止める
+    items = build_rpa_items(rows)  # 鍵の重なりをここで止める
+    if not dry_run:
+        ensure_dry_run_passed(rows)
     ids = [r.id for r in rows]
     run_id = run.id
+    params: dict[str, Any] = {
+        "month": month,
+        "run_id": str(run_id),
+        "dry_run": dry_run,
+        "row_ids": [str(i) for i in ids],
+    }
+    if not dry_run:
+        # 送った記録 (判定し直しで行が作り直されても消えない)。結果は result_summary.sent_results。
+        params["sent_by"] = str(user_id) if user_id else None
+        params["sent_at"] = datetime.now(UTC).isoformat()
+        params["sent"] = [
+            {
+                "row_id": item["item_id"],
+                "visit_id": str(r.visit_id) if r.visit_id else None,
+                "patient": item["user_name"],
+                "date": item["date"],
+                "old_start": item["old_start"],
+                "old_end": item["old_end"],
+                "staff1": item["staff1"],
+                "new_start": item["new_start"],
+                "new_end": item["new_end"],
+            }
+            for item, r in zip(items, rows, strict=True)
+        ]
     await db.commit()  # 読んだだけのトランザクションを閉じてから鍵を取る
 
     job = await sources.start_source_job(
@@ -644,12 +729,7 @@ async def start_apply(
         op=OP_MONTHLY_ACTUAL_APPLY,
         week_start=month_monday(month),
         user_id=user_id,
-        params={
-            "month": month,
-            "run_id": str(run_id),
-            "dry_run": dry_run,
-            "row_ids": [str(i) for i in ids],
-        },
+        params=params,
         total=len(ids),
     )
     run = await get_run(db, month)
@@ -765,6 +845,8 @@ async def ingest_rpa_result(db: AsyncSession, job: KaipokeJob, rpa: dict[str, An
         row.apply_message = _detail_message(d)
         row.apply_dry_run = dry_run
         row.applied_at = now
+        if dry_run:
+            row.dry_run_ok_sig = dry_run_sig(row) if row.apply_status == RPA_DRY_RUN_OK else None
     counts = {
         k: int(result.get(k) or 0)
         for k in ("total", "success", "dry_run_ok", "skipped", "failed", "error")
@@ -772,8 +854,10 @@ async def ingest_rpa_result(db: AsyncSession, job: KaipokeJob, rpa: dict[str, An
     await db.flush()
     job = await db.get(KaipokeJob, job.id, populate_existing=True) or job
     if job.status == _RUNNING:
+        sent = {"sent_results": _sent_results(rows, now)} if not dry_run else {}
         job.result_summary = {
             **(job.result_summary or {}),
+            **sent,
             "rpa_completed": True,
             "rpa_counts": counts,
             "stopped": bool(result.get("stopped")),
@@ -782,6 +866,18 @@ async def ingest_rpa_result(db: AsyncSession, job: KaipokeJob, rpa: dict[str, An
         job.updated_at = now
     await db.commit()
     return "completed"
+
+
+def _sent_results(rows: Any, now: datetime) -> dict[str, dict[str, Any]]:
+    """送った記録の結果 (行の id → 結果)。``params.sent`` と合わせて読む。"""
+    return {
+        str(r.id): {
+            "status": r.apply_status,
+            "reason": r.apply_reason,
+            "at": _iso(r.applied_at) or now.isoformat(),
+        }
+        for r in rows
+    }
 
 
 async def _admin_users(db: AsyncSession) -> list[User]:
@@ -867,15 +963,29 @@ async def finish_apply(
     params = job.params or {}
     month = str(params.get("month"))
     dry_run = bool(params.get("dry_run"))
+    now = datetime.now(UTC)
+    summary = {**(job.result_summary or {}), "counts": counts, "progress": None}
     if counts is None:
         rows = await _rows_of_job(db, job)
         if error is not None:
+            # RPA を始めた後なら書き換えたか分からない (カイポケで要目視)。始める前なら送っていない。
+            started = bool((job.result_summary or {}).get("rpa_started"))
             for row in rows:
-                if row.apply_status == APPLY_QUEUED:
+                if row.apply_status != APPLY_QUEUED:
+                    continue
+                if started:
+                    row.apply_status = APPLY_UNKNOWN
+                    row.apply_reason = None
+                    row.apply_message = _short(
+                        f"途中で止まりました（カイポケで確かめてください）: {error}", 2000
+                    )
+                    row.applied_at = now
+                else:
                     row.apply_status = None
+            if started and not dry_run and "sent_results" not in summary:
+                summary["sent_results"] = _sent_results(rows, now)
         counts = apply_counts(rows)
-    now = datetime.now(UTC)
-    summary = {**(job.result_summary or {}), "counts": counts, "progress": None}
+        summary["counts"] = counts
     if error is not None:
         summary["error"] = error
     written = await db.execute(
@@ -939,7 +1049,10 @@ def _counts_text(counts: dict[str, int], dry_run: bool) -> str:
     ok = counts.get("dry_run_ok", 0) if dry_run else counts.get("success", 0)
     failed = counts.get("failed", 0) + counts.get("error", 0)
     head = "登録の直前まで進めた" if dry_run else "成功"
-    return f"{head} {ok} 件・失敗 {failed} 件・スキップ {counts.get('skipped', 0)} 件"
+    text = f"{head} {ok} 件・失敗 {failed} 件・スキップ {counts.get('skipped', 0)} 件"
+    if counts.get("unknown"):
+        text += f"・カイポケで確かめる {counts['unknown']} 件"
+    return text
 
 
 async def _export_actual(
@@ -979,8 +1092,11 @@ async def verify_after_apply(
     applied_visits = {r.visit_id for r in applied_rows if r.visit_id is not None}
     await db.commit()
     try:
+        # 確かめの間も動いている印を書く (状態の API が古いジョブとみなして閉じないように)。
+        await _touch(db, job.id, verifying=True)
         snap = await _export_actual(db, client, job_id=job.id, month=month)
-        run = await judge_month(db, month, snapshot=snap)
+        await _touch(db, job.id)
+        run = await judge_month(db, month, snapshot=snap, keep_checks=True)
         rows = await load_rows(db, run.id)
         await db.commit()
     except SourceJobCancelledError:
@@ -1005,6 +1121,7 @@ async def verify_after_apply(
     return {
         "checked_at": datetime.now(UTC).isoformat(),
         "kaipoke_fetched_at": _iso(snap.fetched_at),
+        "snapshot_id": str(snap.id),
         "applied": len(applied_visits),
         "matched": len(applied_visits) - len(not_matched),
         "not_matched": not_matched,
@@ -1121,7 +1238,11 @@ async def poll_apply_status(db: AsyncSession, client: KaipokeClient, run: Monthl
     RPA に届かないときは何もしない (次の読み直しで)。
     """
     job = await active_job(db, run.apply_job_id)
-    if job is None or not (job.result_summary or {}).get("rpa_started"):
+    summary = (job.result_summary or {}) if job is not None else {}
+    if job is None or not summary.get("rpa_started"):
+        return
+    if summary.get("rpa_completed"):
+        # RPA は終わり、背景が確かめ (読み取り直し) の途中。件数なしで閉じない。
         return
     try:
         rpa = await client.actual_time_result()
@@ -1263,8 +1384,11 @@ async def schedule_apply(
     assert when is not None
     if when <= datetime.now(UTC):
         raise MonthlyActualError(422, "予約の時刻は、これから先の時刻にしてください")
-    if not choose_rows(await load_rows(db, run.id)):
+    rows = choose_rows(await load_rows(db, run.id))
+    if not rows:
         raise MonthlyActualError(422, "反映する行がありません")
+    if not dry_run:
+        ensure_dry_run_passed(rows)
     run.scheduled_at = when
     run.scheduled_dry_run = dry_run
     run.scheduled_by = user_id
@@ -1294,8 +1418,9 @@ class ScheduleTick:
 async def run_due_schedules(db: AsyncSession, now: datetime | None = None) -> ScheduleTick:
     """予約の時刻を過ぎた月の反映を始める (cron から)。始めたジョブは ``started[].job_id``。
 
-    ほかの RPA のジョブが動いていれば次の回まで待つ (予約を残す)。予約から 3 時間たっても
-    始められなければ、予約を取り下げて管理者に知らせる。送る行が無ければ取り下げる。
+    ほかの RPA のジョブが動いていれば次の回まで待つ (予約を残す)。予約の時刻から 3 時間を
+    過ぎていれば、理由を問わず (cron が止まっていた・ずっと塞がっていた) 予約を取り下げて
+    管理者に知らせる。送る行が無い・試しを通っていなければ取り下げる。
     呼び出し側は ``started`` のジョブを ``run_apply_job`` で背景に流す。
     """
     current = now or datetime.now(UTC)
@@ -1313,17 +1438,17 @@ async def run_due_schedules(db: AsyncSession, now: datetime | None = None) -> Sc
     await db.commit()
     tick = ScheduleTick(started=[], waiting=[], dropped=[])
     for month, dry_run, user_id, at in plans:
+        if at is not None and current - at > SCHEDULE_GIVE_UP:
+            await _drop_schedule(
+                db, month, "予約の時刻から 3 時間を過ぎても始められませんでした（流していません）"
+            )
+            tick.dropped.append({"month": month, "reason": "late"})
+            continue
         try:
             job = await start_apply(db, month=month, user_id=user_id, dry_run=dry_run)
         except RpaJobConflictError:
             await db.rollback()
-            if at is not None and current - at > SCHEDULE_GIVE_UP:
-                await _drop_schedule(
-                    db, month, "ほかのカイポケの処理が続いていて始められませんでした"
-                )
-                tick.dropped.append({"month": month, "reason": "busy"})
-            else:
-                tick.waiting.append({"month": month})
+            tick.waiting.append({"month": month})
             continue
         except MonthlyActualError as exc:
             await db.rollback()
@@ -1361,6 +1486,8 @@ __all__ = [
     "MonthlyActualError",
     "apply_counts",
     "build_rpa_items",
+    "ensure_dry_run_passed",
+    "needs_kaipoke_check",
     "cancel_schedule",
     "choose_rows",
     "finish_apply",

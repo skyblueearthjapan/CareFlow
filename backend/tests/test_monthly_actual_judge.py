@@ -259,3 +259,81 @@ def test_parse_kp_csv_reads_actual_columns() -> None:
     assert row.staff == ("佐藤 花子",)
     assert (row.start, row.end, row.minutes) == ("09:05", "09:40", 35)
     assert (row.k2_start, row.k2_end) == ("09:00", "09:40")
+
+
+def test_other_visit_does_not_take_the_row_of_the_exact_visit() -> None:
+    # レビューの重大: らく助 10:00〜10:30 と 10:40〜11:15、カイポケ 10:40〜11:15 の 1 行。
+    # 近い順の早い者勝ちだと 10:00 の訪問が 10:40 の行を取り「反映する」になっていた。
+    rows = rules.judge(
+        [
+            rk("a", "前川 七海", "10:00", "10:30"),
+            rk("b", "前川 七海", "10:40", "11:15"),
+        ],
+        [kp("前川　七海", "10:40", "11:15")],
+    )
+    by_id = {r.rk.visit_id: r for r in rows if r.rk}
+    assert by_id["b"].kp is not None and by_id["b"].status == rules.STATUS_MATCH
+    assert by_id["a"].kp is None and by_id["a"].status == rules.STATUS_MISSING
+    assert all(r.status != rules.STATUS_APPLY for r in rows)
+
+
+def test_count_differs_sends_every_pair_of_that_day_to_review() -> None:
+    # 件数が違う (らく助 2・カイポケ 1) → 組めた行も人が見る。組めなかった方はカイポケに無い。
+    rows = rules.judge(
+        [
+            rk("a", "前川 七海", "10:00", "10:30"),
+            rk("b", "前川 七海", "10:42", "11:15"),
+        ],
+        [kp("前川　七海", "10:40", "11:15")],
+    )
+    by_id = {r.rk.visit_id: r for r in rows if r.rk}
+    assert by_id["b"].kp is not None and by_id["b"].status == rules.STATUS_REVIEW
+    assert rules.FLAG_COUNT_DIFF in codes(by_id["b"])
+    assert by_id["b"].default_selected is False
+    assert by_id["a"].status == rules.STATUS_MISSING
+
+
+def test_pairs_are_assigned_by_smallest_gap_first() -> None:
+    # 予定の順に早い者勝ちだと a (10:30) が 10:40 の行を取り、b (10:40) は 11:30 と組む。
+    # 差 0 の組 (b と 10:40) を先に固定する。
+    rows = rules.judge(
+        [
+            rk("a", "前川 七海", "10:30", "11:05", plan="10:30"),
+            rk("b", "前川 七海", "10:40", "11:15", plan="10:45"),
+        ],
+        [kp("前川　七海", "10:40", "11:15"), kp("前川　七海", "11:30", "12:05")],
+    )
+    by_id = {r.rk.visit_id: r for r in rows if r.rk}
+    assert by_id["b"].kp is not None and by_id["b"].kp.start == "10:40"
+    assert by_id["b"].status == rules.STATUS_MATCH
+
+
+def test_short_stay_with_long_kaipoke_stay_goes_to_review() -> None:
+    rows = rules.judge(
+        [
+            rk("1", "青木 さくら", "10:00", "10:20"),
+            rk("2", "石田 健", "13:00", None),
+            rk("3", "木下 誠", "15:00", "15:20"),
+        ],
+        [
+            kp("青木　さくら", "10:00", "11:00"),
+            kp("石田　健", "13:00", "14:05"),
+            kp("木下　誠", "15:00", "15:50"),
+        ],
+    )
+    for name in ("青木 さくら", "石田 健"):
+        row = one(rows, name)
+        assert row.status == rules.STATUS_REVIEW and rules.FLAG_KP_LONGER in codes(row)
+    short = one(rows, "木下 誠")  # カイポケ 50 分 → 60 分未満なので反映してよい
+    assert short.status == rules.STATUS_APPLY and rules.FLAG_KP_LONGER not in codes(short)
+
+
+def test_same_item_key_with_a_kaipoke_only_twin_goes_to_review() -> None:
+    # カイポケに同じ鍵の行が 2 つ (片方はカイポケだけ) → RPA はどちらか決められない。
+    rows = rules.judge(
+        [rk("1", "青木 さくら", "10:02", "10:40")],
+        [kp("青木　さくら", "10:00", "10:35"), kp("青木　さくら", "10:00", "10:35")],
+    )
+    paired = [r for r in rows if r.rk is not None]
+    assert len(paired) == 1 and paired[0].status == rules.STATUS_REVIEW
+    assert rules.FLAG_DUP_TARGET in codes(paired[0])

@@ -7,6 +7,7 @@
  *   3. 反映・予約の前に、月と件数を書いた確認を画面の中で出す
  *   4. 段の決め方（試しが全部進んだら「反映する」）
  *   5. 二度押しで 2 回送らない
+ *   6. カイポケで確かめる行は流し直さない・反映済み（already_applied）は送る行に入れない
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
@@ -51,7 +52,9 @@ import { MonthlyActualTable } from '../_components/monthly-actual/MonthlyActualT
 import {
   currentStep,
   dryRunAllOk,
+  failedRows,
   flagChips,
+  pendingRows,
 } from '../_components/monthly-actual/monthlyActualFormat';
 
 function makeRow(over: Partial<MonthlyActualRow> = {}): MonthlyActualRow {
@@ -88,6 +91,8 @@ function makeRow(over: Partial<MonthlyActualRow> = {}): MonthlyActualRow {
     result_reason: null,
     result_message: null,
     result_dry_run: null,
+    needs_kaipoke_check: false,
+    dry_run_passed: false,
     ...over,
   };
 }
@@ -298,17 +303,79 @@ describe('monthlyActualFormat', () => {
   it('段：読み取り前 1・まだ流していない 2・試しが全部進んだ 4・一部だけなら 3', () => {
     expect(currentStep(makeList({ kp_fetched_at: null }))).toBe(1);
     expect(currentStep(makeList())).toBe(2);
-    const ok = makeList({ job: job(), rows: [makeRow({ result_status: 'dry_run_ok' })] });
+    const ok = makeList({
+      job: job(),
+      rows: [makeRow({ result_status: 'dry_run_ok', dry_run_passed: true })],
+    });
     expect(dryRunAllOk(ok)).toBe(true);
     expect(currentStep(ok)).toBe(4);
     const ng = makeList({
       job: job(),
       rows: [
-        makeRow({ id: 'a', result_status: 'dry_run_ok' }),
+        makeRow({ id: 'a', result_status: 'dry_run_ok', dry_run_passed: true }),
         makeRow({ id: 'b', result_status: 'failed', result_reason: 'not_found' }),
       ],
     });
     expect(currentStep(ng)).toBe(3);
+  });
+
+  it('試しの後に時刻が変わった行（dry_run_passed でない）は、試しが全部進んだとみなさない', () => {
+    const stale = makeList({
+      job: job(),
+      rows: [makeRow({ result_status: 'dry_run_ok', dry_run_passed: false })],
+    });
+    expect(dryRunAllOk(stale)).toBe(false);
+  });
+
+  it('反映済み（already_applied）は送る行に入れず、試しが全部進んだに数える', () => {
+    const view = makeList({
+      job: job(),
+      rows: [
+        makeRow({ id: 'a', result_status: 'dry_run_ok', dry_run_passed: true }),
+        makeRow({
+          id: 'b',
+          result_status: 'skipped',
+          result_reason: 'already_applied',
+          result_dry_run: true,
+        }),
+      ],
+    });
+    expect(pendingRows(view.rows).map((r) => r.id)).toEqual(['a']);
+    expect(dryRunAllOk(view)).toBe(true);
+  });
+
+  it('カイポケで確かめる行は流し直しにも送る行にも入れず、印を出す', () => {
+    const rows = [
+      makeRow({
+        id: 'f',
+        result_status: 'failed',
+        result_reason: 'not_found',
+        result_dry_run: false,
+      }),
+      makeRow({
+        id: 'v',
+        result_status: 'failed',
+        result_reason: 'verify_failed',
+        result_dry_run: false,
+        needs_kaipoke_check: true,
+      }),
+      makeRow({
+        id: 'u',
+        result_status: 'unknown',
+        result_dry_run: false,
+        needs_kaipoke_check: true,
+      }),
+      makeRow({
+        id: 'e',
+        result_status: 'error',
+        result_dry_run: false,
+        needs_kaipoke_check: true,
+      }),
+    ];
+    expect(failedRows(rows).map((r) => r.id)).toEqual(['f']);
+    expect(pendingRows(rows).map((r) => r.id)).toEqual(['f']);
+    const chips = flagChips(rows[1]!);
+    expect(chips.some((c) => c.label === 'カイポケで確かめてから')).toBe(true);
   });
 
   it('段：反映が終われば 5、確かめたら 6', () => {

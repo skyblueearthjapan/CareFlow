@@ -586,6 +586,7 @@ async def _reconcile_latest_job(
     _long_ops = ("acceptance-refresh", "leave-compare", "leave-outbound")
     # 月の実績 (monthly_actual) の取り直し・実績の書き換えも自前のジョブが決着させる。
     # 書き換えは 1 件 20〜30 秒 × 数百件で 2 時間を超えうるので 360 分まで閉じない。
+    # 取り直し (export 1 本と判定) は取り直し系と同じ 120 分。
     _monthly_ops = ("monthly-actual-refresh", "monthly-actual-apply")
     if _op in (
         "events-preview",
@@ -600,9 +601,9 @@ async def _reconcile_latest_job(
             _created = _created.replace(tzinfo=UTC)
         if _op == "smart-preview":
             _hold = _SMART_PREVIEW_STALE_MINUTES
-        elif _op in _monthly_ops:
+        elif _op == "monthly-actual-apply":
             _hold = 360
-        elif _op in _long_ops:
+        elif _op in _long_ops or _op in _monthly_ops:
             _hold = 120
         else:
             _hold = 30

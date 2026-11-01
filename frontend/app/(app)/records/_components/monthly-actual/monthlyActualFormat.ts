@@ -85,6 +85,8 @@ const FLAG_CHIPS: Record<string, { label: string; tone: ChipTone }> = {
   no_arrival: { label: '到着なし', tone: 'red' },
   dup_target: { label: '同じ行を 2 件', tone: 'red' },
   kp_end_before_start: { label: 'カイポケの時刻', tone: 'amber' },
+  count_diff: { label: '訪問の数が違う', tone: 'red' },
+  kp_longer: { label: 'カイポケの方が長い', tone: 'red' },
 };
 
 export interface FlagChip {
@@ -96,7 +98,8 @@ export interface FlagChip {
 
 /** 行の印（＋状態・合わせた時刻から出る印）をチップにする。 */
 export function flagChips(
-  row: Pick<MonthlyActualRow, 'flags' | 'flag_details' | 'status' | 'rk_adjusted'>,
+  row: Pick<MonthlyActualRow, 'flags' | 'flag_details' | 'status' | 'rk_adjusted'> &
+    Partial<Pick<MonthlyActualRow, 'needs_kaipoke_check'>>,
 ): FlagChip[] {
   const chips: FlagChip[] = [];
   const details = row.flag_details?.length
@@ -124,6 +127,14 @@ export function flagChips(
       label: 'カイポケだけ',
       title: 'らく助に訪問が無い',
       tone: 'blue',
+    });
+  }
+  if (row.needs_kaipoke_check) {
+    chips.push({
+      key: 'kp_check',
+      label: 'カイポケで確かめてから',
+      title: '書き換えたか分かりません。カイポケで確かめ、実績を読み取り直してください',
+      tone: 'red',
     });
   }
   if (row.rk_adjusted) {
@@ -157,29 +168,37 @@ export function resultLabel(
     case 'failed':
     case 'error':
       return { label: '失敗', ok: false };
+    case 'unknown':
+      return { label: 'カイポケで確かめる', ok: false };
     default:
       return { label: String(status), ok: false };
   }
 }
 
-const DONE_RESULTS = new Set(['success', 'already_applied']);
+/** 反映済み（本番の成功・already_applied は試しで返っても済み）。BE の `is_applied` と同じ。 */
+export function isDoneRow(r: MonthlyActualRow): boolean {
+  return (
+    r.result_reason === 'already_applied' ||
+    (r.result_dry_run === false && r.result_status === 'success')
+  );
+}
 
-/** これから送る行（「する」・送れる・まだ反映していない）。 */
+/** これから送る行（「する」・送れる・まだ反映していない・本番で要目視になっていない）。 */
 export function pendingRows(rows: MonthlyActualRow[]): MonthlyActualRow[] {
   return rows.filter(
     (r) =>
       r.apply &&
       r.selectable &&
       !isLockedStatus(r.status) &&
-      !DONE_RESULTS.has(r.result_status ?? ''),
+      !isDoneRow(r) &&
+      !(r.result_dry_run === false && r.needs_kaipoke_check),
   );
 }
 
-/** 前の反映（試しでない）で失敗した行。 */
+/** 前の反映（試しでない）で失敗した行（カイポケで確かめる行は流し直さない）。 */
 export function failedRows(rows: MonthlyActualRow[]): MonthlyActualRow[] {
   return rows.filter(
-    (r) =>
-      r.result_dry_run === false && (r.result_status === 'failed' || r.result_status === 'error'),
+    (r) => r.result_dry_run === false && r.result_status === 'failed' && !r.needs_kaipoke_check,
   );
 }
 
@@ -192,12 +211,17 @@ export function isJobScheduled(job: MonthlyActualJobSummary | null | undefined):
   return !!job?.scheduled_at && !job.running;
 }
 
-/** 試しが終わり、これから送る行が 1 件以上あり、その全部が試しで進んだ（`dry_run_ok`）。 */
+/**
+ * 試しが終わり、これから送る行が 1 件以上あり、その全部が今の時刻で試しを通った
+ * （`dry_run_ok` かつ `dry_run_passed`）。反映済み（already_applied）は送る行に入らない。
+ */
 export function dryRunAllOk(view: MonthlyActualList | null | undefined): boolean {
   const job = view?.job;
   if (!view || !job?.dry_run || job.running) return false;
   const pending = pendingRows(view.rows);
-  return pending.length > 0 && pending.every((r) => r.result_status === 'dry_run_ok');
+  return (
+    pending.length > 0 && pending.every((r) => r.result_status === 'dry_run_ok' && r.dry_run_passed)
+  );
 }
 
 export type StepNo = 1 | 2 | 3 | 4 | 5 | 6;

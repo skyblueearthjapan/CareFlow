@@ -214,7 +214,10 @@ export function MonthlyActualTab() {
               )
             }
             onSchedule={() =>
-              send(() => schedule.mutateAsync({ month }), '今夜 22 時に流す予約をしました')
+              send(
+                () => schedule.mutateAsync({ month, dryRun: false }),
+                '今夜 22 時に流す予約をしました',
+              )
             }
             onCancelSchedule={() =>
               send(() => cancelSchedule.mutateAsync(month), '予約を取り消しました')

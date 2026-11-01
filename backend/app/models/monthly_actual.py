@@ -142,6 +142,9 @@ class MonthlyActualRow(Base, TimestampMixin):
     apply_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     apply_dry_run: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 試しで ``dry_run_ok`` になったときの「鍵|新しい開始-新しい終了」。本番はこれが今の行と
+    #: 同じ行だけ送る (試しを通った行だけ)。判定し直しても同じ鍵の行へ引き継ぐ。
+    dry_run_ok_sig: Mapped[str | None] = mapped_column(String(240), nullable=True)
 
     __table_args__ = (Index("ix_monthly_actual_rows_run_seq", "run_id", "seq"),)
 

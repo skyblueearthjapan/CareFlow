@@ -82,6 +82,10 @@ export const rawRowSchema = z.object({
   apply_message: z.string().nullable().optional(),
   apply_dry_run: z.boolean().nullable().optional(),
   applied_at: z.string().nullable().optional(),
+  /** 書き換えたか分からない結果 (カイポケで確かめてから・流し直さない)。 */
+  needs_kaipoke_check: z.boolean().default(false),
+  /** 今の鍵と新しい時刻で試しを通った (本番はこの行だけ送れる)。 */
+  dry_run_passed: z.boolean().default(false),
 });
 export type RawMonthlyActualRow = z.infer<typeof rawRowSchema>;
 
@@ -125,12 +129,16 @@ export interface MonthlyActualRow {
   /** 到着の差・退出の差 (らく助 − カイポケ・分)。 */
   diff_start: number | null;
   diff_end: number | null;
-  /** RPA の結果 (queued / success / dry_run_ok / skipped / failed / error)。 */
+  /** RPA の結果 (queued / success / dry_run_ok / skipped / failed / error / unknown)。 */
   result_status: string | null;
   /** RPA の理由コード (ACTUAL_TIME_EDIT_SPEC.md の reason)。 */
   result_reason: string | null;
   result_message: string | null;
   result_dry_run: boolean | null;
+  /** 書き換えたか分からない結果 (カイポケで確かめてから・流し直さない)。 */
+  needs_kaipoke_check: boolean;
+  /** 今の鍵と新しい時刻で試しを通った。 */
+  dry_run_passed: boolean;
 }
 
 export function toMonthlyActualStatus(
@@ -173,6 +181,8 @@ export function toMonthlyActualRow(r: RawMonthlyActualRow): MonthlyActualRow {
     result_reason: r.apply_reason ?? null,
     result_message: r.apply_message ?? null,
     result_dry_run: r.apply_dry_run ?? null,
+    needs_kaipoke_check: r.needs_kaipoke_check,
+    dry_run_passed: r.dry_run_passed,
   };
 }
 
@@ -209,6 +219,7 @@ const applyCountsSchema = z.object({
   failed: z.number().int().default(0),
   error: z.number().int().default(0),
   queued: z.number().int().default(0),
+  unknown: z.number().int().default(0),
 });
 export type MonthlyActualApplyCounts = z.infer<typeof applyCountsSchema>;
 

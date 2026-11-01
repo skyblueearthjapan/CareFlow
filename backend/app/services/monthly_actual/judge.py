@@ -5,8 +5,11 @@ PO の決まり (``docs/plans/session-2026-11-01-HANDOFF.md`` §1)。
 
 組み方
     (日・利用者) で組にする。利用者名は字体 (齋/齊・髙/高・﨑/崎・栁/柳・邉邊/辺・濵濱/浜・
-    德/徳・冨/富 など) と空白をそろえる。らく助の訪問を予定の開始の順に見て、到着 (無ければ
-    予定の開始) に近いカイポケの行と組む (120 分以内・1 つのカイポケの行は 1 回だけ)。
+    德/徳・冨/富 など) と空白をそろえる。同じ (日・利用者) のらく助の訪問とカイポケの行の
+    全部の組を、到着 (無ければ予定の開始) とカイポケの開始の差の小さい順に割り当てる (差 0 を
+    先に固定・120 分以内・1 つのカイポケの行は 1 回だけ)。近い順の早い者勝ちにすると、別の
+    訪問の行を取って書き換えてしまう。らく助とカイポケの件数が違う (日・利用者) は、組めた行も
+    全部「人が見る」にする (組めなかったらく助の訪問は「カイポケに無い」)。
 
 新しい時刻
     らく助の QR 実績 (後から合わせた時刻を含む) が正。30 分未満の滞在と、退出の QR が無い
@@ -21,7 +24,8 @@ PO の決まり (``docs/plans/session-2026-11-01-HANDOFF.md`` §1)。
 
 反映しない印 (人が見る)
     1 時間以上ずれる・同じ職員の別の訪問と時間が重なる・担当が違う・2 名訪問の人数が違う・
-    QR の到着が無い・同じカイポケの行を 2 件が指す。
+    QR の到着が無い・同じカイポケの行を 2 件が指す・同じ日の訪問の数が違う・
+    30 分未満 (退出なし) で到着＋35 分にするのにカイポケの滞在が 60 分以上ある。
 反映してよい印
     30 分未満→到着＋35 分・退出の QR が無い→到着＋35 分・カイポケの終了が開始より前・
     記録書Ⅱと 10 分以上ずれる・滞在が長い。
@@ -52,6 +56,8 @@ BIG_GAP_MINUTES: Final = 60
 K2_GAP_MINUTES: Final = 10
 #: この分以上の滞在は印だけ付ける。
 LONG_STAY_MINUTES: Final = 90
+#: 到着＋35 分にする行で、カイポケの滞在がこの分以上あれば人が見る (縮めすぎのおそれ)。
+KP_LONGER_MINUTES: Final = 60
 
 # --- 判定 -------------------------------------------------------------------------
 
@@ -78,6 +84,8 @@ FLAG_STAFF_DIFF: Final = "staff_diff"
 FLAG_STAFF_COUNT: Final = "staff_count"
 FLAG_NO_ARRIVAL: Final = "no_arrival"
 FLAG_DUP_TARGET: Final = "dup_target"
+FLAG_COUNT_DIFF: Final = "count_diff"
+FLAG_KP_LONGER: Final = "kp_longer"
 FLAG_SHORT_STAY: Final = "short_stay"
 FLAG_NO_DEPARTURE: Final = "no_departure"
 FLAG_KP_END_BEFORE_START: Final = "kp_end_before_start"
@@ -91,6 +99,8 @@ REVIEW_FLAGS: Final = frozenset(
         FLAG_STAFF_COUNT,
         FLAG_NO_ARRIVAL,
         FLAG_DUP_TARGET,
+        FLAG_COUNT_DIFF,
+        FLAG_KP_LONGER,
     }
 )
 
@@ -225,6 +235,9 @@ class JudgedRow:
         ]
         return "・".join(parts)
 
+    def has(self, code: str) -> bool:
+        return any(f.code == code for f in self.flags)
+
     def add(self, code: str, label: str) -> None:
         if all(f.code != code for f in self.flags):
             self.flags.append(Flag(code, label))
@@ -233,42 +246,58 @@ class JudgedRow:
 # --- 組み方 -----------------------------------------------------------------------
 
 
+def _group_key(d: date, patient: str) -> tuple[date, str]:
+    return (d, name_key(patient))
+
+
 def pair_rows(
     rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]
 ) -> list[tuple[RkVisit | None, KpRow | None]]:
-    """(日・利用者) ごとに、到着 (無ければ予定の開始) に近いカイポケの行と組む。"""
+    """(日・利用者) ごとに、全部の組を差の小さい順に割り当てる (差 0 を先に固定)。
+
+    差 = 到着 (無ければ予定の開始) とカイポケの開始の差。同じ差なら退出とカイポケの終了の差が
+    小さい方。120 分を超える組は作らない。
+    """
     rk_by: dict[tuple[date, str], list[RkVisit]] = defaultdict(list)
     kp_by: dict[tuple[date, str], list[KpRow]] = defaultdict(list)
     for v in rk_visits:
-        rk_by[(v.date, name_key(v.patient))].append(v)
+        rk_by[_group_key(v.date, v.patient)].append(v)
     for r in kp_rows:
-        kp_by[(r.date, name_key(r.patient))].append(r)
+        kp_by[_group_key(r.date, r.patient)].append(r)
 
     pairs: list[tuple[RkVisit | None, KpRow | None]] = []
     for key in sorted(set(rk_by) | set(kp_by)):
         visits = sorted(rk_by.get(key, []), key=lambda v: (v.plan_start or "", v.visit_id))
         rows = sorted(kp_by.get(key, []), key=lambda r: (to_minutes(r.start) or 0, r.end))
-        used: set[int] = set()
-        for v in visits:
+        candidates: list[tuple[int, int, int, int]] = []
+        for vi, v in enumerate(visits):
             ref = to_minutes(v.arrival)
             if ref is None:
                 ref = to_minutes(v.plan_start)
-            best: tuple[int, int] | None = None
-            if ref is not None:
-                for i, r in enumerate(rows):
-                    start = to_minutes(r.start)
-                    if i in used or start is None:
-                        continue
-                    gap = abs(start - ref)
-                    if best is None or gap < best[0]:
-                        best = (gap, i)
-            if best is not None and best[0] <= PAIR_WINDOW_MINUTES:
-                used.add(best[1])
-                pairs.append((v, rows[best[1]]))
-            else:
-                pairs.append((v, None))
-        for i, r in enumerate(rows):
-            if i not in used:
+            if ref is None:
+                continue
+            dep = to_minutes(v.departure)
+            for ri, r in enumerate(rows):
+                start = to_minutes(r.start)
+                if start is None:
+                    continue
+                gap = abs(start - ref)
+                if gap > PAIR_WINDOW_MINUTES:
+                    continue
+                end = to_minutes(r.end)
+                end_gap = abs(end - dep) if end is not None and dep is not None else 10**6
+                candidates.append((gap, end_gap, vi, ri))
+        matched: dict[int, int] = {}
+        used: set[int] = set()
+        for _gap, _end_gap, vi, ri in sorted(candidates):
+            if vi in matched or ri in used:
+                continue
+            matched[vi] = ri
+            used.add(ri)
+        for vi, v in enumerate(visits):
+            pairs.append((v, rows[matched[vi]] if vi in matched else None))
+        for ri, r in enumerate(rows):
+            if ri not in used:
                 pairs.append((None, r))
     return pairs
 
@@ -324,6 +353,10 @@ def _compare_with_kaipoke(row: JudgedRow, v: RkVisit, r: KpRow) -> None:
             ne is not None and k2e is not None and abs(ne - k2e) >= K2_GAP_MINUTES
         ):
             row.add(FLAG_K2_GAP, f"記録書Ⅱと {K2_GAP_MINUTES} 分以上ずれる")
+    if row.has(FLAG_SHORT_STAY) or row.has(FLAG_NO_DEPARTURE):
+        kp_stay = ke - ks if ks is not None and ke is not None and ke >= ks else r.minutes
+        if kp_stay is not None and kp_stay >= KP_LONGER_MINUTES:
+            row.add(FLAG_KP_LONGER, f"カイポケの方が長い（カイポケの滞在 {kp_stay} 分）")
     rk_staff = {name_key(s) for s in v.staff if s}
     kp_staff = {name_key(s) for s in r.staff if s}
     if rk_staff and kp_staff and not (rk_staff & kp_staff):
@@ -365,11 +398,31 @@ def _mark_overlaps(rows: Sequence[JudgedRow]) -> None:
 
 
 def _mark_duplicate_targets(rows: Sequence[JudgedRow]) -> None:
-    """同じカイポケの行 (鍵) を 2 件以上が指していたら、全部を人が見るにする。"""
-    keys = Counter(row.item_key for row in rows if row.item_key and row.rk is not None)
+    """同じ鍵の行が 2 つ以上あれば (カイポケだけの行も数える)、らく助の側の行を人が見るにする。
+
+    鍵が同じだと RPA はどちらの行を書き換えるか決められない。
+    """
+    keys = Counter(row.item_key for row in rows if row.item_key)
     for row in rows:
         if row.rk is not None and row.item_key and keys[row.item_key] > 1:
-            row.add(FLAG_DUP_TARGET, "同じカイポケの行を 2 件が指す")
+            row.add(FLAG_DUP_TARGET, "同じカイポケの行（鍵）が 2 つある")
+
+
+def _mark_count_diffs(
+    rows: Sequence[JudgedRow], rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]
+) -> None:
+    """同じ (日・利用者) でらく助とカイポケの件数が違えば、組めた行を全部人が見るにする。"""
+    rk_count = Counter(_group_key(v.date, v.patient) for v in rk_visits)
+    kp_count = Counter(_group_key(r.date, r.patient) for r in kp_rows)
+    for row in rows:
+        if row.rk is None or row.kp is None:
+            continue
+        key = _group_key(row.rk.date, row.rk.patient)
+        if rk_count[key] != kp_count[key]:
+            row.add(
+                FLAG_COUNT_DIFF,
+                f"同じ日の訪問の数が違う（らく助 {rk_count[key]} 件・カイポケ {kp_count[key]} 件）",
+            )
 
 
 def judge(rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]) -> list[JudgedRow]:
@@ -388,6 +441,7 @@ def judge(rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]) -> list[Judged
 
     _mark_overlaps(rows)
     _mark_duplicate_targets(rows)
+    _mark_count_diffs(rows, rk_visits, kp_rows)
 
     for row in rows:
         if row.rk is None:
@@ -428,9 +482,11 @@ def count_statuses(rows: Iterable[Any]) -> dict[str, int]:
 
 __all__ = [
     "FLAG_BIG_GAP",
+    "FLAG_COUNT_DIFF",
     "FLAG_DUP_TARGET",
     "FLAG_K2_GAP",
     "FLAG_KP_END_BEFORE_START",
+    "FLAG_KP_LONGER",
     "FLAG_LONG_STAY",
     "FLAG_NO_ARRIVAL",
     "FLAG_NO_DEPARTURE",

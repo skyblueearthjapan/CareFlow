@@ -111,6 +111,7 @@ def upgrade() -> None:
         sa.Column("apply_message", sa.Text(), nullable=True),
         sa.Column("apply_dry_run", sa.Boolean(), nullable=True),
         sa.Column("applied_at", _TS, nullable=True),
+        sa.Column("dry_run_ok_sig", sa.String(240), nullable=True),
         sa.Column("created_at", _TS, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", _TS, nullable=False, server_default=sa.func.now()),
     )

@@ -63,9 +63,17 @@ KP_BEFORE = [
 class FakeKaipoke:
     """RPA のモック。``actual_time_apply`` に届いた payload を覚え、結果を返す。"""
 
-    def __init__(self, *, busy: bool = False, export_lines: list | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        busy: bool = False,
+        export_lines: list | None = None,
+        real_results: dict[str, tuple[str, str | None]] | None = None,
+    ) -> None:
         self.busy = busy
         self.export_lines = export_lines or KP_BEFORE
+        #: 本番のときだけ、利用者ごとに (status, reason) を差し替える。
+        self.real_results = real_results or {}
         self.apply_payloads: list[dict[str, Any]] = []
         self.exports: list[dict[str, Any]] = []
         self._job_id: str | None = None
@@ -90,7 +98,12 @@ class FakeKaipoke:
 
     async def actual_time_result(self) -> dict[str, Any]:
         status = "dry_run_ok" if self._dry_run else "success"
-        details = [{**item, "user": item["user_name"], "status": status} for item in self._items]
+        details = []
+        for item in self._items:
+            st, reason = (status, None)
+            if not self._dry_run and item["user_name"] in self.real_results:
+                st, reason = self.real_results[item["user_name"]]
+            details.append({**item, "user": item["user_name"], "status": st, "reason": reason})
         return {
             "success": True,
             "status": "completed",
@@ -214,6 +227,14 @@ async def _seed(db, *, with_snapshot: bool = True) -> dict[str, Visit]:
 
 def _by_patient(rows: list[dict]) -> dict[str, dict]:
     return {r["patient"]: r for r in rows}
+
+
+async def _trial(client, db, admin: User, fake: FakeKaipoke) -> None:
+    """試しに流して終わらせる (``run_apply_job`` は呼び出し側で止めておく)。"""
+    res = await client.post(f"{URL}/apply", json={"dry_run": True}, headers=_bearer(admin))
+    assert res.status_code == 202, res.text
+    job = await svc.run_apply(db, fake, uuid.UUID(res.json()["job_id"]))  # type: ignore[arg-type]
+    assert job is not None and job.status == "completed", job and job.result_summary
 
 
 ENDPOINTS = [
@@ -406,12 +427,25 @@ async def test_apply_real_then_verifies_and_does_not_send_twice(client, db, monk
         return None
 
     monkeypatch.setattr(svc, "run_apply_job", fake_run)
+    # 本番は試しを通った行だけ。まだ試していなければ 422。
+    res = await client.post(f"{URL}/apply", json={"dry_run": False}, headers=_bearer(admin))
+    assert res.status_code == 422 and "試しに流してから" in res.json()["detail"]
+    await _trial(client, db, admin, fake)
+
     res = await client.post(f"{URL}/apply", json={"dry_run": False}, headers=_bearer(admin))
     assert res.status_code == 202, res.text
     job_id = uuid.UUID(res.json()["job_id"])
     job = await svc.run_apply(db, fake, job_id)  # type: ignore[arg-type]
     assert job is not None and job.status == "completed", job and job.result_summary
     assert fake.exports and fake.exports[0]["division"] == "actual"
+    # 送った記録は判定し直しても消えない (ジョブに残る)。
+    sent = {s["patient"]: s for s in job.params["sent"]}
+    assert set(sent) == {"石田 健", "木下 誠"}
+    assert (sent["石田 健"]["old_start"], sent["石田 健"]["new_start"]) == ("11:00", "11:03")
+    assert job.params["sent_by"] == str(admin.id) and job.params["sent_at"]
+    results = job.result_summary["sent_results"]
+    assert {r["status"] for r in results.values()} == {"success"}
+    assert set(results) == {s["row_id"] for s in job.params["sent"]}
 
     view = (await client.get(URL, headers=_bearer(admin))).json()
     run = view["run"]
@@ -488,24 +522,37 @@ async def test_schedule_and_cron_start_the_apply(client, db, monkeypatch) -> Non
     admin = await _user(db, "admin")
     await _seed(db)
     await client.get(URL, headers=_bearer(admin))
+    # 既定は試し (反映の API とそろえる)。
     res = await client.post(f"{URL}/schedule", json={}, headers=_bearer(admin))
     assert res.status_code == 200, res.text
-    at = datetime.fromisoformat(res.json()["scheduled_at"]).astimezone(JST)
-    assert (at.hour, at.minute) == (22, 0)
-    assert res.json()["scheduled_dry_run"] is False
+    assert res.json()["scheduled_dry_run"] is True
+    await client.delete(f"{URL}/schedule", headers=_bearer(admin))
+    # 本番の予約も、試しを通っていなければ 422。
+    res = await client.post(f"{URL}/schedule", json={"dry_run": False}, headers=_bearer(admin))
+    assert res.status_code == 422 and "試しに流してから" in res.json()["detail"]
 
-    # まだ時刻前: cron は何も始めない。
-    kaipoke_client.set_test_client(FakeKaipoke())  # type: ignore[arg-type]
+    fake = FakeKaipoke()
+    kaipoke_client.set_test_client(fake)  # type: ignore[arg-type]
     started: list[uuid.UUID] = []
 
     async def fake_run(*, job_id, client):
         started.append(job_id)
 
     monkeypatch.setattr(svc, "run_apply_job", fake_run)
+    await _trial(client, db, admin, fake)
+    started.clear()
+
+    res = await client.post(f"{URL}/schedule", json={"dry_run": False}, headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    at = datetime.fromisoformat(res.json()["scheduled_at"]).astimezone(JST)
+    assert (at.hour, at.minute) == (22, 0)
+    assert res.json()["scheduled_dry_run"] is False
+
+    # まだ時刻前: cron は何も始めない。
     res = await client.post("/api/v1/monthly-actual/scheduled/run", headers=_bearer(admin))
     assert res.status_code == 200 and res.json()["started"] == []
 
-    tick = await svc.run_due_schedules(db, now=datetime.now(UTC) + timedelta(days=2))
+    tick = await svc.run_due_schedules(db, now=at.astimezone(UTC) + timedelta(minutes=5))
     assert len(tick.started) == 1 and tick.started[0]["dry_run"] is False
     job = await db.get(KaipokeJob, uuid.UUID(tick.started[0]["job_id"]))
     assert job is not None and (job.params or {})["dry_run"] is False
@@ -580,3 +627,182 @@ async def test_status_reads_rpa_result_into_rows(client, db, monkeypatch) -> Non
     assert body["running"] is True
     assert body["counts"]["dry_run_ok"] == 2
     assert {r["apply_status"] for r in body["rows"]} == {"dry_run_ok"}
+
+
+@pytest.mark.asyncio
+async def test_real_apply_needs_trial_with_the_same_times(client, db, monkeypatch) -> None:
+    admin = await _user(db, "admin")
+    await _seed(db)
+    await client.get(URL, headers=_bearer(admin))
+    fake = FakeKaipoke()
+    kaipoke_client.set_test_client(fake)  # type: ignore[arg-type]
+
+    async def fake_run(*, job_id, client):
+        return None
+
+    monkeypatch.setattr(svc, "run_apply_job", fake_run)
+    await _trial(client, db, admin, fake)
+    view = (await client.get(URL, headers=_bearer(admin))).json()
+    assert all(r["dry_run_passed"] for r in view["rows"] if r["selected"])
+
+    # 試しの後に新しい時刻が変わった行 (打刻履歴で合わせたなど) は、もう一度試すまで送らない。
+    stored = (await db.scalars(select(MonthlyActualRow).where(MonthlyActualRow.selected))).all()
+    stored[0].new_end = "23:59"
+    await db.commit()
+    res = await client.post(f"{URL}/apply", json={"dry_run": False}, headers=_bearer(admin))
+    assert res.status_code == 422 and "試しに流してから" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_results_are_not_resent_and_only_failed_is_retried(
+    client, db, monkeypatch
+) -> None:
+    admin = await _user(db, "admin")
+    await _seed(db)
+    await client.get(URL, headers=_bearer(admin))
+    fake = FakeKaipoke(
+        real_results={"石田 健": ("failed", "not_found"), "木下 誠": ("failed", "verify_failed")}
+    )
+    kaipoke_client.set_test_client(fake)  # type: ignore[arg-type]
+
+    async def fake_run(*, job_id, client):
+        return None
+
+    monkeypatch.setattr(svc, "run_apply_job", fake_run)
+    await _trial(client, db, admin, fake)
+    res = await client.post(f"{URL}/apply", json={"dry_run": False}, headers=_bearer(admin))
+    assert res.status_code == 202, res.text
+    job = await svc.run_apply(db, fake, uuid.UUID(res.json()["job_id"]))  # type: ignore[arg-type]
+    assert job is not None and job.status == "completed"
+
+    rows = _by_patient((await client.get(URL, headers=_bearer(admin))).json()["rows"])
+    assert rows["石田 健"]["apply_status"] == "failed"
+    assert rows["石田 健"]["needs_kaipoke_check"] is False
+    assert rows["木下 誠"]["apply_reason"] == "verify_failed"
+    assert rows["木下 誠"]["needs_kaipoke_check"] is True
+
+    # 流し直しは「失敗」だけ (カイポケで確かめる行は送らない)。試しの印は本番の後も残る。
+    res = await client.post(
+        f"{URL}/apply", json={"dry_run": False, "only_failed": True}, headers=_bearer(admin)
+    )
+    assert res.status_code == 202, res.text
+    retry = await db.get(KaipokeJob, uuid.UUID(res.json()["job_id"]))
+    assert retry is not None and retry.params["row_ids"] == [rows["石田 健"]["id"]]
+    await svc.finish_apply(db, retry.id, error="試験で止めた")
+
+    # 管理者がカイポケの実績を読み取り直すと、要目視の印は外れる。
+    db.add(
+        KaipokeCsvSnapshot(
+            office_id=None,
+            month=MONTH,
+            week_start=None,
+            fetched_at=datetime.now(UTC) + timedelta(minutes=1),
+            csv_text=_csv(KP_BEFORE),
+            row_count=len(KP_BEFORE),
+            source_op="monthly-actual",
+            division="actual",
+        )
+    )
+    await db.commit()
+    rows = _by_patient((await client.get(URL, headers=_bearer(admin))).json()["rows"])
+    assert rows["木下 誠"]["needs_kaipoke_check"] is False
+
+
+@pytest.mark.asyncio
+async def test_error_after_rpa_started_marks_queued_rows_unknown(client, db, monkeypatch) -> None:
+    admin = await _user(db, "admin")
+    await _seed(db)
+    await client.get(URL, headers=_bearer(admin))
+    kaipoke_client.set_test_client(FakeKaipoke())  # type: ignore[arg-type]
+
+    async def fake_run(*, job_id, client):
+        return None
+
+    monkeypatch.setattr(svc, "run_apply_job", fake_run)
+    res = await client.post(f"{URL}/apply", json={}, headers=_bearer(admin))
+    job_id = uuid.UUID(res.json()["job_id"])
+    assert await svc._touch(db, job_id, rpa_started=True)
+    job = await svc.finish_apply(db, job_id, error="カイポケ側で結果が失われました")
+    assert job is not None and job.status == "failed"
+    assert job.result_summary["counts"]["unknown"] == 2
+
+    rows = (await db.scalars(select(MonthlyActualRow).where(MonthlyActualRow.selected))).all()
+    assert {r.apply_status for r in rows} == {"unknown"}
+    assert all(svc.needs_kaipoke_check(r) for r in rows)
+    assert svc.choose_rows(list(rows)) == list(rows)  # 試しの要目視は試し直してよい
+    for r in rows:
+        r.apply_dry_run = False
+    assert svc.choose_rows(list(rows)) == []  # 本番の要目視は送らない
+
+
+@pytest.mark.asyncio
+async def test_status_does_not_close_the_job_while_verifying(client, db, monkeypatch) -> None:
+    admin = await _user(db, "admin")
+    await _seed(db)
+    await client.get(URL, headers=_bearer(admin))
+    kaipoke_client.set_test_client(FakeKaipoke())  # type: ignore[arg-type]
+
+    async def fake_run(*, job_id, client):
+        return None
+
+    monkeypatch.setattr(svc, "run_apply_job", fake_run)
+    res = await client.post(f"{URL}/apply", json={}, headers=_bearer(admin))
+    job_id = uuid.UUID(res.json()["job_id"])
+    assert await svc._touch(db, job_id, rpa_started=True, rpa_completed=True)
+    job = await db.get(KaipokeJob, job_id)
+    assert job is not None
+    job.updated_at = datetime.now(UTC) - timedelta(minutes=30)
+    await db.commit()
+
+    body = (await client.get(f"{URL}/apply/status", headers=_bearer(admin))).json()
+    assert body["running"] is True and body["job"]["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_selection_is_kept_only_for_the_same_kaipoke_row(client, db) -> None:
+    admin = await _user(db, "admin")
+    await _seed(db)
+    rows = _by_patient((await client.get(URL, headers=_bearer(admin))).json()["rows"])
+    res = await client.patch(
+        f"{URL}/rows/{rows['斉藤 大地']['id']}", json={"selected": True}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+
+    # 同じ訪問でもカイポケの行 (鍵) が変われば、「する」は引き継がない。
+    moved = [
+        line if line[2] != "斉藤　大地" else ("佐藤　花子", 3, "斉藤　大地", "17:25", "18:00")
+        for line in KP_BEFORE
+    ]
+    db.add(
+        KaipokeCsvSnapshot(
+            office_id=None,
+            month=MONTH,
+            week_start=None,
+            fetched_at=datetime(2026, 11, 1, 9, 0, tzinfo=UTC),
+            csv_text=_csv(moved),
+            row_count=len(moved),
+            source_op="monthly-actual",
+            division="actual",
+        )
+    )
+    await db.commit()
+    rows = _by_patient((await client.get(URL, headers=_bearer(admin))).json()["rows"])
+    assert rows["斉藤 大地"]["kp_start"] == "17:25"
+    assert rows["斉藤 大地"]["selected"] is False
+
+
+@pytest.mark.asyncio
+async def test_schedule_is_dropped_three_hours_after_its_time(client, db, monkeypatch) -> None:
+    admin = await _user(db, "admin")
+    await _seed(db)
+    await client.get(URL, headers=_bearer(admin))
+    res = await client.post(f"{URL}/schedule", json={}, headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    at = datetime.fromisoformat(res.json()["scheduled_at"]).astimezone(UTC)
+
+    tick = await svc.run_due_schedules(db, now=at + timedelta(hours=3, minutes=1))
+    assert tick.started == [] and tick.dropped == [{"month": MONTH, "reason": "late"}]
+    view = (await client.get(URL, headers=_bearer(admin))).json()
+    assert view["run"]["scheduled_at"] is None and view["run"]["apply_job"] is None
+    notes = (await db.scalars(select(Notification))).all()
+    assert any("取り下げ" in n.title for n in notes)
