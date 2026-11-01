@@ -205,8 +205,16 @@ def build_monthly_actual_xlsx(
             kp_names.setdefault(key, staff)
             by_staff[key]["件数"] += 1
             by_staff[key]["分"] += r.kp_minutes or 0
-    for s in staff_report.staff if staff_report is not None else []:
-        kp = by_staff.pop(rules.name_key(s.name), Counter())
+    staff_rows = staff_report.staff if staff_report is not None else []
+    # 同じ読み方 (照合キー) の看護師が 2 人以上いると、カイポケの数を分けられない。
+    # その人たちの行にはカイポケの列を入れず、下のカイポケだけの行にまとめる。
+    same_key: dict[str, list[str]] = defaultdict(list)
+    for s in staff_rows:
+        same_key[rules.name_key(s.name)].append(s.name)
+    same_reading = {k: v for k, v in same_key.items() if len(v) > 1}
+    for s in staff_rows:
+        key = rules.name_key(s.name)
+        kp = Counter() if key in same_reading else by_staff.pop(key, Counter())
         w3.append(
             [
                 s.name,
@@ -224,8 +232,8 @@ def build_monthly_actual_xlsx(
                 s.km_total,
                 s.km_per_day,
                 s.km_per_visit,
-                kp["件数"],
-                kp["分"],
+                kp["件数"] if key not in same_reading else None,
+                kp["分"] if key not in same_reading else None,
             ]
         )
         for cell in w3[w3.max_row]:
@@ -261,6 +269,12 @@ def build_monthly_actual_xlsx(
         f"{rules.SHORT_STAY_MINUTES} 分未満と退出の記録が無い訪問は到着＋"
         f"{rules.SHORT_STAY_END_MINUTES} 分にした後の値です。移動距離は拠点と訪問先を直線で"
         "つないだ目安です。右の 2 列はカイポケの実績の件数と提供時間です。",
+        *(
+            f"同じ読み方の名前の看護師（{'・'.join(dup)}）は、カイポケの実績を名前で"
+            "分けられないため、看護師別のシートでは各行のカイポケの列を空にし、下のカイポケだけの"
+            "行にまとめています。"
+            for dup in same_reading.values()
+        ),
     ):
         w4.append([line])
     w4.column_dimensions["A"].width = 120

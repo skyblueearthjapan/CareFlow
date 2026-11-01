@@ -73,10 +73,12 @@ const COLUMNS: ReadonlyArray<Column> = [
     key: 'plus35',
     label: '到着＋35 分',
     value: (r) => r.short_stay_count + r.no_departure_count,
-    format: (r) =>
-      r.no_departure_count > 0
-        ? `${r.short_stay_count}（退出なし ${r.no_departure_count}）`
-        : `${r.short_stay_count}`,
+    format: (r) => {
+      const total = r.short_stay_count + r.no_departure_count;
+      return r.no_departure_count > 0
+        ? `${total}（うち退出なし ${r.no_departure_count}）`
+        : `${total}`;
+    },
   },
   {
     key: 'km_total',
@@ -180,37 +182,48 @@ export function MonthlyStaffTable({ summary }: MonthlyStaffTableProps) {
     );
   }
 
+  const until = summary.counted_until
+    ? summary.counted_until.split('-').map(Number).slice(1).join('/')
+    : null;
+
   return (
-    <div className="overflow-x-auto rounded-lg border border-border-default">
-      <table className="w-full min-w-[1100px] text-sm" data-testid="ma-staff-table">
-        <thead className="bg-bg-muted text-xs text-text-secondary">
-          <tr>
-            {header(NAME_COLUMN, 'left')}
-            {COLUMNS.map((c) => header(c, 'right'))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.staff_id}
-              className="border-t border-border-default"
-              data-testid="ma-staff-row"
-            >
-              <td className="px-2 py-1.5">
-                <span className="font-medium">{r.name}</span>
-                {r.office_short && (
-                  <span className="ml-1.5 text-xs text-text-muted">{r.office_short}</span>
-                )}
-              </td>
-              {COLUMNS.map((c) => (
-                <td key={c.key} className="tnum px-2 py-1.5 text-right">
-                  {c.format(r)}
-                </td>
-              ))}
+    <div className="space-y-2">
+      {until && (
+        <p className="text-xs text-text-secondary" data-testid="ma-staff-until">
+          月の途中です。到着の記録なしの数と要確認は、{`今日（${until}）までの訪問です。`}
+        </p>
+      )}
+      <div className="overflow-x-auto rounded-lg border border-border-default">
+        <table className="w-full min-w-[1100px] text-sm" data-testid="ma-staff-table">
+          <thead className="bg-bg-muted text-xs text-text-secondary">
+            <tr>
+              {header(NAME_COLUMN, 'left')}
+              {COLUMNS.map((c) => header(c, 'right'))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr
+                key={r.staff_id}
+                className="border-t border-border-default"
+                data-testid="ma-staff-row"
+              >
+                <td className="px-2 py-1.5">
+                  <span className="font-medium">{r.name}</span>
+                  {r.office_short && (
+                    <span className="ml-1.5 text-xs text-text-muted">{r.office_short}</span>
+                  )}
+                </td>
+                {COLUMNS.map((c) => (
+                  <td key={c.key} className="tnum px-2 py-1.5 text-right">
+                    {c.format(r)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

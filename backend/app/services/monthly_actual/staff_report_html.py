@@ -40,8 +40,8 @@ _VISIT_COLS = (
     ("訪問の件数", "17mm"),
     ("稼働日数", "15mm"),
     ("1 日あたり", "16mm"),
-    ("患者様の数", "17mm"),
-    ("週の平均患者数", "22mm"),
+    ("利用者の数", "17mm"),
+    ("週の平均利用者数", "22mm"),
     ("2 名訪問・同行", ""),
 )
 _TIME_COLS = (
@@ -58,7 +58,7 @@ _WEEK_COLS = (
     ("週", "36mm"),
     ("稼働日数", "18mm"),
     ("訪問の件数", "20mm"),
-    ("患者様の数", "20mm"),
+    ("利用者の数", "20mm"),
     ("提供時間", "22mm"),
     ("移動", "20mm"),
     ("1 件あたりの移動", ""),
@@ -113,7 +113,7 @@ def _rule_note(line: VisitLine) -> str:
         )
     elif line.rule == RULE_NO_DEPARTURE:
         parts.append(f"退出の記録なし → 到着＋{rules.SHORT_STAY_END_MINUTES} 分")
-    if line.arrival is None:
+    if line.arrival is None and not line.future:
         parts.append("到着の記録なし（提供時間に入れていません）")
     if line.no_show:
         parts.append("未訪問の記録あり")
@@ -130,20 +130,32 @@ def _staff_note(s: StaffMonth) -> str:
 
 
 def _ask_lines(report: MonthStaffReport) -> list[tuple[VisitLine, str]]:
+    """要確認 (1 訪問 1 行・理由は「／」でつなぐ)。今日より後の日の到着なしは出さない。"""
     asks: list[tuple[VisitLine, str]] = []
     for line in report.visits:
-        if line.arrival is None:
-            asks.append((line, "到着の記録がありません。提供時間に入れていません。"))
+        reasons: list[str] = []
+        if line.arrival is None and not line.future:
+            reasons.append("到着の記録がありません。提供時間に入れていません。")
         elif line.rule == RULE_NO_DEPARTURE:
-            asks.append(
-                (
-                    line,
-                    f"退出の記録がありません。到着＋{rules.SHORT_STAY_END_MINUTES} 分にしました。",
-                )
+            reasons.append(
+                f"退出の記録がありません。到着＋{rules.SHORT_STAY_END_MINUTES} 分にしました。"
             )
         if line.no_show:
-            asks.append((line, "未訪問の記録があります。件数には数えています。"))
+            reasons.append("未訪問の記録があります。件数には数えています。")
+        if reasons:
+            asks.append((line, "／".join(reasons)))
     return asks
+
+
+def _until_note(report: MonthStaffReport) -> str | None:
+    """月の途中のときの注記 (到着の記録なしは今日まで)。"""
+    if report.counted_until is None:
+        return None
+    d = report.counted_until
+    return (
+        f"月の途中です。到着の記録なしの数と要確認は、今日（{d.month}/{d.day}）までの訪問です。"
+        "これより後の日の訪問は数えていません。"
+    )
 
 
 def _cover(report: MonthStaffReport) -> str:
@@ -159,9 +171,9 @@ def _cover(report: MonthStaffReport) -> str:
     notes = [
         "訪問の件数は、主担当（空ならコースの担当）として受け持った訪問です。取消・削除は数えません。",
         "2 名訪問・同行は、2 人目（副担当・同行）として入った件数です。訪問の件数・稼働日数・"
-        "患者様の数・移動には入れていません。",
+        "利用者の数・移動には入れていません。",
         "稼働日数は訪問のあった日数、1 日あたりは訪問の件数 ÷ 稼働日数です。",
-        "週の平均患者数は、月曜はじまりの週（この月に入る日だけ）ごとの患者様の人数を、"
+        "週の平均利用者数は、月曜はじまりの週（この月に入る日だけ）ごとの利用者の人数を、"
         "訪問のあった週で平均した値です。",
         f"提供時間は、らく助の到着〜退出です。{rules.SHORT_STAY_MINUTES} 分未満の訪問と退出の記録が"
         f"無い訪問は、決まりどおり到着＋{rules.SHORT_STAY_END_MINUTES} 分にしています。"
@@ -169,6 +181,9 @@ def _cover(report: MonthStaffReport) -> str:
         "移動は、所属の拠点 → 1 件目 → … → 最後 → 拠点 を直線でつないだ距離の合計（日ごと）です。"
         "座標の無い区間は数えていません。",
     ]
+    until = _until_note(report)
+    if until:
+        notes.insert(0, until)
     visit_rows = "".join(
         "<tr>"
         + _td(s.name, "")
@@ -243,7 +258,7 @@ def _per_staff(report: MonthStaffReport) -> str:
             + "</tr>"
         )
         sub = (
-            f"{s.office_short or '拠点なし'}・訪問 {s.visits} 件・週の平均患者数 "
+            f"{s.office_short or '—'}・訪問 {s.visits} 件・週の平均利用者数 "
             f"{_num(s.weekly_patients_avg, ' 名')}・2 名訪問・同行 {s.accompany_visits} 件・"
             f"平均滞在 {_num(s.avg_stay_min, ' 分')}・1 日の移動 {_km(s.km_per_day)}"
         )

@@ -481,6 +481,8 @@ export const staffSummarySchema = z.object({
   month: z.string(),
   date_from: isoDate,
   date_to: isoDate,
+  /** 月の途中なら今日 (JST)。到着の記録なし・要確認はこの日までを数える。月が終わっていれば null。 */
+  counted_until: isoDate.nullable().optional(),
   short_stay_minutes: z.number(),
   short_stay_end_minutes: z.number(),
   weeks: z.array(z.object({ start: isoDate, end: isoDate })),

@@ -528,7 +528,17 @@ describe('MonthlyStaffTable', () => {
     expect(names()[2]).toBe('看護師B本');
     const row = screen.getAllByTestId('ma-staff-row')[2]!;
     expect(row.textContent).toContain('—');
-    expect(row.textContent).toContain('2（退出なし 1）');
+    expect(row.textContent).toContain('3（うち退出なし 1）');
+  });
+
+  it('月の途中は「今日まで」の注記を出す。月が終わっていれば出さない', () => {
+    const { unmount } = render(
+      <MonthlyStaffTable summary={{ ...staffSummary(rows), counted_until: '2026-10-15' }} />,
+    );
+    expect(screen.getByTestId('ma-staff-until').textContent).toContain('今日（10/15）まで');
+    unmount();
+    render(<MonthlyStaffTable summary={staffSummary(rows)} />);
+    expect(screen.queryByTestId('ma-staff-until')).toBeNull();
   });
 
   it('訪問が無い月は表を出さない', () => {

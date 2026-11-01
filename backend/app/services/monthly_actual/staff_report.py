@@ -13,13 +13,15 @@
 * 提供時間 = らく助の実績 (``load_actuals``・後から合わせた時刻を含む) の到着〜退出。
   30 分未満と退出の QR が無い訪問は、決まりどおり到着＋35 分にした後の値。到着の
   QR が無い訪問は提供時間に入れない。
+* 到着の記録なし (件数・要確認) は今日 (JST) までの訪問だけを数える。月の途中なら
+  ``counted_until`` に今日が入る (月が終わっていれば None)。
 * 移動距離 = 所属拠点 → 1 件目 → … → 最後 → 所属拠点 の直線の合計 (日ごと)。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -99,6 +101,8 @@ class VisitLine:
     provided_min: int | None
     rule: str | None
     no_show: bool
+    #: 今日 (JST) より後の日の訪問 (到着の記録なしに数えない)。
+    future: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +118,7 @@ class VisitLine:
             "provided_min": self.provided_min,
             "rule": self.rule,
             "no_show": self.no_show,
+            "future": self.future,
         }
 
 
@@ -201,6 +206,8 @@ class MonthStaffReport:
     weeks: list[tuple[date, date]]
     staff: list[StaffMonth]
     visits: list[VisitLine]
+    #: 月の途中なら今日 (JST)。到着の記録なしはこの日までを数える。月が終わっていれば None。
+    counted_until: date | None = None
 
     def totals(self) -> dict[str, Any]:
         return {
@@ -221,6 +228,7 @@ class MonthStaffReport:
             "month": self.month,
             "date_from": self.date_from.isoformat(),
             "date_to": self.date_to.isoformat(),
+            "counted_until": self.counted_until.isoformat() if self.counted_until else None,
             "short_stay_minutes": rules.SHORT_STAY_MINUTES,
             "short_stay_end_minutes": rules.SHORT_STAY_END_MINUTES,
             "weeks": [{"start": ws.isoformat(), "end": we.isoformat()} for ws, we in self.weeks],
@@ -229,7 +237,9 @@ class MonthStaffReport:
         }
 
 
-def _line(v: DayVisit, day: date, sid: UUID, name: str, patients: dict[UUID, str]) -> VisitLine:
+def _line(
+    v: DayVisit, day: date, sid: UUID, name: str, patients: dict[UUID, str], today: date
+) -> VisitLine:
     provided, rule = provided_minutes(v.arrival_at, v.departure_at)
     stay = (
         stay_minutes(v.arrival_at, v.departure_at)
@@ -249,11 +259,19 @@ def _line(v: DayVisit, day: date, sid: UUID, name: str, patients: dict[UUID, str
         provided_min=provided,
         rule=rule,
         no_show=v.no_show,
+        future=day > today,
     )
 
 
-async def build_month_staff_report(db: AsyncSession, month: str) -> MonthStaffReport:
-    """月の看護師別の実績を組み立てる (DB 読み取りのみ)。"""
+async def build_month_staff_report(
+    db: AsyncSession, month: str, *, today: date | None = None
+) -> MonthStaffReport:
+    """月の看護師別の実績を組み立てる (DB 読み取りのみ)。
+
+    ``today`` = 今日 (JST・試験用)。省略すると現在の JST の日付。
+    """
+    if today is None:
+        today = datetime.now(UTC).astimezone(JST).date()
     date_from, date_to = month_range(month)
     data = await load_staff_days(db, date_from, date_to)
     weeks = week_ranges(date_from, date_to)
@@ -280,7 +298,7 @@ async def build_month_staff_report(db: AsyncSession, month: str) -> MonthStaffRe
         days = data.days_of(sid)
         period = with_accompany(metrics_of(days), data.accompany.get(sid, {}), date_from, date_to)
         own = [
-            _line(v, d, sid, staff.name, patients)
+            _line(v, d, sid, staff.name, patients, today)
             for d, vs in sorted(data.by_staff_day.get(sid, {}).items())
             for v in sorted(vs, key=lambda x: (x.start, x.end))
         ]
@@ -321,7 +339,7 @@ async def build_month_staff_report(db: AsyncSession, month: str) -> MonthStaffRe
                 avg_stay_min=_r(sum(provided) / len(provided)) if provided else None,
                 short_stay_count=sum(1 for ln in own if ln.rule == RULE_SHORT_STAY),
                 no_departure_count=sum(1 for ln in own if ln.rule == RULE_NO_DEPARTURE),
-                no_arrival_count=sum(1 for ln in own if ln.arrival is None),
+                no_arrival_count=sum(1 for ln in own if ln.arrival is None and not ln.future),
                 km_total=period.km_total,
                 km_per_day=period.km_per_day,
                 km_per_visit=period.km_per_visit,
@@ -338,6 +356,7 @@ async def build_month_staff_report(db: AsyncSession, month: str) -> MonthStaffRe
         weeks=weeks,
         staff=staff_rows,
         visits=lines,
+        counted_until=today if today < date_to else None,
     )
 
 

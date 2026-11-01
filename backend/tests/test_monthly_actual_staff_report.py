@@ -19,6 +19,14 @@ from app.core.security import create_access_token, hash_password
 from app.models import Patient, Staff, User, Visit
 from app.models.office import Office
 from app.models.visit_checkin import VisitCheckin
+from app.services.monthly_actual.staff_report import (
+    RULE_NO_DEPARTURE,
+    MonthStaffReport,
+    StaffMonth,
+    VisitLine,
+    build_month_staff_report,
+)
+from app.services.monthly_actual.staff_report_html import render_month_staff_report_html
 
 MONTH = "2026-10"
 URL = f"/api/v1/monthly-actual/{MONTH}"
@@ -227,3 +235,101 @@ async def test_admin_only(client, db, suffix) -> None:
     assert res.status_code == 401, res.text
     res = await client.get(f"/api/v1/monthly-actual/2026-13/{suffix}", headers=_bearer(staff_user))
     assert res.status_code in (403, 422)
+
+
+@pytest.mark.asyncio
+async def test_future_days_are_not_counted_as_no_arrival(db) -> None:
+    """月の途中: 今日 (JST) より後の日の到着なしは数えず、要確認にも出さない。"""
+    staff = await _seed(db)
+    report = await build_month_staff_report(db, MONTH, today=date(2026, 10, 5))
+    assert report.counted_until == date(2026, 10, 5)
+    a = next(s for s in report.staff if s.staff_id == staff["a"].id)
+    assert a.no_arrival_count == 0  # 10/6 の到着なしは今日より後
+    assert a.visits == 5  # 件数は変えない
+    html = render_month_staff_report_html(
+        report, station_name=None, generated_at=datetime(2026, 10, 5, tzinfo=UTC)
+    )
+    assert "今日（10/5）まで" in html
+    assert "到着の記録がありません" not in html
+    assert "到着の記録なし（" not in html
+
+    done = await build_month_staff_report(db, MONTH, today=date(2026, 11, 1))
+    assert done.counted_until is None
+    assert next(s for s in done.staff if s.staff_id == staff["a"].id).no_arrival_count == 1
+
+
+def _report_of(name: str, lines: list[VisitLine]) -> MonthStaffReport:
+    sid = uuid.uuid4()
+    month = StaffMonth(
+        staff_id=sid,
+        name=name,
+        office_short=None,
+        visits=len(lines),
+        days=1,
+        per_day=float(len(lines)),
+        patients=1,
+        weekly_patients_avg=1.0,
+        accompany_visits=0,
+        provided_min_total=35,
+        provided_samples=1,
+        avg_stay_min=35.0,
+        short_stay_count=0,
+        no_departure_count=1,
+        no_arrival_count=0,
+        km_total=0.0,
+        km_per_day=None,
+        km_per_visit=None,
+        skipped_legs=0,
+        weeks=[],
+    )
+    return MonthStaffReport(
+        month=MONTH,
+        date_from=date(2026, 10, 1),
+        date_to=date(2026, 10, 31),
+        weeks=[],
+        staff=[month],
+        visits=lines,
+    )
+
+
+def _vline(name: str, **kw) -> VisitLine:
+    base = {
+        "visit_id": uuid.uuid4(),
+        "day": date(2026, 10, 2),
+        "staff_id": uuid.uuid4(),
+        "staff_name": name,
+        "patient": "青木 さくら",
+        "plan": "09:00–10:00",
+        "arrival": "09:00",
+        "departure": None,
+        "stay_min": None,
+        "provided_min": 35,
+        "rule": RULE_NO_DEPARTURE,
+        "no_show": False,
+    }
+    base.update(kw)
+    return VisitLine(**base)
+
+
+def test_ask_is_one_row_per_visit() -> None:
+    """要確認は 1 訪問 1 行。理由は「／」でつなぐ。"""
+    html = render_month_staff_report_html(
+        _report_of("佐藤 花子", [_vline("佐藤 花子", no_show=True)]),
+        station_name=None,
+        generated_at=datetime(2026, 11, 1, tzinfo=UTC),
+    )
+    assert "退出の記録がありません。到着＋35 分にしました。／未訪問の記録があります。" in html
+    assert html.count("未訪問の記録があります。件数には数えています。") == 1
+    assert "拠点なし" not in html
+
+
+def test_staff_name_is_escaped() -> None:
+    name = "<script>alert(1)</script> & 太郎"
+    html = render_month_staff_report_html(
+        _report_of(name, [_vline(name)]),
+        station_name="A & B",
+        generated_at=datetime(2026, 11, 1, tzinfo=UTC),
+    )
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; 太郎" in html
+    assert "A &amp; B" in html
