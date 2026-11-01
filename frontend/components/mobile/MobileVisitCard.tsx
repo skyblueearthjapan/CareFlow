@@ -13,6 +13,7 @@ import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 import type { MyVisit } from '@/lib/queries/me';
+import type { VisitTaskCount } from '@/lib/schemas/patient-task';
 
 /** Map backend `status` → Japanese label + Badge variant. */
 function statusMeta(status: string): {
@@ -48,9 +49,11 @@ interface MobileVisitCardProps {
   highlight?: boolean;
   /** 音声記録あり → 🎙 マーク (訪問の音声記録 §2-3)。 */
   hasRecording?: boolean;
+  /** 事務所からのやることの件数 (patient-tasks-design §3)。無ければ出さない。 */
+  taskCount?: VisitTaskCount;
 }
 
-export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCardProps) {
+export function MobileVisitCard({ visit, address, hasRecording, taskCount }: MobileVisitCardProps) {
   const meta = statusMeta(visit.status);
   // 表示の保険 (design 2026-09-09 §3-4): 一覧に来ている = 描くと決まった訪問。
   const displayKind = classifyVisitDisplay(visit, { showInactive: true });
@@ -184,6 +187,22 @@ export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCar
                 data-testid="mobile-visit-accompaniment"
               >
                 同行: {accompanimentNames.join('・')}
+              </p>
+            )}
+            {/* 事務所からのやること (patient-tasks-design §3)。 */}
+            {taskCount && taskCount.total_count > 0 && (
+              <p
+                className={cn(
+                  'mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full px-2 py-0.5 text-xs font-bold',
+                  taskCount.open_count > 0
+                    ? 'bg-brand-primary-light text-brand-primary-hover'
+                    : 'bg-success-bg text-success',
+                )}
+                data-testid="mobile-visit-tasks"
+              >
+                {taskCount.open_count > 0
+                  ? `📋 やること ${taskCount.open_count} 件${taskCount.has_carried_over ? '（持ち越しあり）' : ''}`
+                  : '✓ やることは完了'}
               </p>
             )}
             {shownAddress && (

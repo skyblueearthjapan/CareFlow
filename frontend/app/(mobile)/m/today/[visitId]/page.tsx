@@ -71,6 +71,7 @@ import { ActualTimeSheet } from '@/components/mobile/ActualTimeSheet';
 import { ArrivedAdjustCard } from '@/components/mobile/ArrivedAdjustCard';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileSection } from '@/components/mobile/MobileSection';
+import { MobileVisitTasks } from '@/components/mobile/MobileVisitTasks';
 import { Rakusuke } from '@/components/brand/Rakusuke';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { SignaturePad } from '@/components/mobile/SignaturePad';
@@ -1568,6 +1569,9 @@ function MobileVisitDetailPageInner() {
               </div>
             </div>
           </Card>
+
+          {/* ---- 事務所からのお願い・伝言 (patient-tasks-design §3) ------------ */}
+          <MobileVisitTasks visitId={visit.id} />
 
           {/* ---- Preview / confirm overlay (BEFORE the single POST) ------- */}
           {flow.step === 'preview' && (

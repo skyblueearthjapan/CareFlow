@@ -90,6 +90,11 @@ vi.mock('@/lib/voice/queue', async (importOriginal) => {
   return { ...actual, useVoiceFlush: () => voiceFlushStub };
 });
 
+// 事務所からのやること (帯・カードの印)。既定は 0 件。
+vi.mock('@/lib/queries/tasks', () => ({
+  useVisitTaskCounts: vi.fn(() => ({ data: { date: '2026-08-16', counts: {} } })),
+}));
+
 vi.mock('@/lib/queries/me', () => ({
   useMyVisits: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   // 職員イベント / 休み・時間変更 (design 2026-09-16 §3 C-1)。既定は 0 件。

@@ -23,6 +23,7 @@ import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
 import { PatientPickerSheet } from '@/components/mobile/PatientPickerSheet';
 import { QrScanner } from '@/components/mobile/QrScanner';
+import { TodayTasksBand } from '@/components/mobile/TodayTasksBand';
 import { VoiceFailedSheet } from '@/components/mobile/VoiceFailedSheet';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { summaryTextFirstLine } from '@/components/records/recordFormat';
@@ -30,6 +31,7 @@ import { extractQrToken } from '@/lib/qr-token';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { foldStaffEvents } from '@/lib/schedule/foldStaffEvents';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
+import { useVisitTaskCounts } from '@/lib/queries/tasks';
 import {
   useUpdateRecording,
   useVisitRecordings,
@@ -208,6 +210,9 @@ export default function MobileTodayPage() {
   const { data: events } = useMyStaffEvents(range);
   const { data: overrides } = useMyOverrides(range);
   const todayOverride = (overrides ?? []).find((o) => o.date === today) ?? null;
+  // 事務所からのやること (patient-tasks-design §3)。BE が自分の訪問だけに絞る。
+  // 補助情報なので失敗しても何も出さない。
+  const { data: taskCounts } = useVisitTaskCounts(today);
 
   // 訪問とイベントを開始時刻順に混ぜる (同時刻なら訪問が先 = 現場の主役)。
   const rows: TodayRow[] = [
@@ -373,6 +378,9 @@ export default function MobileTodayPage() {
         rows={unlinkedRows}
       />
 
+      {/* 事務所からのやること (patient-tasks-design §3)。今日の一覧の上に出す。 */}
+      <TodayTasksBand counts={taskCounts?.counts} visitIds={sorted.map((v) => v.id)} />
+
       {/* 一覧の状態 (読込中/エラー/0件) に関わらず常に出す — 予定に無い訪問こそ
           「本日の患者訪問はありません」の画面から入ることが多い。 */}
       <div className="space-y-1.5">
@@ -434,6 +442,7 @@ export default function MobileTodayPage() {
               visit={row.visit}
               highlight={isUnvisited(row.visit)}
               hasRecording={recordedVisitIds.has(row.visit.id)}
+              taskCount={taskCounts?.counts[row.visit.id]}
             />
           ),
         )}

@@ -242,3 +242,35 @@ describe('MobileVisitCard 時刻の調整の印 (設計 2026-09-30 §7-7)', () =
     expect(screen.queryByTestId('mobile-visit-map-link')).toBeNull();
   });
 });
+
+describe('MobileVisitCard 事務所からのやること (patient-tasks-design §3)', () => {
+  it('未完了があれば「📋 やること N 件」、持ち越しがあれば（持ち越しあり）', () => {
+    setSession('staff-senior-1');
+    render(
+      <MobileVisitCard
+        visit={makeVisit()}
+        taskCount={{ open_count: 2, total_count: 3, has_carried_over: true, all_done: false }}
+      />,
+    );
+    expect(screen.getByTestId('mobile-visit-tasks').textContent).toBe(
+      '📋 やること 2 件（持ち越しあり）',
+    );
+  });
+
+  it('全部完了なら「✓ やることは完了」', () => {
+    setSession('staff-senior-1');
+    render(
+      <MobileVisitCard
+        visit={makeVisit()}
+        taskCount={{ open_count: 0, total_count: 2, has_carried_over: false, all_done: true }}
+      />,
+    );
+    expect(screen.getByTestId('mobile-visit-tasks').textContent).toBe('✓ やることは完了');
+  });
+
+  it('やることの無い訪問には出さない', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit()} />);
+    expect(screen.queryByTestId('mobile-visit-tasks')).toBeNull();
+  });
+});

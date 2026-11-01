@@ -150,6 +150,11 @@ vi.mock('@/components/mobile/VisitRecordCard', () => ({
   VisitRecordCard: () => <div data-testid="visit-record-card" />,
 }));
 
+// 事務所からのお願い・伝言は専用テスト (MobileVisitTasks.test.tsx) が担保する。
+vi.mock('@/components/mobile/MobileVisitTasks', () => ({
+  MobileVisitTasks: () => null,
+}));
+
 // 距離プレビューの public しきい値取得 (Phase 4)。既定では 100/300/50 を返す。
 vi.mock('@/lib/queries/checkinSettings', () => ({
   useCheckinSettingsPublic: vi.fn(),
