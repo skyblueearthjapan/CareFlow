@@ -104,6 +104,10 @@ SOFT_KINDS: frozenset[str] = frozenset(
 # item.level → (❗/△/参考, ラベル)。HTML 側の表示にも使う。
 LEVEL_HARD: frozenset[str] = frozenset({"overlap", "impossible", "pair_over"})
 LEVEL_SOFT: frozenset[str] = frozenset({"tight", "watch", "pair_seq"})
+# 帯・印・ベル (取り込み後の確認) の区分 (PO 決定 2026-11-01 夕)。
+# 「要注意(実走行)」「同住所ペア:同時刻でない」は「参考」に下げ、帯・印・ベルに出さない
+# (A4 には従来どおり載せる = ``severity`` は変えない)。
+INFO_TIER_KINDS: frozenset[str] = frozenset({KIND_WATCH, KIND_PAIR_NOT_SAME_START})
 
 
 @dataclass
@@ -119,6 +123,8 @@ class TimelineItem:
     role: str = ROLE_PRIMARY  # 主 / 同行 / 行事
     blocking: bool = True  # イベントのみ: False なら時間軸を占有しない (メモ扱い)
     patient_id: uuid.UUID | None = None  # 同住所ペアの「別患者」判定に使う
+    # 元の訪問 ID (2 名体制・旧列の相互参照で 1 つにまとめた分も持つ)。印をカードへ付けるのに使う。
+    visit_ids: list[uuid.UUID] = field(default_factory=list)
     # --- 判定結果 (evaluate が埋める) ---
     level: str = "ok"  # ok | overlap | impossible | tight | watch | pair_over | pair_seq
     note: str = ""
@@ -140,6 +146,16 @@ class Finding:
     km: float | None = None
     # 表示名 (staff) とは別の一意キー (staff.id)。同名スタッフの混同防止 (レビュー LOW-6)。
     staff_key: str = ""
+    # --- カードの印・取り込み後の確認に使う (設計 2026-11-01 §5-1) ---
+    to_visit_ids: list[str] = field(default_factory=list)  # 該当の訪問 (印を付ける先)
+    from_visit_ids: list[str] = field(default_factory=list)  # 直前の訪問
+    to_patient_id: str = ""  # 該当の患者 (ペアは患者 ID を並べた文字列)
+    from_patient_id: str = ""
+    frm_kind: str = ""  # 直前が 'visit' か 'event' か ('' = 直前なし)
+    frm_start: str = ""  # 直前の予定の実際の開始 HH:MM
+    frm_end: str = ""  # 直前の予定の実際の終わり HH:MM
+    occupied_until: str = ""  # 直前が同住所ペアのときの占有の終わり HH:MM (90 分)
+    role: str = ""  # 該当の予定でのこの職員の役 (主 / 同行)
 
     @property
     def severity(self) -> str:
@@ -148,6 +164,13 @@ class Finding:
         if self.kind in SOFT_KINDS:
             return "soft"
         return "info"
+
+    @property
+    def tier(self) -> str:
+        """帯・印・ベルの区分 (hard=赤 / soft=黄 / info=参考・出さない)."""
+        if self.kind in INFO_TIER_KINDS:
+            return "info"
+        return self.severity
 
 
 @dataclass
@@ -171,6 +194,8 @@ class FeasibilityReport:
     findings: list[Finding] = field(default_factory=list)
     visit_count: int = 0  # 主担当として載った訪問の数 (2 名体制も 1 と数える)
     event_count: int = 0
+    # 担当未定 (主担当もコース担当も無い) で判定から外した訪問の数 (PO 決定 2026-11-01)。
+    unassigned_visit_count: int = 0
 
     @property
     def summary(self) -> dict[str, int]:
@@ -289,6 +314,16 @@ def evaluate_day(
 
     blocks = _pair_blocks(items)
     member_of: dict[int, _PairBlock] = {id(m): b for b in blocks for m in b.members}
+
+    def _vids(*its: TimelineItem) -> list[str]:
+        out: list[str] = []
+        for x in its:
+            out.extend(str(v) for v in x.visit_ids if str(v) not in out)
+        return out
+
+    def _pids(*its: TimelineItem) -> str:
+        return ",".join(sorted({str(x.patient_id) for x in its if x.patient_id is not None}))
+
     for b in blocks:
         # 同住所同時刻の上限 (SAME_ADDRESS_MAX) は「同時刻」にだけ適用 (auto_allocator と同じ)。
         # 連続配置で 3 名を回るのは物理的に成立するので違反にしない。
@@ -297,7 +332,18 @@ def evaluate_day(
                 m.level = "pair_over"
             findings.append(
                 Finding(
-                    staff, day, KIND_PAIR_OVER, fmt_hm(b.start_min), b.label, "", None, None, None
+                    staff,
+                    day,
+                    KIND_PAIR_OVER,
+                    fmt_hm(b.start_min),
+                    b.label,
+                    "",
+                    None,
+                    None,
+                    None,
+                    to_visit_ids=_vids(*b.members),
+                    to_patient_id=_pids(*b.members),
+                    role=b.members[0].role,
                 )
             )
         elif not b.same_start:
@@ -314,6 +360,9 @@ def evaluate_day(
                     None,
                     None,
                     None,
+                    to_visit_ids=_vids(*b.members),
+                    to_patient_id=_pids(*b.members),
+                    role=b.members[0].role,
                 )
             )
 
@@ -340,30 +389,37 @@ def evaluate_day(
                 pass  # ペアの相方同士: 重なり/移動判定はしない (同時刻 or 連続が正)
             else:
                 prev_blk = member_of.get(id(prev))
-                prev_end = prev_blk.end_min if prev_blk is not None else prev.end_min
-                gap = it.start_min - prev_end
+                # 実際の前の終わり (prev.end_min) と、同住所ペアの占有 (90 分) の終わりを分ける。
+                # 「間に合うか」(重なり・移動不可 = ❗) は実際の終わりで見る (PO 決定 2026-11-01 夕:
+                # 占有で延ばした終わりで移動不可にした偽の ❗ を出さない)。占有・余裕の決まり
+                # (同住所ペア90分未確保・バッファ不足・要注意) は従来どおり占有の終わりから見る。
+                gap = it.start_min - prev.end_min
+                occ_end = prev_blk.end_min if prev_blk is not None else prev.end_min
+                gap_occ = it.start_min - occ_end
                 it.gap_min = gap
-                if prev_blk is not None and gap < 0 and it.start_min >= prev.end_min:
-                    _set(
-                        it,
-                        "tight",
-                        f"同住所ペア90分未確保: {prev_blk.label} の占有 〜{fmt_hm(prev_blk.end_min)} に対し "
-                        f"{fmt_hm(it.start_min)} 開始（{-gap}分不足）",
-                    )
-                    findings.append(
-                        Finding(
-                            staff,
-                            day,
-                            KIND_PAIR_SHORT,
-                            fmt_hm(it.start_min),
-                            it.name,
-                            prev_blk.label,
-                            gap,
-                            SAME_ADDRESS_PAIR_MIN_OCCUPANCY,
-                            None,
-                        )
-                    )
-                elif gap < 0:
+                ctx: dict[str, Any] = {
+                    "to_visit_ids": _vids(it),
+                    "from_visit_ids": _vids(prev),
+                    "to_patient_id": _pids(it),
+                    "from_patient_id": _pids(prev),
+                    "frm_kind": prev.kind,
+                    "frm_start": fmt_hm(prev.start_min),
+                    "frm_end": fmt_hm(prev.end_min),
+                    "occupied_until": fmt_hm(occ_end) if prev_blk is not None else "",
+                    "role": it.role,
+                }
+                km: float | None = None
+                need: int | None = None
+                need_road: int | None = None
+                same = False
+                if prev.pos is not None and it.pos is not None:
+                    km = haversine_km(prev.pos[0], prev.pos[1], it.pos[0], it.pos[1])
+                    same = _same_address(prev.pos, it.pos)
+                    need = 0 if same else haversine_minutes(km, speed_kmh=speed)
+                    need_road = 0 if same else haversine_minutes(km * ROAD_FACTOR, speed_kmh=speed)
+                    it.travel_km = km
+                    it.travel_min = need
+                if gap < 0:
                     _set(
                         it,
                         "overlap",
@@ -380,41 +436,59 @@ def evaluate_day(
                             gap,
                             None,
                             None,
+                            **ctx,
                         )
                     )
-                elif prev.pos is not None and it.pos is not None:
-                    km = haversine_km(prev.pos[0], prev.pos[1], it.pos[0], it.pos[1])
-                    same = _same_address(prev.pos, it.pos)
-                    need = 0 if same else haversine_minutes(km, speed_kmh=speed)
-                    need_road = 0 if same else haversine_minutes(km * ROAD_FACTOR, speed_kmh=speed)
-                    it.travel_km = km
-                    it.travel_min = need
-                    if same:
-                        it.note = "同住所（移動なし）"
-                    elif gap < need:
-                        _set(
-                            it,
-                            "impossible",
-                            f"移動不可: 間隔{gap}分 < 移動{need}分（直線{km:.1f}km）",
+                elif need is not None and not same and gap < need:
+                    _set(
+                        it,
+                        "impossible",
+                        f"移動不可: 間隔{gap}分 < 移動{need}分（直線{km:.1f}km）",
+                    )
+                    findings.append(
+                        Finding(
+                            staff,
+                            day,
+                            KIND_IMPOSSIBLE,
+                            fmt_hm(it.start_min),
+                            it.name,
+                            prev.name,
+                            gap,
+                            need,
+                            km,
+                            **ctx,
                         )
-                        findings.append(
-                            Finding(
-                                staff,
-                                day,
-                                KIND_IMPOSSIBLE,
-                                fmt_hm(it.start_min),
-                                it.name,
-                                prev.name,
-                                gap,
-                                need,
-                                km,
-                            )
+                    )
+                elif prev_blk is not None and gap_occ < (need or 0):
+                    # 実際の終わりからは間に合うが、ペアの占有 (90 分) ＋移動を確保できていない。
+                    travel_txt = f"・移動{need}分" if need else ""
+                    _set(
+                        it,
+                        "tight",
+                        f"同住所ペア90分未確保: {prev_blk.label} の占有 〜{fmt_hm(prev_blk.end_min)} に対し "
+                        f"{fmt_hm(it.start_min)} 開始（実際の終わり {fmt_hm(prev.end_min)}・"
+                        f"間隔{gap}分{travel_txt}）",
+                    )
+                    findings.append(
+                        Finding(
+                            staff,
+                            day,
+                            KIND_PAIR_SHORT,
+                            fmt_hm(it.start_min),
+                            it.name,
+                            prev_blk.label,
+                            gap_occ,
+                            SAME_ADDRESS_PAIR_MIN_OCCUPANCY,
+                            km if need else None,
+                            **ctx,
                         )
-                    elif gap < need + buffer_min:
+                    )
+                elif need is not None and need_road is not None and not same:
+                    if gap_occ < need + buffer_min:
                         _set(
                             it,
                             "tight",
-                            f"バッファ不足: 間隔{gap}分 < 移動{need}分＋{buffer_min}分（直線{km:.1f}km）",
+                            f"バッファ不足: 間隔{gap_occ}分 < 移動{need}分＋{buffer_min}分（直線{km:.1f}km）",
                         )
                         findings.append(
                             Finding(
@@ -424,16 +498,17 @@ def evaluate_day(
                                 fmt_hm(it.start_min),
                                 it.name,
                                 prev.name,
-                                gap,
+                                gap_occ,
                                 need,
                                 km,
+                                **ctx,
                             )
                         )
-                    elif gap < need_road + buffer_min:
+                    elif gap_occ < need_road + buffer_min:
                         _set(
                             it,
                             "watch",
-                            f"要注意: 実走行想定{need_road}分＋{buffer_min}分 > 間隔{gap}分（直線{km:.1f}km）",
+                            f"要注意: 実走行想定{need_road}分＋{buffer_min}分 > 間隔{gap_occ}分（直線{km:.1f}km）",
                         )
                         findings.append(
                             Finding(
@@ -443,13 +518,16 @@ def evaluate_day(
                                 fmt_hm(it.start_min),
                                 it.name,
                                 prev.name,
-                                gap,
+                                gap_occ,
                                 need_road,
                                 km,
+                                **ctx,
                             )
                         )
                     else:
-                        it.note = f"移動{need}分／間隔{gap}分"
+                        it.note = f"移動{need}分／間隔{gap_occ}分"
+                elif same:
+                    it.note = "同住所（移動なし）"
                 elif prev.kind == "event" and prev.pos is None:
                     it.note = "（直前が場所不明のイベント: 移動判定なし）"
                 elif it.pos is None or prev.pos is None:
@@ -531,6 +609,28 @@ def evaluate_week(
     seen_visits: set[tuple[Any, date, int, int]] = set()
     for (staff_key, day), items in ordered:
         label = names.get(staff_key, staff_key)
+        if staff_key == UNASSIGNED_STAFF_KEY:
+            # 担当未定の訪問は 1 本の仮想の時間軸に並ぶだけで、互いに関係がない。重なり・移動の
+            # 判定から外し (偽の ❗ を出さない・PO 決定 2026-11-01)、A4 には「判定なし」で並べる。
+            sorted_items = sorted(items, key=lambda x: (x.start_min, x.end_min))
+            for x in sorted_items:
+                x.note = "担当未定のため判定していません"
+            report.timelines.append(
+                DayTimeline(
+                    staff=label,
+                    day=day,
+                    items=sorted_items,
+                    lunch_free_min=0,
+                    staff_key=staff_key,
+                )
+            )
+            n_unassigned = 0
+            for x in sorted_items:
+                if x.kind == "visit" and x.role == ROLE_PRIMARY:
+                    seen_visits.add((x.patient_id or x.name, day, x.start_min, x.end_min))
+                    n_unassigned += 1
+            report.unassigned_visit_count += n_unassigned
+            continue
         tl, fs = evaluate_day(label, day, items, config, staff_key=staff_key)
         report.timelines.append(tl)
         report.findings.extend(fs)
@@ -679,6 +779,8 @@ async def load_week_items(
             if existing is not None:
                 if role == ROLE_PRIMARY and existing.role != ROLE_PRIMARY:
                     existing.role = ROLE_PRIMARY
+                if v.id not in existing.visit_ids:
+                    existing.visit_ids.append(v.id)
                 continue
             item = TimelineItem(
                 kind="visit",
@@ -689,6 +791,7 @@ async def load_week_items(
                 pos=pos,
                 role=role,
                 patient_id=v.patient_id,
+                visit_ids=[v.id],
             )
             seen[dedupe_key] = item
             items[(key, v.visit_date)].append(item)
@@ -800,6 +903,9 @@ async def load_unmirrored_staff_findings(
                     "（スマホ盤・送信に出ません）"
                 ),
                 staff_key=str(s.id),
+                to_visit_ids=[str(v.id)],
+                to_patient_id=str(v.patient_id),
+                role=ROLE_PRIMARY,
             )
         )
     findings.sort(key=lambda f: (f.day, f.at, f.staff, f.to))
@@ -827,13 +933,19 @@ async def load_leave_findings(
     visit_ids = [h.visit_id for h in hits]
     rows = (
         await db.execute(
-            select(Visit.id, Patient.name, Patient.primary_office_id, Course.office_id)
+            select(
+                Visit.id,
+                Visit.patient_id,
+                Patient.name,
+                Patient.primary_office_id,
+                Course.office_id,
+            )
             .join(Patient, Patient.id == Visit.patient_id)
             .outerjoin(Course, and_(Course.id == Visit.course_id, Course.deleted_at.is_(None)))
             .where(Visit.id.in_(visit_ids))
         )
     ).all()
-    info = {vid: (pname, c_office or p_office) for vid, pname, p_office, c_office in rows}
+    info = {vid: (pname, c_office or p_office, pid) for vid, pid, pname, p_office, c_office in rows}
     staff_names = dict(
         (
             await db.execute(
@@ -843,7 +955,7 @@ async def load_leave_findings(
     )
     findings: list[Finding] = []
     for h in hits:
-        pname, v_office = info.get(h.visit_id, (None, None))
+        pname, v_office, v_patient = info.get(h.visit_id, (None, None, None))
         if office_id is not None and v_office != office_id:
             continue
         sname = (staff_names.get(h.staff_id) or "").replace("　", " ").strip()
@@ -859,6 +971,9 @@ async def load_leave_findings(
                     "（職員スケジュールで割り当て直してください）"
                 ),
                 staff_key=str(h.staff_id),
+                to_visit_ids=[str(h.visit_id)],
+                to_patient_id=str(v_patient) if v_patient is not None else "",
+                role=ROLE_PRIMARY,
             )
         )
     findings.sort(key=lambda f: (f.day, f.at, f.staff, f.to))
@@ -897,6 +1012,7 @@ async def load_ng_weekday_findings(
     rows = (
         await db.execute(
             select(
+                Visit.id,
                 Visit.visit_date,
                 Visit.start_time,
                 Visit.primary_staff_id,
@@ -951,6 +1067,9 @@ async def load_ng_weekday_findings(
                     "（患者マスタの NG 曜日か固定訪問の枠を合わせてください）"
                 ),
                 staff_key=str(sid) if sid is not None else UNASSIGNED_STAFF_KEY,
+                to_visit_ids=[str(r.id)],
+                to_patient_id=str(r.patient_id),
+                role=ROLE_PRIMARY,
             )
         )
     findings.sort(key=lambda f: (f.day, f.at, f.staff, f.to))
@@ -968,6 +1087,27 @@ async def build_feasibility_report(
     """ISO 週 (月曜起点・既定 6 日 = 月〜土) の実現性レポートを作る (read-only)."""
     week_start = date.fromisocalendar(iso_year, iso_week, 1)
     week_end = week_start + timedelta(days=max(1, min(days, 7)) - 1)
+    return await build_feasibility_report_for_dates(
+        db, date_from=week_start, date_to=week_end, office_id=office_id
+    )
+
+
+async def build_feasibility_report_for_dates(
+    db: AsyncSession,
+    *,
+    date_from: date,
+    date_to: date,
+    office_id: uuid.UUID | None = None,
+) -> FeasibilityReport:
+    """同じ ISO 週の中の期間 (1 日〜7 日) の実現性レポートを作る (read-only).
+
+    判定は職員×日ごとなので、期間を 1 日に絞っても同じ日の結果は週で見たときと変わらない
+    (訪問モニターの 1 日分の印に使う)。週をまたぐ期間は呼び出し側で週ごとに分ける。
+    """
+    iso_year, iso_week, _ = date_from.isocalendar()
+    if date_to < date_from or date_to.isocalendar()[:2] != (iso_year, iso_week):
+        raise ValueError("date_from と date_to は同じ ISO 週の中で指定してください")
+    week_start, week_end = date_from, date_to
     config = await load_scheduling_config(db)
     items, names = await load_week_items(
         db, week_start=week_start, week_end=week_end, office_id=office_id

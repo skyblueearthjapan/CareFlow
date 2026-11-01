@@ -573,3 +573,126 @@ async def test_unmirrored_finding_absent_without_course_staff(db):
 
     report = await build_feasibility_report(db, iso_year=2026, iso_week=36)
     assert [f for f in report.findings if f.kind == KIND_STAFF_NOT_MIRRORED] == []
+
+
+# ---------------------------------------------------------------------------
+# 取り込み後の確認・カードの印 (設計 schedule-feasibility-alerts-design-2026-11-01)
+# ---------------------------------------------------------------------------
+
+
+def _ids(item: TimelineItem):
+    import uuid
+
+    item.visit_ids = [uuid.uuid4()]
+    item.patient_id = uuid.uuid4()
+    return item
+
+
+def test_findings_carry_visit_and_patient_ids():
+    """移動不可の指摘に、該当と直前の訪問 ID・患者 ID・実際の前の終わりが付く。"""
+    prev = _ids(v("10:00", "10:35", "甲", A))
+    nxt = _ids(v("10:40", "11:15", "乙", FAR))
+    _, fs = evaluate_day("看護A", DAY, [prev, nxt], DEFAULT_SCHEDULING_CONFIG)
+    f = next(x for x in fs if x.kind == KIND_IMPOSSIBLE)
+    assert f.to_visit_ids == [str(nxt.visit_ids[0])]
+    assert f.from_visit_ids == [str(prev.visit_ids[0])]
+    assert f.to_patient_id == str(nxt.patient_id)
+    assert f.from_patient_id == str(prev.patient_id)
+    assert f.frm_end == "10:35" and f.frm_kind == "visit"
+    assert f.tier == "hard"
+
+
+def test_two_staff_visit_ids_are_all_attached():
+    """2 名体制でまとめた 1 アイテムの訪問 ID は両方とも指摘に付く。"""
+    import uuid
+
+    prev = _ids(v("10:00", "10:35", "甲", A))
+    nxt = v("10:20", "10:55", "乙", B)
+    nxt.visit_ids = [uuid.uuid4(), uuid.uuid4()]
+    _, fs = evaluate_day("看護A", DAY, [prev, nxt], DEFAULT_SCHEDULING_CONFIG)
+    f = next(x for x in fs if x.kind == KIND_OVERLAP)
+    assert f.to_visit_ids == [str(x) for x in nxt.visit_ids]
+
+
+def test_unassigned_timeline_is_not_judged():
+    """担当未定の訪問どうしは重なり・移動不可にしない (PO 決定 2026-11-01)。"""
+    from app.services.scheduling.feasibility_check import UNASSIGNED_STAFF_KEY, evaluate_week
+
+    items = {
+        (UNASSIGNED_STAFF_KEY, DAY): [
+            _ids(v("10:00", "10:35", "甲", A)),
+            _ids(v("10:10", "10:45", "乙", FAR)),
+        ],
+        ("id-1", DAY): [_ids(v("10:00", "10:35", "丙", A)), _ids(v("10:20", "10:55", "丁", B))],
+    }
+    rep = evaluate_week(
+        items,
+        DEFAULT_SCHEDULING_CONFIG,
+        iso_year=2026,
+        iso_week=36,
+        week_start=date(2026, 8, 31),
+        week_end=date(2026, 9, 5),
+        staff_names={"id-1": "看護A"},
+    )
+    assert all(f.staff_key != UNASSIGNED_STAFF_KEY for f in rep.findings)
+    assert [f.kind for f in rep.findings if f.kind == KIND_OVERLAP] == [KIND_OVERLAP]
+    assert rep.unassigned_visit_count == 2
+    assert rep.visit_count == 4
+    # A4 にも並ぶ (判定なしの印で)
+    tl = next(t for t in rep.timelines if t.staff_key == UNASSIGNED_STAFF_KEY)
+    assert len(tl.items) == 2 and all(i.level == "ok" for i in tl.items)
+
+
+def test_pair_occupancy_does_not_make_false_impossible():
+    """同住所ペアの占有 90 分で延ばした終わりでは移動不可にしない (PO 決定 2026-11-01 夕)。
+
+    9:30〜10:00・10:00〜10:40 (同じ建物の別の 2 名) → 占有は 11:00 まで。
+    11:00 に B (A から移動 10 分) → 占有からは 0 分だが、実際の終わり 10:40 からは 20 分で
+    間に合う → ❗ ではなく △ (同住所ペア90分未確保)。
+    """
+    items = [
+        _ids(v("09:30", "10:00", "姉", A)),
+        _ids(v("10:00", "10:40", "妹", A)),
+        _ids(v("11:00", "11:30", "丙", B)),
+    ]
+    tl, fs = evaluate_day("看護A", DAY, items, DEFAULT_SCHEDULING_CONFIG)
+    ks = kinds(fs)
+    assert KIND_IMPOSSIBLE not in ks
+    f = next(x for x in fs if x.kind == KIND_PAIR_SHORT)
+    assert f.tier == "soft"
+    assert f.frm_end == "10:40" and f.occupied_until == "11:00"
+    assert "実際の終わり 10:40" in tl.items[2].note
+
+
+def test_pair_followed_by_really_impossible_is_hard_with_real_end():
+    """実際の終わりからでも間に合わないときだけ ❗ (移動不可)。間は実際の終わりから数える。"""
+    items = [
+        _ids(v("09:30", "10:00", "姉", A)),
+        _ids(v("10:00", "10:55", "妹", A)),
+        _ids(v("11:00", "11:30", "丙", FAR)),  # 移動 17 分・実際の間 5 分
+    ]
+    _, fs = evaluate_day("看護A", DAY, items, DEFAULT_SCHEDULING_CONFIG)
+    f = next(x for x in fs if x.kind == KIND_IMPOSSIBLE)
+    assert f.gap_min == 5 and f.frm_end == "10:55"
+    assert f.need_min == 17
+
+
+def test_tier_moves_watch_and_not_same_start_to_info():
+    """要注意(実走行)・同住所ペア:同時刻でない は「参考」(帯・印・ベルに出さない)。A4 の severity は従来どおり。"""
+    items = [v("10:00", "10:35", "甲", A), v("10:55", "11:30", "乙", B)]
+    _, fs = evaluate_day("看護A", DAY, items, DEFAULT_SCHEDULING_CONFIG)
+    w = next(x for x in fs if x.kind == KIND_WATCH)
+    assert w.tier == "info" and w.severity == "soft"
+
+    import uuid
+
+    pair = [v("10:00", "10:35", "姉", A), v("10:35", "11:10", "妹", A)]
+    for it in pair:
+        it.patient_id = uuid.uuid4()
+    _, fs2 = evaluate_day("看護A", DAY, pair, DEFAULT_SCHEDULING_CONFIG)
+    p = next(x for x in fs2 if x.kind == KIND_PAIR_NOT_SAME_START)
+    assert p.tier == "info"
+
+    tight = [v("10:00", "10:35", "甲", A), v("10:47", "11:22", "乙", B)]
+    _, fs3 = evaluate_day("看護A", DAY, tight, DEFAULT_SCHEDULING_CONFIG)
+    assert next(x for x in fs3 if x.kind == KIND_TIGHT).tier == "soft"
