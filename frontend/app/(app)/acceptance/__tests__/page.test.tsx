@@ -19,6 +19,11 @@ vi.mock('@/lib/queries/acceptance_matrix', () => ({
 vi.mock('@/components/acceptance/StrictAcceptanceBoard', () => ({
   StrictAcceptanceBoard: () => <div data-testid="board" />,
 }));
+vi.mock('@/components/acceptance/MonthAcceptanceBoard', () => ({
+  MonthAcceptanceBoard: ({ officeId }: { officeId: string | null }) => (
+    <div data-testid="month-board">{officeId ?? 'all'}</div>
+  ),
+}));
 
 import { useSession } from 'next-auth/react';
 import { useStrictAcceptance } from '@/lib/queries/acceptance_strict';
@@ -90,5 +95,18 @@ describe('AcceptanceMatrixPage の拠点', () => {
     const enabledCalls = calls.filter(([, o]) => o.enabled);
     expect(enabledCalls.length).toBeGreaterThan(0);
     expect(enabledCalls.every(([id, o]) => id === 'office-1' && !o.allOffices)).toBe(true);
+  });
+
+  it('「月で見る」に切り替えると月の表を出し、週の読み込みを止める', () => {
+    (useStrictAcceptance as Mock).mockReturnValue({ data: undefined, isLoading: true });
+    render(<AcceptanceMatrixPage />);
+    expect(screen.queryByTestId('month-board')).toBeNull();
+    fireEvent.change(screen.getByLabelText('拠点'), { target: { value: 'office-1' } });
+    fireEvent.click(screen.getByRole('button', { name: '月で見る' }));
+    expect(screen.getByTestId('month-board')).toHaveTextContent('office-1');
+    expect(screen.queryByText('読み込み中…')).toBeNull();
+    expect((lastCall()[1] as { enabled?: boolean }).enabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '週で見る' }));
+    expect(screen.queryByTestId('month-board')).toBeNull();
   });
 });

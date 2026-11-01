@@ -5,6 +5,7 @@ GET    /api/v1/acceptance-matrix/strict             — 数週続けて空いて
 POST   /api/v1/acceptance-matrix/strict/refresh     — カイポケの材料を取り直す (admin・202)
 GET    /api/v1/acceptance-matrix/strict/refresh/latest   — 動いている取り直しのジョブ
 GET    /api/v1/acceptance-matrix/strict/refresh/{job_id} — 取り直しの進み具合
+GET    /api/v1/acceptance-matrix/month              — 月で見る (曜日×30 分の谷と山・read-only)
 PUT    /api/v1/acceptance-matrix/week-override      — 週別手動上書き 1 セルを upsert (admin/manager)
 DELETE /api/v1/acceptance-matrix/week-override      — 週別手動上書き 1 セルを解除 (admin/manager)
 PUT    /api/v1/acceptance-matrix/standing-override  — 常設(毎週)上書き 1 セルを upsert (admin/manager)
@@ -50,6 +51,12 @@ from app.schemas.v2.acceptance_matrix import (
 from app.services.kaipoke.sources import OP_ACCEPTANCE_REFRESH, RpaJobConflictError
 from app.services.kaipoke_client import KaipokeClient, get_kaipoke_client
 from app.services.scheduling.acceptance_matrix_service import compute_acceptance_matrix
+from app.services.scheduling.acceptance_month_data import (
+    InvalidMonthError,
+    build_month_view,
+    parse_month,
+)
+from app.services.scheduling.acceptance_month_print import render_month_html
 from app.services.scheduling.acceptance_strict_data import (
     OfficeNotFoundError,
     build_strict_payload,
@@ -165,6 +172,52 @@ async def get_strict_refresh(
     if job is None or (job.params or {}).get("op") != OP_ACCEPTANCE_REFRESH:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
     return job_view(job)
+
+
+@router.get(
+    "/month",
+    summary="受け入れ枠: 月で見る (曜日×30 分の空き○△×と稼働率・read-only)",
+)
+async def get_month_acceptance(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
+    month: Annotated[str, Query(description="見る月 (YYYY-MM)")],
+    office_id: Annotated[
+        UUID | None,
+        Query(description="拠点 ID (担い手の候補を絞る。訪問の行は絞らない。省略=全拠点)"),
+    ] = None,
+    staff: Annotated[
+        str | None,
+        Query(description="担い手の職員 ID (カンマ区切り)。省略=既定 (職員だけ)・空=だれもいない"),
+    ] = None,
+    mode: Annotated[Literal["real", "ignore"], Query(description="休みの扱い")] = "real",
+    lunch: Annotated[bool, Query(description="昼休みを考える")] = True,
+    include_html: Annotated[bool, Query(description="A4 横の印刷用 HTML を同梱する")] = False,
+) -> dict[str, Any]:
+    """訪問はらく助の visits (取消・削除を除く) で数える。DB に書かない。"""
+    try:
+        first = parse_month(month)
+        staff_ids = (
+            None
+            if staff is None
+            else [uuid.UUID(part) for part in staff.split(",") if part.strip()]
+        )
+    except (InvalidMonthError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="month か staff の書き方が違います",
+        ) from exc
+    try:
+        view = await build_month_view(
+            db, first, office_id, staff_ids=staff_ids, mode=mode, lunch=lunch
+        )
+    except OfficeNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="office not found"
+        ) from exc
+    if include_html:
+        view["html"] = render_month_html(view)
+    return view
 
 
 @router.get(

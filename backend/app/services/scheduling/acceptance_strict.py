@@ -221,6 +221,25 @@ def free_hours(
     既存の訪問は前後に PAD を足して塞ぎ、予定はそのまま塞ぐ。昼休みは「既存の塞がり＋
     新しい訪問 (PAD 込み)」のどれとも重ならない ``lunch_min`` 分が窓の中に残ること。
     """
+    hours = {
+        t // 60
+        for t in free_starts(busy_visits, blocks, ws, we, rules)
+        if rules.hour_from <= t // 60 <= rules.hour_to
+    }
+    return sorted(hours)
+
+
+def free_starts(
+    busy_visits: Sequence[Interval],
+    blocks: Sequence[Interval],
+    ws: int,
+    we: int,
+    rules: StrictRules,
+) -> list[int]:
+    """[ws, we) の中で新しい訪問を始められる時刻 (``step`` 分刻み・分)。決まりは ``free_hours`` と同じ。
+
+    月で見る (30 分のマス) と時台の表 (``free_hours``) が同じ判定を使うための入口。
+    """
     pad = rules.pad
     starts, ends = _merge([(a - pad, b + pad) for a, b in busy_visits] + list(blocks))
 
@@ -238,11 +257,8 @@ def free_hours(
         if not lunch_starts:
             return []
         first_lunch, last_lunch = lunch_starts[0], lunch_starts[-1]
-    hours: set[int] = set()
+    out: list[int] = []
     for t in range(ws, we - rules.visit_min + 1, rules.step):
-        hour = t // 60
-        if hour < rules.hour_from or hour > rules.hour_to or hour in hours:
-            continue
         en = t + rules.visit_min
         if hit(t, en):
             continue
@@ -250,8 +266,8 @@ def free_hours(
             first_lunch + rules.lunch_min <= t - pad or last_lunch >= en + pad
         ):
             continue
-        hours.add(hour)
-    return sorted(hours)
+        out.append(t)
+    return out
 
 
 def _mode(sd: StaffDay, rules: StrictRules, use_off: bool) -> dict[str, Any]:
@@ -375,6 +391,7 @@ __all__ = [
     "compute_cell",
     "compute_strict",
     "free_hours",
+    "free_starts",
     "grade",
     "leave_breadth",
     "minutes_of",

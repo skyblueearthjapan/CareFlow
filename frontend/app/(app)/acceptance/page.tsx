@@ -10,12 +10,15 @@
  * 担い手・休みの扱い・見る週は画面で集計する (サーバーに問い合わせ直さない)。
  * 毎週の手での上書きは自動より優先し、角に「手」の印。取り直しは管理者だけ。
  * 拠点は「全て」(既定・office_id を付けない) か各拠点。選んだものはこのブラウザに残す。
+ * 「月で見る」に切り替えると、1 か月の曜日 × 30 分で谷 (空き) と山 (混み) を見る
+ * (components/acceptance/MonthAcceptanceBoard.tsx)。
  */
 import { useEffect, useState } from 'react';
 
 import { Printer } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
+import { MonthAcceptanceBoard } from '@/components/acceptance/MonthAcceptanceBoard';
 import { StrictAcceptanceBoard } from '@/components/acceptance/StrictAcceptanceBoard';
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
@@ -66,11 +69,12 @@ export default function AcceptanceMatrixPage() {
     }
   };
   const [planOnly, setPlanOnly] = useState(false);
+  const [view, setView] = useState<'week' | 'month'>('week');
 
   const query = useStrictAcceptance(officeId, {
     planOnly: IS_DEV && planOnly,
     allOffices: officeId === null,
-    enabled: storageRead,
+    enabled: storageRead && view === 'week',
   });
   const jobQuery = useStrictRefreshJob();
   const startRefresh = useStartStrictRefresh();
@@ -109,16 +113,40 @@ export default function AcceptanceMatrixPage() {
             ))}
           </select>
         </label>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => window.print()}
-          className="ml-auto gap-1.5"
-        >
-          <Printer className="h-4 w-4" />
-          印刷
-        </Button>
+        <div className="flex gap-1" role="group" aria-label="見かた">
+          {(
+            [
+              ['week', '週で見る'],
+              ['month', '月で見る'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={view === key}
+              onClick={() => setView(key)}
+              className={
+                view === key
+                  ? 'rounded-full border border-teal-600 bg-teal-600 px-3 py-1 text-sm text-white'
+                  : 'rounded-full border border-border-default bg-bg-base px-3 py-1 text-sm hover:bg-bg-muted'
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {view === 'week' && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => window.print()}
+            className="ml-auto gap-1.5"
+          >
+            <Printer className="h-4 w-4" />
+            印刷
+          </Button>
+        )}
       </Card>
 
       {officeNotice(officesQuery) && (
@@ -126,11 +154,16 @@ export default function AcceptanceMatrixPage() {
           {officeNotice(officesQuery)}
         </p>
       )}
-      {query.isLoading && <p className="text-sm text-text-secondary">読み込み中…</p>}
-      {query.isError && (
+      {view === 'month' && storageRead && (
+        <MonthAcceptanceBoard key={officeId ?? 'all'} officeId={officeId} />
+      )}
+      {view === 'week' && query.isLoading && (
+        <p className="text-sm text-text-secondary">読み込み中…</p>
+      )}
+      {view === 'week' && query.isError && (
         <p className="text-sm text-rose-600">読み込みに失敗しました: {query.error.message}</p>
       )}
-      {query.data && (
+      {view === 'week' && query.data && (
         <StrictAcceptanceBoard
           key={`${query.data.office_id ?? 'all'}-${query.data.plan_only ? 'plan' : 'real'}`}
           data={query.data}
