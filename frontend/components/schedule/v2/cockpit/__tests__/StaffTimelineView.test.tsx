@@ -15,8 +15,12 @@ import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
+const toastWarning = vi.fn();
+vi.mock('sonner', () => ({ toast: { warning: (...a: unknown[]) => toastWarning(...a) } }));
+
 import {
   snapXOffsetToMinutes,
+  TRAINEE_DROP_MESSAGE,
   STAFF_SWAP_MIME,
   StaffTimelineView,
   UNASSIGNED_ROW_KEY,
@@ -985,5 +989,109 @@ describe('StaffTimelineView — 非稼働患者', () => {
     const bar = screen.getByTestId('tl-bar-res1');
     expect(bar.style.opacity).toBe('0.6');
     expect(screen.getByTestId('tl-inactive-badge-res1')).toHaveTextContent('入院中');
+  });
+});
+
+describe('StaffTimelineView — 新人の行へのドロップ (PO 決定 2026-11-01)', () => {
+  const TRAINEE = '00000000-0000-4000-8000-000000000003';
+  const traineeRows: StaffTimelineRow[] = [
+    rows[0]!,
+    { staffId: TRAINEE, name: '新人　一郎', office: '稲毛', isTrainee: true },
+    rows[2]!,
+  ];
+
+  beforeEach(() => toastWarning.mockReset());
+
+  it('新人の行の上では落とせない案内を出し、離しても onVisitMove を呼ばない', () => {
+    const { onVisitMove, onVisitClick } = renderView({ staffRows: traineeRows });
+    const bar = screen.getByTestId('tl-bar-v1');
+    pointAt(screen.getByTestId(`tl-lane-${TRAINEE}`));
+
+    firePointer(bar, 'pointerdown', 100, 10);
+    firePointer(bar, 'pointermove', 140, 70);
+    expect(screen.getByTestId(`tl-trainee-block-${TRAINEE}`)).toHaveTextContent(
+      TRAINEE_DROP_MESSAGE,
+    );
+    firePointer(bar, 'pointerup', 140, 70);
+    fireEvent.click(bar);
+
+    expect(onVisitMove).not.toHaveBeenCalled();
+    expect(onVisitClick).not.toHaveBeenCalled();
+    expect(toastWarning).toHaveBeenCalledWith(TRAINEE_DROP_MESSAGE);
+    expect(screen.queryByTestId(`tl-trainee-block-${TRAINEE}`)).toBeNull();
+  });
+
+  it('新人の行を通り過ぎてほかの行で離せば、その行へ動かす', () => {
+    const { onVisitMove } = renderView({ staffRows: traineeRows });
+    const bar = screen.getByTestId('tl-bar-v1');
+    pointAt(screen.getByTestId(`tl-lane-${TRAINEE}`));
+    firePointer(bar, 'pointerdown', 100, 10);
+    firePointer(bar, 'pointermove', 100, 70);
+    pointAt(screen.getByTestId(`tl-lane-${UNASSIGNED_ROW_KEY}`));
+    firePointer(bar, 'pointermove', 100, 130);
+    firePointer(bar, 'pointerup', 100, 130);
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(onVisitMove.mock.calls[0]![0]).toMatchObject({ toStart: null, toStaffId: null });
+  });
+});
+
+describe('StaffTimelineView — 固定の全員イベント (PO 決定 2026-11-01)', () => {
+  it('固定イベントは行に出さず「全員（固定）」帯だけ。その人だけのイベントは行に出す', () => {
+    const base = {
+      staff_id: STAFF_1,
+      date: '2026-08-17',
+      start_time: '08:30',
+      end_time: '08:45',
+      type: 'イベント',
+      blocking: false,
+    };
+    renderView({
+      visits: [],
+      fixedAllDay: [{ start: '08:30', end: '08:45', title: '朝会' }],
+      events: new Map([
+        [
+          STAFF_1,
+          [
+            { ...base, id: 'fx1', title: '朝会', source: 'fixed' },
+            {
+              ...base,
+              id: 'own1',
+              title: '会議',
+              source: 'manual',
+              start_time: '14:00',
+              end_time: '15:00',
+            },
+          ],
+        ],
+        [STAFF_2, [{ ...base, id: 'fx2', staff_id: STAFF_2, title: '朝会', source: 'fixed' }]],
+      ]) as React.ComponentProps<typeof StaffTimelineView>['events'],
+    });
+    expect(screen.getByTestId('tl-lane-fixed')).toHaveTextContent('朝会');
+    expect(screen.queryByTestId('tl-event-fx1')).toBeNull();
+    expect(screen.queryByTestId('tl-event-fx2')).toBeNull();
+    expect(screen.getByTestId('tl-event-own1')).toHaveTextContent('会議');
+  });
+});
+
+describe('StaffTimelineView — embedded (週の 6 段の 1 段)', () => {
+  it('案内と自前の横スクロールを外し、段の目印を付ける', () => {
+    renderView({ embedded: true, day: 0 });
+    const section = screen.getByTestId('staff-timeline-view-embedded');
+    expect(section).toHaveAttribute('data-tl-day', '0');
+    expect(screen.queryByTestId('staff-timeline-view')).toBeNull();
+    expect(section.textContent).not.toContain('バーを横にドラッグ');
+    expect(screen.getByTestId('tl-bar-v1')).toBeInTheDocument();
+  });
+
+  it('知らない担当として渡された行 (unknown) は入れ替え・行の操作の相手にしない', () => {
+    renderView({
+      staffRows: [...rows, { staffId: STAFF_X, name: '（不明なスタッフ）', unknown: true }],
+      visits: [visit({ id: 'v1', primary_staff_id: STAFF_X })],
+      onAddVisit: vi.fn(),
+    });
+    expect(screen.getAllByTestId(`tl-lane-${STAFF_X}`)).toHaveLength(1);
+    expect(screen.queryByTestId(`tl-swap-grip-${STAFF_X}`)).toBeNull();
+    expect(screen.queryByTestId(`tl-row-actions-${STAFF_X}`)).toBeNull();
+    expect(screen.getByTestId(`tl-swap-grip-${STAFF_1}`)).toBeInTheDocument();
   });
 });

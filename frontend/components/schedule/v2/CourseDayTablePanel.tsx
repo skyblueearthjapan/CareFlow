@@ -196,7 +196,7 @@ import {
 // ─── 週空間 Phase E「今週の運転席」(docs/plans/week-cockpit-design.md §3) ───
 // 部品は FE-A/FE-B が作成済み。ここ (FE-C) は結線だけを行う。
 import { SyncBar } from './cockpit/SyncBar';
-import { StaffWeekTimeline } from './cockpit/StaffWeekTimeline';
+import { StaffWeekTimelineStack } from './cockpit/StaffWeekTimelineStack';
 import { FixedEventRow } from './cockpit/FixedEventRow';
 import { VisitActionMenu } from './cockpit/VisitActionMenu';
 import { SubstitutePanel } from './cockpit/SubstitutePanel';
@@ -727,7 +727,7 @@ export function CourseDayTablePanel({
   useEffect(() => {
     onViewStateChange?.({ unit, day: selectedDay, view });
   }, [unit, selectedDay, view, onViewStateChange]);
-  // 職員の週もタイムライン (StaffWeekTimeline・PO 決定 2026-10-21) を持つので、形はそのまま。
+  // 職員の週もタイムライン (1 日の表 × 6 段の StaffWeekTimelineStack・PO 決定 2026-11-01) を持つ。
   const isStaffWeek = unit === 'staff' && selectedDay === 'week';
   const effectiveView: ScheduleView = view;
   const activeTab: number | 'week' | 'staff' = unit === 'staff' ? 'staff' : selectedDay;
@@ -5559,23 +5559,31 @@ export function CourseDayTablePanel({
     [allStaff, officeNameById, offByStaffWeekday, staffTimelineDay],
   );
 
-  /** タイムライン先頭の「全員（固定）」帯 (その日の固定イベントを重複除去)。 */
-  const staffTimelineFixedBands = useMemo(() => {
-    const dayIso = isoOfWeekday(staffTimelineDay);
-    const seen = new Map<string, { start: string; end: string; title: string }>();
-    for (const ev of fixedWeekEvents) {
-      if (ev.date !== dayIso || ev.cancelled_at) continue;
-      const key = `${ev.start_time}|${ev.title}`;
-      if (!seen.has(key)) {
-        seen.set(key, {
-          start: ev.start_time.slice(0, 5),
-          end: ev.end_time.slice(0, 5),
-          title: ev.title,
-        });
-      }
-    }
-    return [...seen.values()];
-  }, [fixedWeekEvents, staffTimelineDay, isoOfWeekday]);
+  /**
+   * タイムライン先頭の「全員（固定）」帯 (曜日ごとに、その日の固定イベントを重複除去)。
+   * 1 日の表は見ている曜日の分、週の 6 段は 6 曜日分を使う。
+   */
+  const staffTimelineFixedBandsByDay = useMemo(
+    () =>
+      [0, 1, 2, 3, 4, 5].map((wd) => {
+        const dayIso = isoOfWeekday(wd);
+        const seen = new Map<string, { start: string; end: string; title: string }>();
+        for (const ev of fixedWeekEvents) {
+          if (ev.date !== dayIso || ev.cancelled_at) continue;
+          const key = `${ev.start_time}|${ev.title}`;
+          if (!seen.has(key)) {
+            seen.set(key, {
+              start: ev.start_time.slice(0, 5),
+              end: ev.end_time.slice(0, 5),
+              title: ev.title,
+            });
+          }
+        }
+        return [...seen.values()];
+      }),
+    [fixedWeekEvents, isoOfWeekday],
+  );
+  const staffTimelineFixedBands = staffTimelineFixedBandsByDay[staffTimelineDay];
 
   /**
    * 訪問メニュー (VisitActionMenu) の組み立て。盤面 (行がトリガー) と
@@ -6314,8 +6322,10 @@ export function CourseDayTablePanel({
           86_400_000,
       );
       if (wd < 0 || wd > 5) return;
-      // すでに職員・その日のタイムラインを見ている → 帯がそのままバーを探す。
-      if (unit === 'staff' && selectedDay === wd && view === 'timeline') return;
+      // すでに職員・その日のタイムラインか、職員・週のタイムライン (6 段・その日の段にバーがある)
+      // を見ている → 帯がそのままバーを探す。
+      if (unit === 'staff' && view === 'timeline' && (selectedDay === wd || selectedDay === 'week'))
+        return;
       // コースの表示で、印の付いたカードが今見えている → 帯がそのまま探す。
       if (
         unit === 'course' &&
@@ -7331,23 +7341,65 @@ export function CourseDayTablePanel({
                 ) : null}
 
                 {staffViewMode === 'timeline' && isStaffWeek ? (
-                  <StaffWeekTimeline
+                  <StaffWeekTimelineStack
                     weekStart={weekStart}
                     staffRows={staffTimelineRows}
+                    offByStaffWeekday={offByStaffWeekday}
                     visits={cockpitVisits}
                     events={staffEventsByStaff}
-                    offByStaffWeekday={offByStaffWeekday}
+                    fixedAllDayByDay={staffTimelineFixedBandsByDay}
+                    markers={cockpitTimelineMarkers}
+                    unsentIds={unsentBarIds}
+                    todayIso={todayIsoJst}
+                    canEdit={canEdit}
+                    showInactive={showInactive}
                     assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
                     dayCounts={staffDayCounts}
                     countLimit={maxPatientsPerCourse}
                     companionVisitsByCell={companionVisitsByCell}
-                    todayIso={todayIsoJst}
-                    canEdit={canEdit}
-                    showInactive={showInactive}
+                    courseIdByTemplateWeekday={courseIdByTemplateWeekday}
+                    suggestionBadges={suggestionBadges}
+                    onSuggestCourse={canEdit ? handleSuggestCourse : undefined}
                     highlightStaffId={highlightStaffId}
                     onVisitClick={(visit) => setTimelineMenuVisit(visit)}
                     // 1 日タイムラインと同じ結線 (move → assign・同じ op_group_id・戻るで戻せる)。
+                    // 曜日をまたぐ移動はメニューの「📅 曜日を移動…」で行う (案 B)。
                     onVisitMove={(payload) => void handleTimelineVisitMove(payload)}
+                    onEventClick={
+                      canEdit ? (ev, staffId) => setTlEventEdit({ staffId, event: ev }) : undefined
+                    }
+                    onStaffSwap={
+                      canEdit
+                        ? (payload) => {
+                            setStaffSwapRunning(false);
+                            setStaffSwap(payload);
+                          }
+                        : undefined
+                    }
+                    onMarkOff={
+                      canEdit
+                        ? (staffId, dayIdx) => setOffPanel({ staffId, date: isoOfWeekday(dayIdx) })
+                        : undefined
+                    }
+                    onAddVisit={
+                      canEdit
+                        ? (staffId, dayIdx) =>
+                            setAddVisitState({
+                              initial: { dates: [isoOfWeekday(dayIdx)], staffId },
+                            })
+                        : undefined
+                    }
+                    onAddEvent={
+                      canEdit
+                        ? (staffId, dayIdx) =>
+                            setSlotEventState({
+                              staffId,
+                              date: isoOfWeekday(dayIdx),
+                              startHM: '09:00',
+                              endHM: '10:00',
+                            })
+                        : undefined
+                    }
                   />
                 ) : staffViewMode === 'timeline' ? (
                   <StaffTimelineView

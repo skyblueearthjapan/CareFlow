@@ -30,11 +30,16 @@
  * `onVisitClick` が起き、時刻変更・担当変更・取消はすべて `VisitActionMenu`
  * (FE-A) のメニュー項目が担う。ここはポインタ操作の近道でしかない。
  *
+ *   - 新人の行へは落とせない (新人は担当になれない)。落とそうとしたら案内を出す (PO 2026-11-01)。
+ *   - 固定の全員イベント (source='fixed') は行に描かず、先頭の「全員（固定）」帯だけに出す。
+ *
  * この部品は API を呼ばない (結線は FE-C = CourseDayTablePanel)。
- * 曜日跨ぎの移動はリスト側 (盤面) の担当で、ここでは扱わない。
+ * 曜日跨ぎの移動は訪問のメニューの「📅 曜日を移動…」の担当で、ここでは扱わない。
+ * 週は `StaffWeekTimelineStack` がこの部品を `embedded` で月〜土の 6 段に並べる。
  */
 import * as React from 'react';
 import { addDays, format } from 'date-fns';
+import { toast } from 'sonner';
 
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -112,7 +117,16 @@ export interface StaffTimelineRow {
    * スタッフ入れ替えの掴み元にもドロップ先にもしない。
    */
   isTrainee?: boolean;
+  /**
+   * 知らない担当の行 (「（不明なスタッフ）」)。週の 6 段で行の並びをそろえるため、
+   * 親が先に足して渡す。実在の職員ではないので、入れ替え・行の操作の相手にしない。
+   */
+  unknown?: boolean;
 }
+
+/** 新人の行へ訪問を落とそうとしたときの案内 (PO 決定 2026-11-01)。 */
+export const TRAINEE_DROP_MESSAGE =
+  '新人さんにはコースの訪問を入れられません（同行で割り当ててください）';
 
 /** 「全員（固定）」帯 (朝会など・先頭レーン)。 */
 export interface FixedAllDayBand {
@@ -261,6 +275,11 @@ export interface StaffTimelineViewProps {
   countLimit?: number | null;
   /** 同行の薄いバー (`${staffId}:${weekday}` → 同行する訪問)。読むだけ・動かせない (D8)。 */
   companionVisitsByCell?: Map<string, TimelineVisit[]>;
+  /**
+   * 週の 6 段 (`StaffWeekTimelineStack`) の 1 段として使う。外枠の角・操作の案内・
+   * 自前の横スクロールを外す (横スクロールと案内は 6 段の親が 1 つだけ持つ)。既定 false。
+   */
+  embedded?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -487,6 +506,8 @@ interface DragState {
   moved: boolean;
   toStartMin: number;
   toRowKey: string;
+  /** 指の下が新人の行 (落とせない)。離しても呼ばず、案内を出す。 */
+  blockedRowKey: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -521,7 +542,10 @@ export function StaffTimelineView({
   dayCounts,
   countLimit = null,
   companionVisitsByCell,
+  embedded = false,
 }: StaffTimelineViewProps) {
+  // 矢印の marker id を段ごとに分ける (週の 6 段で同じ id が並ばないように)。
+  const arrowheadId = `tl-arrowhead-${React.useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const dayIso = React.useMemo(
     () => format(addDays(weekStart, day), 'yyyy-MM-dd'),
     [weekStart, day],
@@ -653,9 +677,13 @@ export function StaffTimelineView({
    * 入れ替えの相手になれる行 = 親が渡した実在スタッフだけ。
    * 「（担当なし）」と、ズレを見せるために生やした「（不明なスタッフ）」行は不可。
    */
+  const realStaffKeys = React.useMemo(
+    () => new Set(staffRows.filter((r) => r.unknown !== true).map((r) => r.staffId)),
+    [staffRows],
+  );
   const isRealStaffRow = React.useCallback(
-    (staffId: string): boolean => staffId !== UNASSIGNED_ROW_KEY && rowKeys.has(staffId),
-    [rowKeys],
+    (staffId: string): boolean => staffId !== UNASSIGNED_ROW_KEY && realStaffKeys.has(staffId),
+    [realStaffKeys],
   );
 
   /** staffId → 行 (新人判定に使う)。 */
@@ -664,6 +692,9 @@ export function StaffTimelineView({
     for (const r of rows) m.set(r.staffId, r);
     return m;
   }, [rows]);
+  /** ドラッグ中 (レンダー外) から新人の行を引くための参照。 */
+  const rowByIdRef = React.useRef(rowById);
+  rowByIdRef.current = rowById;
 
   /**
    * 入れ替えの掴み元/ドロップ先になれるか。
@@ -800,6 +831,9 @@ export function StaffTimelineView({
         if (r.staffId === UNASSIGNED_ROW_KEY) continue;
         for (const ev of events.get(r.staffId) ?? []) {
           if (ev.date !== dayIso) continue;
+          // 固定の全員イベント (朝会など) は先頭の「全員（固定）」帯だけに出す
+          // (PO 決定 2026-11-01・行に二重に出さない)。その人だけのイベントは行に出す。
+          if (ev.source === 'fixed') continue;
           const startMin = parseHM(ev.start_time);
           if (startMin === null) continue;
           const endRaw = parseHM(ev.end_time);
@@ -987,6 +1021,7 @@ export function StaffTimelineView({
         moved: false,
         toStartMin: item.startMin,
         toRowKey: rowKey,
+        blockedRowKey: null,
       };
       try {
         e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -1006,11 +1041,19 @@ export function StaffTimelineView({
 
     // 行の外 (氏名列・盤面外) で離したら担当は変えない → 毎回元の行から解き直す。
     let toRowKey = d.fromRowKey;
+    let blockedRowKey: string | null = null;
     try {
       const el = document.elementFromPoint?.(e.clientX, e.clientY) as HTMLElement | null;
       const lane = el?.closest?.('[data-lane-key]') as HTMLElement | null;
       const key = lane?.dataset.laneKey;
-      if (key && rowKeySetRef.current.has(key)) toRowKey = key;
+      if (key && rowKeySetRef.current.has(key)) {
+        // 新人は担当になれない (同行で割り当てる) → 新人の行へは落とせない。
+        if (key !== d.fromRowKey && rowByIdRef.current.get(key)?.isTrainee === true) {
+          blockedRowKey = key;
+        } else {
+          toRowKey = key;
+        }
+      }
     } catch {
       // elementFromPoint 未実装環境 (jsdom) では行は変えない。
     }
@@ -1019,6 +1062,7 @@ export function StaffTimelineView({
       ...d,
       moved: true,
       toRowKey,
+      blockedRowKey,
       toStartMin: snapXOffsetToMinutes(dx, d.trackWidthPx, d.startMin0, d.durationMin),
     };
     dragRef.current = next;
@@ -1041,6 +1085,11 @@ export function StaffTimelineView({
       // 縛るので、click が来ないまま次の操作に移っても抑止は持ち越されない
       // (pointerdown でも必ず捨てる)。
       suppressClickRef.current = d.barEl;
+      if (d.blockedRowKey !== null) {
+        // 新人の行で離した → 何も変えず、案内だけ出す。
+        toast.warning(TRAINEE_DROP_MESSAGE);
+        return;
+      }
       commitDrag(d);
     },
     [commitDrag],
@@ -1078,27 +1127,34 @@ export function StaffTimelineView({
     backgroundSize: `calc(100% / ${HOUR_COUNT}) 100%`,
   };
 
+  /** 週の 6 段の 1 段では、横スクロールと案内を親 (StaffWeekTimelineStack) が 1 つだけ持つ。 */
+  const HScroll = embedded ? React.Fragment : SyncedHScroll;
+
   return (
     <section
-      className="overflow-hidden rounded-lg border"
+      // 週の 6 段の 1 段では、氏名の列の sticky を効かせるため overflow-hidden を付けない。
+      className={embedded ? undefined : 'overflow-hidden rounded-lg border'}
       style={{ borderColor: 'var(--border-default)', background: 'var(--bg-base)' }}
-      data-testid="staff-timeline-view"
-      aria-label="職員タイムライン"
+      data-testid={embedded ? 'staff-timeline-view-embedded' : 'staff-timeline-view'}
+      data-tl-day={embedded ? day : undefined}
+      aria-label={embedded ? `職員タイムライン ${dayLabel}` : '職員タイムライン'}
     >
       {/* 操作の案内 (曜日の切り替えは画面のタブの段へ移した)。 */}
-      <div
-        className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5"
-        style={{ borderColor: 'var(--border-default)', background: 'var(--bg-muted)' }}
-      >
-        <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          バーを横にドラッグ=時刻(15分刻み) / 別の行へ=担当変更 / クリック=メニュー
-          {onStaffSwap && canEdit && !isPast
-            ? ' ／ 氏名の ⠿ を別の行へ=その日の予定を丸ごと入れ替え'
-            : ''}
-        </span>
-      </div>
+      {embedded ? null : (
+        <div
+          className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5"
+          style={{ borderColor: 'var(--border-default)', background: 'var(--bg-muted)' }}
+        >
+          <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            バーを横にドラッグ=時刻(15分刻み) / 別の行へ=担当変更 / クリック=メニュー
+            {onStaffSwap && canEdit && !isPast
+              ? ' ／ 氏名の ⠿ を別の行へ=その日の予定を丸ごと入れ替え'
+              : ''}
+          </span>
+        </div>
+      )}
 
-      <SyncedHScroll>
+      <HScroll>
         <div className="relative" style={{ minWidth: MIN_TRACK_PX }} ref={tblRef}>
           {/* 時刻ヘッダ */}
           <div
@@ -1180,6 +1236,8 @@ export function StaffTimelineView({
               drag?.moved === true &&
               drag.toRowKey === row.staffId &&
               drag.toRowKey !== drag.fromRowKey;
+            /** 新人の行の上 = 落とせない (案内を出す)。 */
+            const isBlockedTarget = drag?.moved === true && drag.blockedRowKey === row.staffId;
             const swappable = canSwapRow(row.staffId);
             /** いま掴んでいる行 = 持ち上げ表示。 */
             const isSwapSource = swapFrom === row.staffId;
@@ -1374,11 +1432,29 @@ export function StaffTimelineView({
                     ...trackBg,
                     minHeight: heightPx,
                     ...(isDropTarget ? { backgroundColor: 'var(--info-bg)' } : null),
-                    ...(isHighlighted && !isDropTarget
+                    ...(isBlockedTarget ? { backgroundColor: 'var(--error-bg)' } : null),
+                    ...(isHighlighted && !isDropTarget && !isBlockedTarget
                       ? { backgroundColor: 'rgba(225,90,127,0.08)' }
                       : null),
                   }}
                 >
+                  {isBlockedTarget ? (
+                    <span
+                      role="status"
+                      className="pointer-events-none sticky z-[6] inline-block rounded border px-2 py-0.5 text-[12px] font-bold"
+                      style={{
+                        // 横に送っても氏名の列の右に見えるようにする。
+                        left: NAME_COL_PX + 8,
+                        borderColor: 'var(--error)',
+                        color: 'var(--error)',
+                        background: 'var(--bg-base)',
+                        marginTop: 4,
+                      }}
+                      data-testid={`tl-trainee-block-${row.staffId}`}
+                    >
+                      {TRAINEE_DROP_MESSAGE}
+                    </span>
+                  ) : null}
                   {/* 休み・半休・時間変更は「働かない時間」だけを塗る (設計 §5)。 */}
                   {offDutyRanges(row.off).map(([s, e]) => (
                     <div
@@ -1456,7 +1532,7 @@ export function StaffTimelineView({
           >
             <defs>
               <marker
-                id="tl-arrowhead"
+                id={arrowheadId}
                 markerWidth="8"
                 markerHeight="8"
                 refX="6"
@@ -1474,13 +1550,13 @@ export function StaffTimelineView({
                 stroke={GHOST_AFTER}
                 strokeWidth="2.5"
                 strokeDasharray="6 4"
-                markerEnd="url(#tl-arrowhead)"
+                markerEnd={`url(#${arrowheadId})`}
                 opacity="0.9"
               />
             ))}
           </svg>
         </div>
-      </SyncedHScroll>
+      </HScroll>
     </section>
   );
 }

@@ -14,7 +14,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, createEvent, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── モック ──────────────────────────────────────────────────────────────────
@@ -682,11 +682,12 @@ function renderStaffTab() {
 }
 
 /**
- * 職員の週タイムラインで帯 (`swt-visit-*`) をマスの左端から x px へ落とす
- * (8:00〜19:00 = 660 分をマス幅 660px に = 1px が 1 分)。
+ * 職員の週タイムライン (6 段) の曜日 `wd` の段で、帯 (`tl-bar-*`) を横に dx px 動かし、
+ * `toLaneStaffId` の行 (同じ段) で離す (8:00〜19:00 = 660 分を幅 660px に = 1px が 1 分)。
  */
-function dragOnWeekTimeline(visitId: string, cellTestId: string, x: number) {
-  const orig = HTMLElement.prototype.getBoundingClientRect;
+function dragInWeekStage(visitId: string, wd: number, toLaneStaffId: string | null, dx: number) {
+  const origRect = HTMLElement.prototype.getBoundingClientRect;
+  const origFromPoint = document.elementFromPoint;
   HTMLElement.prototype.getBoundingClientRect = () =>
     ({
       width: 660,
@@ -700,27 +701,21 @@ function dragOnWeekTimeline(visitId: string, cellTestId: string, x: number) {
       toJSON: () => ({}),
     }) as DOMRect;
   try {
-    const store = new Map<string, string>();
-    const dt = {
-      effectAllowed: 'none',
-      dropEffect: 'none',
-      get types() {
-        return [...store.keys()];
-      },
-      setData: (t: string, v: string) => void store.set(t, v),
-      getData: (t: string) => store.get(t) ?? '',
+    const stage = within(screen.getByTestId(`swt-day-${wd}`));
+    const lane = toLaneStaffId ? stage.getByTestId(`tl-lane-${toLaneStaffId}`) : null;
+    document.elementFromPoint = (() => lane) as typeof document.elementFromPoint;
+    const bar = stage.getByTestId(`tl-bar-${visitId}`);
+    const firePointer = (type: string, clientX: number, clientY: number) => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      Object.assign(ev, { clientX, clientY, pointerId: 1, button: 0, isPrimary: true });
+      fireEvent(bar, ev);
     };
-    const fire = (el: Element, kind: 'dragStart' | 'dragOver' | 'drop', clientX: number) => {
-      const ev = createEvent[kind](el, { dataTransfer: dt });
-      Object.defineProperty(ev, 'clientX', { value: clientX });
-      fireEvent(el, ev);
-    };
-    fire(screen.getByTestId(`swt-visit-${visitId}`), 'dragStart', 0);
-    const cell = screen.getByTestId(cellTestId);
-    fire(cell, 'dragOver', x);
-    fire(cell, 'drop', x);
+    firePointer('pointerdown', 100, 10);
+    firePointer('pointermove', 100 + dx, 80);
+    firePointer('pointerup', 100 + dx, 80);
   } finally {
-    HTMLElement.prototype.getBoundingClientRect = orig;
+    HTMLElement.prototype.getBoundingClientRect = origRect;
+    document.elementFromPoint = origFromPoint;
   }
 }
 
@@ -1131,7 +1126,9 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(screen.getByTestId('schedule-view-timeline')).toBeEnabled();
     expect(screen.queryByTestId('schedule-staff-week-hint')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('schedule-view-timeline'));
-    expect(screen.getByTestId('staff-week-timeline')).toBeInTheDocument();
+    // 1 日の表 × 月〜土の 6 段 (PO 決定 2026-11-01)。
+    expect(screen.getByTestId('staff-week-timeline-stack')).toBeInTheDocument();
+    expect(screen.getAllByTestId(/^swt-day-\d$/)).toHaveLength(6);
     fireEvent.click(screen.getByTestId('schedule-view-list'));
     // 職員の道具は ●未送信の帯の行に並ぶ (D3)。
     expect(screen.getByTestId('staff-tools')).toBeInTheDocument();
@@ -1165,114 +1162,71 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(screen.getByTestId('stub-report-unsent')).toBeInTheDocument();
   });
 
-  it('(u4) 週・タイムラインで別の職員・別の曜日へ落とすと move (new_weekday) → assign を同じ組で呼ぶ', async () => {
+  it('(u4) 週・タイムラインの段の中で別の職員・別の時刻へ動かすと move (同じ曜日) → assign を同じ組で呼ぶ', async () => {
     setupHooks();
     renderStaffTab();
     fireEvent.click(screen.getByTestId('schedule-view-timeline'));
 
-    // 8:00〜19:00 = 660 分をマス幅 660px に (1px = 1 分)。
-    const orig = HTMLElement.prototype.getBoundingClientRect;
-    HTMLElement.prototype.getBoundingClientRect = () =>
-      ({
-        width: 660,
-        height: 20,
-        top: 0,
-        left: 0,
-        right: 660,
-        bottom: 20,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }) as DOMRect;
-    try {
-      const store = new Map<string, string>();
-      const dt = {
-        effectAllowed: 'none',
-        dropEffect: 'none',
-        get types() {
-          return [...store.keys()];
-        },
-        setData: (t: string, v: string) => void store.set(t, v),
-        getData: (t: string) => store.get(t) ?? '',
-      };
-      const fire = (el: Element, kind: 'dragStart' | 'dragOver' | 'drop', clientX: number) => {
-        const ev = createEvent[kind](el, { dataTransfer: dt });
-        Object.defineProperty(ev, 'clientX', { value: clientX });
-        fireEvent(el, ev);
-      };
-      fire(screen.getByTestId('swt-visit-v1'), 'dragStart', 0);
-      const cell = screen.getByTestId(`swt-cell-${STAFF_2}-2`);
-      fire(cell, 'dragOver', 180);
-      fire(cell, 'drop', 180); // 8:00 + 180 分 = 11:00
-    } finally {
-      HTMLElement.prototype.getBoundingClientRect = orig;
-    }
+    dragInWeekStage('v1', 0, STAFF_2, 120); // 9:00 + 120 分 = 11:00
 
     await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalled());
     const move = mockVisitMoveWeekOnly.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(move).toMatchObject({
-      old_weekday: 0,
-      new_weekday: 2,
-      new_start_time: '11:00',
-      // 曜日をまたぐと移動先の曜日の同じコースへ付け替える (course_id を残さない)。
-      new_course_template_id: 'tpl-A',
-    });
+    expect(move).toMatchObject({ old_weekday: 0, new_weekday: 0, new_start_time: '11:00' });
+    // 曜日は変えない (案 B) = コースの付け替えも送らない。
+    expect(move).not.toHaveProperty('new_course_template_id');
     const assign = mockAssignStaffWeek.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(assign).toMatchObject({ visit_id: 'v1', staff_id: STAFF_2 });
     // 同じ組 (「戻る」1 回で戻る)。
     expect(assign.op_group_id).toBe(move.op_group_id);
   });
 
-  it('(u5) 週・タイムラインで同じ職員の行のまま曜日だけ変えても、落とした行へ assign する (同じ組)', async () => {
+  it('(u5) 週・タイムラインの帯を押すとメニューが開き、曜日は「📅 曜日を移動…」で変える', async () => {
     setupHooks();
+    mockCourses.mockReturnValue({ data: coursesOnWeekdays([0, 2]), isLoading: false });
     renderStaffTab();
     fireEvent.click(screen.getByTestId('schedule-view-timeline'));
-    const orig = HTMLElement.prototype.getBoundingClientRect;
-    HTMLElement.prototype.getBoundingClientRect = () =>
-      ({
-        width: 660,
-        height: 20,
-        top: 0,
-        left: 0,
-        right: 660,
-        bottom: 20,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }) as DOMRect;
-    try {
-      const store = new Map<string, string>();
-      const dt = {
-        effectAllowed: 'none',
-        dropEffect: 'none',
-        get types() {
-          return [...store.keys()];
+
+    fireEvent.click(within(screen.getByTestId('swt-day-0')).getByTestId('tl-bar-v1'));
+    expect(await screen.findByTestId('staff-timeline-visit-menu')).toHaveTextContent('選択中');
+    fireEvent.click(await screen.findByTestId('visit-action-weekday-dialog'));
+    expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();
+    const initial = lastAddVisitProps().initial as Record<string, unknown>;
+    expect(initial.lockedScope).toBe('week');
+    expect((initial.sourceVisit as Record<string, unknown>).id).toBe('v1');
+    expect(mockVisitMoveWeekOnly).not.toHaveBeenCalled();
+  });
+
+  it('(u5b) 週・タイムラインで新人の行には落とせず、案内を出す', () => {
+    setupHooks();
+    mockStaffList.mockReturnValue({
+      data: [
+        {
+          id: STAFF_1,
+          name: '佐藤',
+          status: 'active',
+          primary_office_id: 'office-honten',
+          is_trainee: false,
         },
-        setData: (t: string, v: string) => void store.set(t, v),
-        getData: (t: string) => store.get(t) ?? '',
-      };
-      const fire = (el: Element, kind: 'dragStart' | 'dragOver' | 'drop', clientX: number) => {
-        const ev = createEvent[kind](el, { dataTransfer: dt });
-        Object.defineProperty(ev, 'clientX', { value: clientX });
-        fireEvent(el, ev);
-      };
-      fire(screen.getByTestId('swt-visit-v1'), 'dragStart', 0);
-      const cell = screen.getByTestId(`swt-cell-${STAFF_1}-3`);
-      fire(cell, 'dragOver', 60);
-      fire(cell, 'drop', 60); // 同じ 9:00
-    } finally {
-      HTMLElement.prototype.getBoundingClientRect = orig;
-    }
-    await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalled());
-    const move = mockVisitMoveWeekOnly.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(move).toMatchObject({
-      new_weekday: 3,
-      new_start_time: '09:00',
-      new_course_template_id: 'tpl-A',
+        {
+          id: STAFF_2,
+          name: '鈴木',
+          status: 'active',
+          primary_office_id: 'office-honten',
+          is_trainee: true,
+        },
+      ],
+      isLoading: false,
     });
-    const assign = mockAssignStaffWeek.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(assign).toMatchObject({ visit_id: 'v1', staff_id: STAFF_1 });
-    expect(assign.op_group_id).toBe(move.op_group_id);
+    renderStaffTab();
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
+
+    dragInWeekStage('v1', 0, STAFF_2, 60);
+
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      expect.stringContaining('新人さんにはコースの訪問を入れられません'),
+    );
+    expect(mockVisitMoveWeekOnly).not.toHaveBeenCalled();
+    expect(mockAssignStaffWeek).not.toHaveBeenCalled();
   });
 
   it('(u6) 週のリストで曜日をまたいで動かすときも new_course_template_id を送り、同じ組で assign', async () => {
@@ -1306,7 +1260,7 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(assign.op_group_id).toBe(move.op_group_id);
   });
 
-  it('(u7) 曜日をまたぐ移動が NG/性別の確認になっても、確認後に同じ組で assign まで続ける', async () => {
+  it('(u7) 週・タイムラインの移動が NG/性別の確認になっても、確認後に同じ組で assign まで続ける', async () => {
     setupHooks();
     mockVisitMoveWeekOnly.mockImplementation(async (payload: Record<string, unknown>) => {
       if (payload.acknowledge_constraint_warnings !== true) throw constraintError();
@@ -1314,7 +1268,7 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     });
     renderStaffTab();
     fireEvent.click(screen.getByTestId('schedule-view-timeline'));
-    dragOnWeekTimeline('v1', `swt-cell-${STAFF_2}-2`, 60);
+    dragInWeekStage('v1', 0, STAFF_2, 60);
 
     expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
     expect(mockAssignStaffWeek).not.toHaveBeenCalled();
@@ -1325,7 +1279,8 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(moves).toHaveLength(2);
     expect(moves[1]).toMatchObject({
       acknowledge_constraint_warnings: true,
-      new_course_template_id: 'tpl-A',
+      new_weekday: 0,
+      new_start_time: '10:00',
     });
     const assign = mockAssignStaffWeek.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(assign).toMatchObject({ visit_id: 'v1', staff_id: STAFF_2 });
@@ -1378,6 +1333,12 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(screen.getByTestId('tl-bar-v1')).toHaveClass('ring-error');
     // すでに職員・その日のタイムライン → 帯にそのまま任せる (引き受けない)。
     expect(fire().defaultPrevented).toBe(false);
+    // 職員・週のタイムライン (6 段) でも、その日の段にバーがあるので帯に任せる。
+    fireEvent.click(screen.getByTestId('course-day-tab-week'));
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
+    expect(screen.getByTestId('staff-week-timeline-stack')).toBeInTheDocument();
+    expect(fire().defaultPrevented).toBe(false);
+    expect(within(screen.getByTestId('swt-day-0')).getByTestId('tl-bar-v1')).toBeInTheDocument();
     // 週の外の日は引き受けない。
     const outside = new CustomEvent(FEASIBILITY_FOCUS_EVENT, {
       detail: { visitIds: ['v1'], day: '2000-01-03' },

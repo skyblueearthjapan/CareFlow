@@ -4,7 +4,7 @@
  *
  * - 職員・その日のタイムライン (StaffTimelineView) のバー
  * - 職員・週のリスト (StaffWeekBoard) の訪問の行
- * - 職員・週のタイムライン (StaffWeekTimeline) の細い帯 (枠の色と title)
+ * - 職員・週のタイムライン (StaffWeekTimelineStack = 1 日の表 × 6 段) のバー
  * - コースの 1 日の時間軸 (TimelineDayBoard) のカード
  * - 帯の行は、盤面の持ち主が引き受けたら自分では探さない
  */
@@ -37,7 +37,7 @@ import {
   StaffTimelineView,
   type TimelineVisit,
 } from '@/components/schedule/v2/cockpit/StaffTimelineView';
-import { StaffWeekTimeline } from '@/components/schedule/v2/cockpit/StaffWeekTimeline';
+import { StaffWeekTimelineStack } from '@/components/schedule/v2/cockpit/StaffWeekTimelineStack';
 import { StaffWeekBoard } from '@/components/schedule/v2/StaffWeekBoard';
 import {
   TimelineDayBoard,
@@ -217,14 +217,14 @@ describe('職員・週のリスト (StaffWeekBoard)', () => {
   });
 });
 
-describe('職員・週のタイムライン (StaffWeekTimeline)', () => {
-  it('細い帯は枠の色で分け、title に理由を添える', () => {
+describe('職員・週のタイムライン (StaffWeekTimelineStack)', () => {
+  it('その曜日の段のバーに 1 日の表と同じ印が出る (印の無い訪問には出ない)', () => {
     render(
       withProvider(
-        <StaffWeekTimeline
+        <StaffWeekTimelineStack
           weekStart={WEEK_START}
           staffRows={[{ staffId: STAFF_1, name: '職員D　秋子', office: '稲毛' }]}
-          visits={TL_VISITS}
+          visits={[...TL_VISITS, tv({ id: 'w', weekday: 2, start_time: '09:00' })]}
           todayIso="2026-11-01"
           canEdit
           onVisitMove={vi.fn()}
@@ -232,12 +232,13 @@ describe('職員・週のタイムライン (StaffWeekTimeline)', () => {
         />,
       ),
     );
-    const a = screen.getByTestId('swt-visit-a');
-    expect(a).toHaveAttribute('data-feas-tier', 'hard');
-    expect(a).toHaveClass('ring-error');
-    expect(a.getAttribute('title')).toContain(REASON_HARD);
-    expect(screen.getByTestId('swt-visit-s')).toHaveClass('ring-warning');
-    expect(screen.getByTestId('swt-visit-n')).not.toHaveAttribute('data-feas-tier');
+    const monday = screen.getByTestId('swt-day-0');
+    expect(within(monday).getByTestId('tl-feas-mark-a')).toHaveAttribute('data-tier', 'hard');
+    expect(within(monday).getByTestId('tl-feas-mark-s')).toHaveAttribute('data-tier', 'soft');
+    expect(within(monday).queryByTestId('tl-feas-mark-n')).toBeNull();
+    // 水曜の訪問は水曜の段にだけ出る。
+    expect(within(screen.getByTestId('swt-day-2')).getByTestId('tl-bar-w')).toBeInTheDocument();
+    expect(within(monday).queryByTestId('tl-bar-w')).toBeNull();
   });
 });
 
