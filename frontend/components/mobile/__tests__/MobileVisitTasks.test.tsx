@@ -143,4 +143,28 @@ describe('MobileVisitTasks', () => {
       expect.any(Object),
     );
   });
+
+  it('ほかの人の完了は aria-disabled・自分の完了は付けない', () => {
+    tasks = [
+      makeTask({ id: 'a', status: 'done', can_reopen: false }),
+      makeTask({ id: 'b', status: 'done', can_reopen: true }),
+      makeTask({ id: 'c' }),
+    ];
+    render(<MobileVisitTasks visitId="v1" />);
+    expect(screen.getByTestId('mobile-task-a')).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByTestId('mobile-task-b')).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByTestId('mobile-task-c')).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('伝言の「読みました」が失敗したら、その旨の文言で出す', () => {
+    tasks = [
+      makeTask({ id: 'm1', is_message: true, item_type_id: null, item_type_name: null, memo: 'x' }),
+    ];
+    completeMutate.mockImplementation((_v, opts: { onError: (e: unknown) => void }) =>
+      opts.onError(new ApiError('API 409', 409, { detail: 'すでに完了しています' })),
+    );
+    render(<MobileVisitTasks visitId="v1" />);
+    fireEvent.click(screen.getByTestId('mobile-message-read-m1'));
+    expect(toastError).toHaveBeenCalledWith('読みましたにできませんでした', expect.any(Object));
+  });
 });

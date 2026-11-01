@@ -15,6 +15,8 @@ describe('TaskCountBadge', () => {
     const b = screen.getByTestId('b');
     expect(b.textContent).toBe('📋2');
     expect(b.dataset.tone).toBe('open');
+    // 絵文字だけの印なので、読み上げは aria-label で伝える。
+    expect(b).toHaveAttribute('role', 'img');
   });
 
   it('期日を過ぎたもの (持ち越し) があれば赤', () => {

@@ -193,16 +193,19 @@ export function MobileVisitCard({ visit, address, hasRecording, taskCount }: Mob
             {taskCount && taskCount.total_count > 0 && (
               <p
                 className={cn(
-                  'mt-1 inline-flex max-w-full items-center gap-1 truncate rounded-full px-2 py-0.5 text-xs font-bold',
+                  'mt-1 inline-flex max-w-full items-center gap-1 overflow-hidden rounded-full px-2 py-0.5 text-xs font-bold',
                   taskCount.open_count > 0
                     ? 'bg-brand-primary-light text-brand-primary-hover'
                     : 'bg-success-bg text-success',
                 )}
                 data-testid="mobile-visit-tasks"
               >
-                {taskCount.open_count > 0
-                  ? `📋 やること ${taskCount.open_count} 件${taskCount.has_carried_over ? '（持ち越しあり）' : ''}`
-                  : '✓ やることは完了'}
+                {/* inline-flex の子は省略記号が出ないので、文字は span で切る。 */}
+                <span className="min-w-0 truncate">
+                  {taskCount.open_count > 0
+                    ? `📋 やること ${taskCount.open_count} 件${taskCount.has_carried_over ? '（持ち越しあり）' : ''}`
+                    : '✓ やることは完了'}
+                </span>
               </p>
             )}
             {shownAddress && (

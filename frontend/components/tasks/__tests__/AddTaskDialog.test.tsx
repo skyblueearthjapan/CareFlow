@@ -110,4 +110,21 @@ describe('AddTaskForm', () => {
     fireEvent.click(screen.getByTestId('add-task-submit'));
     expect(screen.getByTestId('add-task-no-visit')).toBeInTheDocument();
   });
+
+  it('二度押ししても付けるのは 1 回だけ・失敗して終わったら次を送れる', () => {
+    let settle: (() => void) | undefined;
+    createMutate.mockImplementation((_p, opts: { onSettled: () => void }) => {
+      settle = opts.onSettled;
+    });
+    render(<AddTaskForm defaultDate="2026-11-02" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('pick-patient'));
+    fireEvent.click(screen.getByRole('button', { name: '項目あ' }));
+    const submit = screen.getByTestId('add-task-submit');
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(createMutate).toHaveBeenCalledTimes(1);
+    settle?.();
+    fireEvent.click(submit);
+    expect(createMutate).toHaveBeenCalledTimes(2);
+  });
 });

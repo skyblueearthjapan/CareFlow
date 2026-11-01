@@ -4,7 +4,7 @@
  *   GET   /api/v1/task-item-types               (全員・include_inactive は管理者だけ効く)
  *   POST  /api/v1/task-item-types               (admin)
  *   PATCH /api/v1/task-item-types/{id}          (admin)
- *   GET   /api/v1/tasks                         (admin・status/staff_id/patient_id/date_from/date_to)
+ *   GET   /api/v1/tasks                         (admin・status/staff_id/patient_id/date_from/date_to/done_from)
  *   POST  /api/v1/tasks                         (admin)
  *   GET   /api/v1/tasks/counts?date=YYYY-MM-DD  (admin・staff は自分の訪問だけ)
  *   POST  /api/v1/tasks/{id}/complete           (admin・その訪問の担当の職員)
@@ -13,7 +13,8 @@
  *   GET   /api/v1/visits/{visitId}/tasks        (admin・その訪問の担当の職員)
  *
  * 正典 = docs/plans/patient-tasks-design-2026-11-01.md。
- * 変更系はどれも成功時に ['tasks'] 配下 (一覧・件数・訪問ごと) をまとめて無効化する。
+ * 変更系はどれも成功時に ['tasks'] 配下 (一覧・件数・訪問ごと) をまとめて無効化し、
+ * 読み直しが終わるまで isPending を続ける (完了直後の二度押しで 409 を出さないため)。
  */
 'use client';
 
@@ -52,6 +53,8 @@ export interface TasksParams {
   /** 日付 (この日から) の範囲 YYYY-MM-DD。 */
   dateFrom?: string | null;
   dateTo?: string | null;
+  /** 完了した日 (JST) の下限 YYYY-MM-DD。完了していないものは外れる。 */
+  doneFrom?: string | null;
 }
 
 export const tasksKeys = {
@@ -65,6 +68,7 @@ export const tasksKeys = {
       p.patientId ?? null,
       p.dateFrom ?? null,
       p.dateTo ?? null,
+      p.doneFrom ?? null,
     ] as const,
   counts: (date: string, staffId: string | null = null) =>
     ['tasks', 'counts', date, staffId] as const,
@@ -97,6 +101,7 @@ export function useTasks(
   if (params.patientId) search.set('patient_id', params.patientId);
   if (params.dateFrom) search.set('date_from', params.dateFrom);
   if (params.dateTo) search.set('date_to', params.dateTo);
+  if (params.doneFrom) search.set('done_from', params.doneFrom);
 
   return useQuery<PatientTaskRead[]>({
     queryKey: tasksKeys.list(params),
@@ -174,9 +179,8 @@ export function useTaskItemTypes(options: { includeInactive?: boolean; enabled?:
 
 function useInvalidateTasks() {
   const qc = useQueryClient();
-  return () => {
-    void qc.invalidateQueries({ queryKey: tasksKeys.all });
-  };
+  // promise を返す: mutation の onSuccess/onError から返すと、読み直しが終わるまで isPending が続く。
+  return () => qc.invalidateQueries({ queryKey: tasksKeys.all });
 }
 
 type CreateOptions = UseMutationOptions<PatientTaskCreateResult, Error, PatientTaskCreate>;
@@ -194,9 +198,9 @@ export function useCreateTasks(options: CreateOptions = {}) {
         refreshToken,
       }),
     ...options,
-    onSuccess: (data, variables, onMutateResult, context) => {
-      invalidate();
-      options.onSuccess?.(data, variables, onMutateResult, context);
+    onSuccess: async (data, variables, onMutateResult, context) => {
+      await invalidate();
+      return options.onSuccess?.(data, variables, onMutateResult, context);
     },
   });
 }
@@ -220,14 +224,14 @@ export function useCompleteTask(options: CompleteOptions = {}) {
         refreshToken,
       }),
     ...options,
-    onSuccess: (data, variables, onMutateResult, context) => {
-      invalidate();
-      options.onSuccess?.(data, variables, onMutateResult, context);
+    onSuccess: async (data, variables, onMutateResult, context) => {
+      await invalidate();
+      return options.onSuccess?.(data, variables, onMutateResult, context);
     },
     // 409 (ほかの人が先に完了) / 422 (この訪問には出ていない) のときも、いまの状態を読み直す。
-    onError: (error, variables, onMutateResult, context) => {
-      invalidate();
-      options.onError?.(error, variables, onMutateResult, context);
+    onError: async (error, variables, onMutateResult, context) => {
+      await invalidate();
+      return options.onError?.(error, variables, onMutateResult, context);
     },
   });
 }
@@ -245,13 +249,14 @@ function useTaskAction(action: 'reopen' | 'cancel', options: TaskIdOptions) {
         refreshToken,
       }),
     ...options,
-    onSuccess: (data, variables, onMutateResult, context) => {
-      invalidate();
-      options.onSuccess?.(data, variables, onMutateResult, context);
-    }, // 409 (すでに戻した・取り消した) などのときも、いまの状態を読み直す。
-    onError: (error, variables, onMutateResult, context) => {
-      invalidate();
-      options.onError?.(error, variables, onMutateResult, context);
+    onSuccess: async (data, variables, onMutateResult, context) => {
+      await invalidate();
+      return options.onSuccess?.(data, variables, onMutateResult, context);
+    },
+    // 409 (すでに戻した・取り消した) などのときも、いまの状態を読み直す。
+    onError: async (error, variables, onMutateResult, context) => {
+      await invalidate();
+      return options.onError?.(error, variables, onMutateResult, context);
     },
   });
 }

@@ -335,6 +335,39 @@ async def test_admin_complete_reopen_cancel(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_done_from_filters_by_done_day(client, db) -> None:
+    """done_from は完了した日 (JST) で絞る。日付 (start_date) が新しくても古い完了は外れる。"""
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from app.models.patient_task import PatientTask
+
+    admin = await _user(db, "adm", "admin")
+    p = await _patient(db, "P1")
+    old = (await _create(client, admin, p, T, memo="前に完了"))["tasks"][0]["id"]
+    new = (await _create(client, admin, p, T, memo="今日完了"))["tasks"][0]["id"]
+    for tid in (old, new):
+        res = await client.post(f"/api/v1/tasks/{tid}/complete", headers=_h(admin))
+        assert res.status_code == 200, res.text
+    row = await db.get(PatientTask, UUID(old))
+    row.done_at = datetime.now(UTC) - timedelta(days=40)
+    await db.commit()
+
+    since = (T - timedelta(days=30)).isoformat()
+    rows = (
+        await client.get(f"/api/v1/tasks?status=done&done_from={since}", headers=_h(admin))
+    ).json()
+    assert [r["id"] for r in rows] == [new]
+    rows = (await client.get("/api/v1/tasks?status=done", headers=_h(admin))).json()
+    assert {r["id"] for r in rows} == {old, new}
+    # 今日の 0 時 (JST) からなら今日の完了は入る
+    rows = (
+        await client.get(f"/api/v1/tasks?status=done&done_from={T.isoformat()}", headers=_h(admin))
+    ).json()
+    assert [r["id"] for r in rows] == [new]
+
+
+@pytest.mark.asyncio
 async def test_done_task_shows_only_on_done_visit(client, db) -> None:
     admin = await _user(db, "adm", "admin")
     s = await _staff(db, "佐藤")

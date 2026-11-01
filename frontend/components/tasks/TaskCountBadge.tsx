@@ -25,6 +25,7 @@ export function TaskCountBadge({
       data-testid={testId}
       data-tone={allDone ? 'done' : over ? 'over' : 'open'}
       title={title}
+      role="img"
       aria-label={title}
       className={cn(
         'shrink-0 rounded-full px-1 py-px text-[9px] font-bold leading-tight',

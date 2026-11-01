@@ -8,6 +8,8 @@
 const PUBLIC_PATHS = ['/login'];
 const ADMIN_PREFIX = '/admin';
 const COMMON_PREFIXES = ['/dashboard', '/patients', '/staff', '/schedule', '/records'];
+/** /admin の外にある管理者だけのページ (事務所からのやること・patient-tasks-design §2-6)。 */
+const ADMIN_ONLY_PATHS = ['/tasks'];
 
 /**
  * Path of the forced-password-change screen. The middleware is the only
@@ -67,6 +69,13 @@ export function decideRoute({ pathname, session }: RouteContext): RouteDecision 
     (isPendingRequests
       ? !['admin', 'manager'].includes(role ?? '')
       : !['admin', 'manager'].includes(role ?? ''))
+  ) {
+    return { kind: 'redirect', to: '/dashboard' };
+  }
+
+  if (
+    ADMIN_ONLY_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`)) &&
+    !['admin', 'manager'].includes(role ?? '')
   ) {
     return { kind: 'redirect', to: '/dashboard' };
   }

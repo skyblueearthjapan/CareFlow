@@ -68,6 +68,16 @@ describe('decideRoute', () => {
     });
   });
 
+  it('redirects non-admin away from /tasks to /dashboard (事務所からのやること)', () => {
+    expect(decideRoute({ pathname: '/tasks', session: staffSession })).toEqual({
+      kind: 'redirect',
+      to: '/dashboard',
+    });
+    expect(decideRoute({ pathname: '/tasks', session: adminSession })).toEqual({ kind: 'next' });
+    // 似た名前の別ページは巻き込まない。
+    expect(decideRoute({ pathname: '/tasksx', session: staffSession })).toEqual({ kind: 'next' });
+  });
+
   it('lets admin access /admin/users', () => {
     expect(decideRoute({ pathname: '/admin/users', session: adminSession })).toEqual({
       kind: 'next',

@@ -7,7 +7,7 @@
  * 付けた結果の next_visit で「出す訪問」を見せる (無ければ「訪問が入ったら出ます」)。
  * 文字と操作の大きさはモーダルの可読性の基準 (add-visit-anywhere-design §3-5) に合わせる。
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -59,6 +59,8 @@ export function AddTaskForm({
   const [result, setResult] = useState<PatientTaskCreateResult | null>(null);
   const itemTypes = useTaskItemTypes();
   const create = useCreateTasks();
+  // 二度押しで同じやることを 2 回付けないための送信中の旗 (isPending は次の描画まで立たない)。
+  const sendingRef = useRef(false);
 
   const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(date);
   const ok = !!patientId && dateOk && canSubmitTask(types, memo);
@@ -69,7 +71,8 @@ export function AddTaskForm({
   ].filter((x): x is string => x !== null);
 
   const submit = () => {
-    if (!ok || create.isPending) return;
+    if (!ok || create.isPending || sendingRef.current) return;
+    sendingRef.current = true;
     create.mutate(
       {
         patient_id: patientId,
@@ -86,6 +89,9 @@ export function AddTaskForm({
         },
         onError: (err) =>
           toast.error('やることを付けられませんでした', { description: apiErrorMessage(err) }),
+        onSettled: () => {
+          sendingRef.current = false;
+        },
       },
     );
   };

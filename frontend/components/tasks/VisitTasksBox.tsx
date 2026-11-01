@@ -7,7 +7,7 @@
  * 完了にする／完了を戻す／取り消す ができる。下の「＋ やることを付ける」で
  * 項目 (いくつでも)・伝言・日付 (既定はその訪問の日) を選んで付ける。
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ClipboardList, Plus } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -211,6 +211,8 @@ function AddTaskInline({
   const [date, setDate] = useState(visitDate);
   const itemTypes = useTaskItemTypes({ enabled: open });
   const create = useCreateTasks();
+  // 二度押しで同じやることを 2 回付けないための送信中の旗 (isPending は次の描画まで立たない)。
+  const sendingRef = useRef(false);
   const ok = canSubmitTask(types, memo) && /^\d{4}-\d{2}-\d{2}$/.test(date);
 
   if (!open) {
@@ -230,7 +232,8 @@ function AddTaskInline({
   }
 
   const submit = () => {
-    if (!ok) return;
+    if (!ok || sendingRef.current) return;
+    sendingRef.current = true;
     create.mutate(
       {
         patient_id: patientId,
@@ -251,6 +254,9 @@ function AddTaskInline({
         },
         onError: (err) =>
           toast.error('やることを付けられませんでした', { description: apiErrorMessage(err) }),
+        onSettled: () => {
+          sendingRef.current = false;
+        },
       },
     );
   };

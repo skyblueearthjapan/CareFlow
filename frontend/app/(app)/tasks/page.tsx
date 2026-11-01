@@ -35,7 +35,7 @@ import { useStaffList } from '@/lib/queries/staff';
 import { useCancelTask, useCompleteTask, useReopenTask, useTasks } from '@/lib/queries/tasks';
 import type { PatientTaskRead, TaskListStatus } from '@/lib/schemas/patient-task';
 
-/** 完了の件数と一覧は、日付が直近この日数の分だけ (完了は増え続けるため)。 */
+/** 完了の件数と一覧は、完了した日が直近この日数の分だけ (完了は増え続けるため)。 */
 const DONE_LOOKBACK_DAYS = 30;
 
 function todayJst(): string {
@@ -74,12 +74,12 @@ export default function TasksPage() {
 
   // 件数 (未完了はメニューのバッジと同じキーで共有)。
   const openAll = useTasks({ status: 'open' }, { enabled: isAdmin });
-  const doneRecent = useTasks({ status: 'done', dateFrom: doneFrom }, { enabled: isAdmin });
+  const doneRecent = useTasks({ status: 'done', doneFrom }, { enabled: isAdmin });
   const rowsQuery = useTasks(
     {
       status: statusFilter,
       staffId: staffId || null,
-      dateFrom: statusFilter === 'done' ? doneFrom : null,
+      doneFrom: statusFilter === 'done' ? doneFrom : null,
     },
     { enabled: isAdmin },
   );

@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Annotated
 from uuid import UUID
 
@@ -44,6 +44,7 @@ from app.schemas.patient_task import (
     VisitTaskCounts,
 )
 from app.services.patient_tasks import (
+    JST,
     eligible_visit_clause,
     jst_today,
     load_task_names,
@@ -195,6 +196,9 @@ async def list_tasks(
     patient_id: UUID | None = None,
     date_from: Annotated[date | None, Query(description="日付 (この日から) の下限")] = None,
     date_to: Annotated[date | None, Query(description="日付 (この日から) の上限")] = None,
+    done_from: Annotated[
+        date | None, Query(description="完了した日 (JST) の下限。完了していないものは外れる")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 500,
 ) -> list[dict]:
     today = jst_today()
@@ -215,6 +219,11 @@ async def list_tasks(
         stmt = stmt.where(PatientTask.start_date >= date_from)
     if date_to is not None:
         stmt = stmt.where(PatientTask.start_date <= date_to)
+    if done_from is not None:
+        # 完了した時刻は UTC で持つので、JST のその日の 0 時を UTC にして比べる。
+        stmt = stmt.where(
+            PatientTask.done_at >= datetime.combine(done_from, time.min, tzinfo=JST).astimezone(UTC)
+        )
     if staff_id is not None:
         # 完了は「完了した訪問の担当か完了した人」なので DB で先に絞れる。
         # 未完了は出す訪問 (見るたびに決まる) の担当で決まるので、下で絞る。

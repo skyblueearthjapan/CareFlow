@@ -26,20 +26,19 @@ export function MobileVisitTasks({ visitId }: { visitId: string }) {
   const requests = data.filter((t) => !t.is_message);
   const messages = data.filter((t) => t.is_message);
 
-  const doComplete = (t: PatientTaskRead, okText: string) =>
+  const doComplete = (t: PatientTaskRead, okText: string, failText: string) =>
     complete.mutate(
       { taskId: t.id, visitId },
       {
         onSuccess: () => toast.success(okText),
-        onError: (err) =>
-          toast.error('完了にできませんでした', { description: taskActionErrorMessage(err) }),
+        onError: (err) => toast.error(failText, { description: taskActionErrorMessage(err) }),
       },
     );
 
   const toggle = (t: PatientTaskRead) => {
     if (busy) return;
     if (t.status !== 'done') {
-      doComplete(t, '完了にしました');
+      doComplete(t, '完了にしました', '完了にできませんでした');
       return;
     }
     if (!t.can_reopen) {
@@ -73,6 +72,8 @@ export function MobileVisitTasks({ visitId }: { visitId: string }) {
                     type="button"
                     role="checkbox"
                     aria-checked={done}
+                    // ほかの人が完了にしたものは戻せない (押すと案内だけ出す)。
+                    aria-disabled={done && !t.can_reopen ? true : undefined}
                     disabled={busy}
                     onClick={() => toggle(t)}
                     className={cn(
@@ -158,7 +159,7 @@ export function MobileVisitTasks({ visitId }: { visitId: string }) {
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => doComplete(t, '読みました')}
+                    onClick={() => doComplete(t, '読みました', '読みましたにできませんでした')}
                     className="inline-flex min-h-11 items-center rounded-md bg-brand-primary px-4 text-sm font-bold text-white active:bg-brand-primary-hover disabled:opacity-50"
                     data-testid={`mobile-message-read-${t.id}`}
                   >

@@ -154,4 +154,29 @@ describe('VisitTasksBox', () => {
       expect.any(Object),
     );
   });
+
+  it('二度押ししても付けるのは 1 回だけ・終わったら次を送れる', () => {
+    tasks = [];
+    let settle: (() => void) | undefined;
+    createMutate.mockImplementation((_p, opts: { onSettled: () => void }) => {
+      settle = opts.onSettled;
+    });
+    render(
+      <VisitTasksBox
+        visitId="v1"
+        visitDate="2026-11-02"
+        patientId={PATIENT}
+        patientName="岡本 翔"
+      />,
+    );
+    fireEvent.click(screen.getByTestId('visit-tasks-add-open'));
+    fireEvent.click(screen.getByRole('button', { name: '項目あ' }));
+    const submit = screen.getByTestId('visit-tasks-add-submit');
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(createMutate).toHaveBeenCalledTimes(1);
+    settle?.();
+    fireEvent.click(submit);
+    expect(createMutate).toHaveBeenCalledTimes(2);
+  });
 });

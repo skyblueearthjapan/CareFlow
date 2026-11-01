@@ -54,10 +54,15 @@ export function TaskItemTypesSettings() {
     const a = items[idx];
     const b = items[idx + dir];
     if (!a || !b || busy) return;
+    // 2 回の更新のどちらかが失敗すると並び順が片方だけ変わるので、一覧を読み直す。
+    const onMoveError = (err: unknown) => {
+      onError('並び順を変えられませんでした')(err);
+      void query.refetch();
+    };
     if (a.sort_order === b.sort_order) {
       update.mutate(
         { id: a.id, payload: { sort_order: b.sort_order + dir } },
-        { onError: onError('並び順を変えられませんでした') },
+        { onError: onMoveError },
       );
       return;
     }
@@ -67,9 +72,9 @@ export function TaskItemTypesSettings() {
         onSuccess: () =>
           update.mutate(
             { id: b.id, payload: { sort_order: a.sort_order } },
-            { onError: onError('並び順を変えられませんでした') },
+            { onError: onMoveError },
           ),
-        onError: onError('並び順を変えられませんでした'),
+        onError: onMoveError,
       },
     );
   };

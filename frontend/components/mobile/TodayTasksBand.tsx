@@ -30,7 +30,7 @@ export function TodayTasksBand({
       className="rounded-md border border-brand-primary-light bg-brand-primary-50 px-3 py-2.5 text-sm text-text-primary"
       data-testid="today-tasks-band"
     >
-      <p className="m-0 flex items-center gap-1.5">
+      <p className="m-0 flex flex-wrap items-center gap-1.5">
         <ClipboardList className="h-4 w-4 shrink-0 text-brand-primary" aria-hidden="true" />
         <b className="text-brand-primary-hover">今日のやること {open} 件</b>
         <span className="text-xs text-text-secondary">（全部で {total} 件）</span>
