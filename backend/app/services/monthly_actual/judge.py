@@ -9,9 +9,9 @@ PO の決まり (``docs/plans/session-2026-11-01-HANDOFF.md`` §1)。
     全部の組を、到着 (無ければ予定の開始) とカイポケの開始の差の小さい順に割り当てる (差 0 を
     先に固定・差が同じなら担当 (職員1) が一致する組を先に・120 分以内・1 つのカイポケの行は
     1 回だけ)。近い順の早い者勝ちにすると、別の訪問の行を取って書き換えてしまう。らく助と
-    カイポケの件数が違う (日・利用者) は、組めた行も全部「人が見る」にする (組めなかったらく助の
-    訪問は「カイポケに無い」)。組んだ後に順番が入れ替わっている組がある (日・利用者) と、
-    らく助の利用者コードが 2 種類以上ある (日・利用者) も、組を全部「人が見る」にする。
+    カイポケの件数が違うか、組めなかった行が 1 つでもある (日・利用者) は、組めた行も全部「人が
+    見る」にする (組めなかったらく助の訪問は「カイポケに無い」)。組んだ後に順番が入れ替わっている組がある (日・利用者) と、
+    らく助の利用者コードが 2 種類以上 (空を含む) ある (日・利用者) も、組を全部「人が見る」にする。
 
 新しい時刻
     らく助の QR 実績 (後から合わせた時刻を含む) が正。30 分未満の滞在と、退出の QR が無い
@@ -421,9 +421,16 @@ def _mark_duplicate_targets(rows: Sequence[JudgedRow]) -> None:
 def _mark_count_diffs(
     rows: Sequence[JudgedRow], rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]
 ) -> None:
-    """同じ (日・利用者) でらく助とカイポケの件数が違えば、組めた行を全部人が見るにする。"""
+    """同じ (日・利用者) で件数が違うか、組めなかった行が 1 つでもあれば、組めた行を全部人が見るにする。
+
+    件数が同じでも、らく助 09:00・11:00、カイポケ 10:30・13:30 のように片側ずつ組めない日は、
+    組めた 11:00→10:30 も取り違えのおそれがある。
+    """
     rk_count = Counter(_group_key(v.date, v.patient) for v in rk_visits)
     kp_count = Counter(_group_key(r.date, r.patient) for r in kp_rows)
+    unpaired = {
+        _group_key(row.date, row.patient) for row in rows if row.rk is None or row.kp is None
+    }
     for row in rows:
         if row.rk is None or row.kp is None:
             continue
@@ -433,6 +440,8 @@ def _mark_count_diffs(
                 FLAG_COUNT_DIFF,
                 f"同じ日の訪問の数が違う（らく助 {rk_count[key]} 件・カイポケ {kp_count[key]} 件）",
             )
+        elif key in unpaired:
+            row.add(FLAG_COUNT_DIFF, "同じ日に組めなかった訪問がある")
 
 
 def _rk_ref(v: RkVisit) -> int | None:
@@ -468,7 +477,7 @@ def _mark_order_swaps(rows: Sequence[JudgedRow]) -> None:
 
 
 def _mark_code_variants(rows: Sequence[JudgedRow]) -> None:
-    """同じ (日・利用者) にらく助の利用者コードが 2 種類以上あれば、組を全部人が見るにする。
+    """同じ (日・利用者) にらく助の利用者コードが 2 種類以上 (空を含む) あれば、組を全部人が見るにする。
 
     字体をそろえたせいで、同じ名前の別の方 (髙橋様と高橋様など) を 1 つにまとめたおそれがある。
     """
@@ -477,7 +486,8 @@ def _mark_code_variants(rows: Sequence[JudgedRow]) -> None:
         if row.rk is not None:
             groups[_group_key(row.rk.date, row.rk.patient)].append(row)
     for group in groups.values():
-        patient_codes = {row.rk.patient_code for row in group if row.rk and row.rk.patient_code}
+        # コードが空の訪問が混ざるときも、別の方かどうか決められないので人が見る。
+        patient_codes = {row.rk.patient_code for row in group if row.rk}
         if len(patient_codes) >= 2:
             for row in group:
                 row.add(FLAG_CODE_VARIANT, "同じ名前の別の方の可能性")

@@ -432,3 +432,96 @@ def test_equal_gap_prefers_the_row_with_the_same_staff() -> None:
     paired = [r for r in rows if r.rk is not None]
     assert len(paired) == 1 and paired[0].kp is not None
     assert paired[0].kp.start == "10:10"
+
+
+def test_swap_in_a_day_of_three_visits_sends_all_three_to_review() -> None:
+    # 3 件の日: A・B が入れ替わって組まれると、入れ替わっていない C も人が見る。
+    rows = rules.judge(
+        [
+            rk("A", "前川 七海", "09:30", "10:00"),
+            rk("B", "前川 七海", "10:00", "10:30"),
+            rk("C", "前川 七海", "13:00", "13:40"),
+        ],
+        [
+            kp("前川　七海", "09:45", "10:25"),
+            kp("前川　七海", "10:20", "10:50"),
+            kp("前川　七海", "13:05", "13:40"),
+        ],
+    )
+    by_id = {r.rk.visit_id: r for r in rows if r.rk}
+    assert len(by_id) == 3
+    assert by_id["C"].kp is not None and by_id["C"].kp.start == "13:05"
+    for row in by_id.values():
+        assert row.status == rules.STATUS_REVIEW
+        assert rules.FLAG_ORDER_SWAP in codes(row)
+        assert row.default_selected is False
+
+
+def test_pairs_at_the_same_time_are_not_flagged_as_swapped() -> None:
+    # 同じ時刻の 2 件 (別の職員) は、順番の入れ替わりとみなさない。担当が一致する行と組む。
+    rows = rules.judge(
+        [
+            rk("A", "前川 七海", "09:00", "09:40", staff=(NURSE_A,)),
+            rk("B", "前川 七海", "09:00", "09:40", staff=(NURSE_B,)),
+        ],
+        [
+            kp("前川　七海", "09:00", "09:35", staff=("佐藤　花子",)),
+            kp("前川　七海", "09:00", "09:35", staff=("鈴木　一郎",)),
+        ],
+    )
+    by_id = {r.rk.visit_id: r for r in rows if r.rk}
+    assert by_id["A"].kp is not None and by_id["A"].kp.staff1 == "佐藤　花子"
+    assert by_id["B"].kp is not None and by_id["B"].kp.staff1 == "鈴木　一郎"
+    for row in by_id.values():
+        assert rules.FLAG_ORDER_SWAP not in codes(row)
+        assert row.status == rules.STATUS_APPLY
+
+
+def test_same_count_with_unpaired_rows_sends_the_pair_to_review() -> None:
+    # 件数は同じ 2 件でも、09:00 と 13:30 が組めない日は、組めた 11:00→10:30 も人が見る。
+    rows = rules.judge(
+        [
+            rk("A", "前川 七海", "09:00", "09:40"),
+            rk("B", "前川 七海", "11:00", "11:40"),
+        ],
+        [kp("前川　七海", "10:30", "11:10"), kp("前川　七海", "13:30", "14:10")],
+    )
+    by_id = {r.rk.visit_id: r for r in rows if r.rk}
+    assert by_id["A"].status == rules.STATUS_MISSING
+    assert by_id["B"].kp is not None and by_id["B"].kp.start == "10:30"
+    assert by_id["B"].status == rules.STATUS_REVIEW
+    assert rules.FLAG_COUNT_DIFF in codes(by_id["B"])
+    assert by_id["B"].default_selected is False
+    assert [r.kp.start for r in rows if r.rk is None and r.kp] == ["13:30"]
+
+
+def test_empty_patient_code_mixed_in_goes_to_review() -> None:
+    # 同じ (日・利用者) に利用者コードが空の訪問が混ざると、別の方か決められない。
+    visits = [
+        rules.RkVisit(
+            visit_id="1",
+            date=D1,
+            patient="髙橋 一",
+            patient_code="P001",
+            staff=(NURSE_A,),
+            plan_start="09:00",
+            arrival="09:00",
+            departure="09:40",
+        ),
+        rules.RkVisit(
+            visit_id="2",
+            date=D1,
+            patient="高橋 一",
+            patient_code="",
+            staff=(NURSE_A,),
+            plan_start="14:00",
+            arrival="14:02",
+            departure="14:40",
+        ),
+    ]
+    rows = rules.judge(visits, [kp("高橋　一", "09:00", "09:30"), kp("高橋　一", "14:00", "14:40")])
+    paired = [r for r in rows if r.rk is not None]
+    assert len(paired) == 2
+    for row in paired:
+        assert row.status == rules.STATUS_REVIEW
+        assert rules.FLAG_CODE_VARIANT in codes(row)

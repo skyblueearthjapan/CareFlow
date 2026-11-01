@@ -347,7 +347,7 @@ async def judge_month(
     """らく助とカイポケの実績を突き合わせて判定し、作業の行を作り直す (commit は呼び出し側)。
 
     管理者が変えた「反映する／しない」(``selected_by`` あり) は、同じ訪問かつ同じ鍵の行へ
-    引き継ぐ。送った結果と試しを通った印は同じ鍵 (カイポケの旧時刻が同じ) の行へ引き継ぐ。
+    引き継ぐ (前は人が見るでなく、今回「人が見る」になった行は引き継がない)。送った結果と試しを通った印は同じ鍵 (カイポケの旧時刻が同じ) の行へ引き継ぐ。
     ただし「カイポケで確かめてから」の結果は、その後に管理者がカイポケの実績を読み取り直して
     いれば引き継がない (読み取り直しが確かめになる)。反映の直後の確かめ (``keep_checks``・
     その読み取りの実績) では引き継ぐ。カイポケの実績がまだ無ければ 422。
@@ -387,7 +387,12 @@ async def judge_month(
     for seq, j in enumerate(judged):
         row = _row_from_judged(run.id, seq, j)
         prev = chosen.get(_selection_key(row.visit_id, row.item_key) or "")
-        if prev is not None and row.status in rules.SELECTABLE_STATUSES:
+        # 今回「人が見る」になった行は、前の選択を引き継がず既定の「しない」に戻す。
+        if (
+            prev is not None
+            and row.status in rules.SELECTABLE_STATUSES
+            and not (row.status == rules.STATUS_REVIEW and prev.status != rules.STATUS_REVIEW)
+        ):
             row.selected = prev.selected
             row.selected_by = prev.selected_by
             row.selected_at = prev.selected_at

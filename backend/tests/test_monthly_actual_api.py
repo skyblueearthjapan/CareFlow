@@ -792,6 +792,40 @@ async def test_selection_is_kept_only_for_the_same_kaipoke_row(client, db) -> No
 
 
 @pytest.mark.asyncio
+async def test_selection_is_not_kept_when_the_row_turns_to_review(client, db) -> None:
+    admin = await _user(db, "admin")
+    await _seed(db)
+    rows = _by_patient((await client.get(URL, headers=_bearer(admin))).json()["rows"])
+    assert rows["石田 健"]["status"] == "apply"
+    res = await client.patch(
+        f"{URL}/rows/{rows['石田 健']['id']}", json={"selected": True}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+
+    # 同じカイポケの行 (鍵) のまま、同じ日にカイポケの行が増えて「人が見る」になったら、
+    # 前の「する」は引き継がず、既定の「しない」に戻す。
+    more = [*KP_BEFORE, ("佐藤　花子", 1, "石田　健", "15:00", "15:35")]
+    db.add(
+        KaipokeCsvSnapshot(
+            office_id=None,
+            month=MONTH,
+            week_start=None,
+            fetched_at=datetime(2026, 11, 1, 9, 0, tzinfo=UTC),
+            csv_text=_csv(more),
+            row_count=len(more),
+            source_op="monthly-actual",
+            division="actual",
+        )
+    )
+    await db.commit()
+    body = (await client.get(URL, headers=_bearer(admin))).json()
+    paired = [r for r in body["rows"] if r["patient"] == "石田 健" and r["kp_start"] == "11:00"]
+    assert len(paired) == 1
+    assert paired[0]["status"] == "review"
+    assert paired[0]["selected"] is False and paired[0]["selected_by_user"] is False
+
+
+@pytest.mark.asyncio
 async def test_schedule_is_dropped_three_hours_after_its_time(client, db, monkeypatch) -> None:
     admin = await _user(db, "admin")
     await _seed(db)
