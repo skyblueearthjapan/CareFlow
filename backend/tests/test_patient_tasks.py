@@ -344,14 +344,115 @@ async def test_done_task_shows_only_on_done_visit(client, db) -> None:
     v2 = await _visit(db, p, T + timedelta(days=3), primary=s)
     body = await _create(client, admin, p, T, memo="伝言")
     tid = body["tasks"][0]["id"]
-    # 完了前は先の訪問にも出る (完了するまで出し続ける)
-    assert len((await client.get(f"/api/v1/visits/{v2.id}/tasks", headers=_h(us))).json()) == 1
+    # 今日の訪問がある間は、先の訪問には出さない (日付が過ぎてから次の訪問へ持ち越す)
+    assert (await client.get(f"/api/v1/visits/{v2.id}/tasks", headers=_h(us))).json() == []
     res = await client.post(
         f"/api/v1/tasks/{tid}/complete", json={"visit_id": str(v1.id)}, headers=_h(us)
     )
     assert res.status_code == 200, res.text
     assert len((await client.get(f"/api/v1/visits/{v1.id}/tasks", headers=_h(us))).json()) == 1
     assert (await client.get(f"/api/v1/visits/{v2.id}/tasks", headers=_h(us))).json() == []
+
+
+@pytest.mark.asyncio
+async def test_open_task_not_on_later_future_visits(client, db) -> None:
+    """まだ日付が来ていない未完了は、日付以降の最初の訪問にだけ出る (2 件目は完了もできない)."""
+    admin = await _user(db, "adm", "admin")
+    a = await _staff(db, "佐藤")
+    b = await _staff(db, "鈴木")
+    ub = await _user(db, "ub", "staff", staff_id=b.id)
+    p = await _patient(db, "P1")
+    first = await _visit(db, p, T + timedelta(days=2), primary=a)
+    second = await _visit(db, p, T + timedelta(days=5), primary=b)
+    body = await _create(client, admin, p, T + timedelta(days=1), memo="伝言")
+    tid = body["tasks"][0]["id"]
+    assert body["next_visit"]["visit_id"] == str(first.id)
+
+    assert (
+        len((await client.get(f"/api/v1/visits/{first.id}/tasks", headers=_h(admin))).json()) == 1
+    )
+    assert (await client.get(f"/api/v1/visits/{second.id}/tasks", headers=_h(ub))).json() == []
+    d2 = (T + timedelta(days=5)).isoformat()
+    res = await client.get(f"/api/v1/tasks/counts?date={d2}", headers=_h(ub))
+    assert res.json()["counts"] == {}
+    res = await client.post(
+        f"/api/v1/tasks/{tid}/complete", json={"visit_id": str(second.id)}, headers=_h(ub)
+    )
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_overdue_shows_only_on_next_future_visit(client, db) -> None:
+    """日付が過ぎた未完了 (今日の訪問なし) は、明日以降の最初の訪問にだけ持ち越しで出る."""
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    p = await _patient(db, "P1")
+    past = await _visit(db, p, T - timedelta(days=3), primary=s)
+    nxt = await _visit(db, p, T + timedelta(days=1), primary=s)
+    later = await _visit(db, p, T + timedelta(days=3), primary=s)
+    await _create(client, admin, p, T - timedelta(days=5), memo="持ち越し")
+
+    r_past = (await client.get(f"/api/v1/visits/{past.id}/tasks", headers=_h(admin))).json()
+    r_next = (await client.get(f"/api/v1/visits/{nxt.id}/tasks", headers=_h(admin))).json()
+    r_later = (await client.get(f"/api/v1/visits/{later.id}/tasks", headers=_h(admin))).json()
+    assert r_past[0]["carried_over"] is False
+    assert r_next[0]["carried_over"] is True
+    assert r_later == []
+
+
+@pytest.mark.asyncio
+async def test_mentor_is_assigned_staff(client, db) -> None:
+    """指導役 (mentor) も担当: 出す訪問の担当・通知・一覧の看護師の絞り込みにそろう."""
+    admin = await _user(db, "adm", "admin")
+    a = await _staff(db, "佐藤")
+    m = await _staff(db, "指導")
+    um = await _user(db, "um", "staff", staff_id=m.id)
+    p = await _patient(db, "P1")
+    v = await _visit(db, p, T, primary=a)
+    v.mentor_staff_id = m.id
+    await db.commit()
+
+    body = await _create(client, admin, p, T, memo="伝言")
+    roles = {s["staff_id"]: s["role"] for s in body["next_visit"]["staff"]}
+    assert roles[str(m.id)] == "accompaniment"
+    assert body["notified_user_count"] == 1
+    notes = (
+        await db.scalars(select(Notification).where(Notification.type == NOTIFY_TASK_ASSIGNED))
+    ).all()
+    assert {n.user_id for n in notes} == {um.id}
+    rows = (await client.get(f"/api/v1/tasks?staff_id={m.id}", headers=_h(admin))).json()
+    assert len(rows) == 1
+    res = await client.post(
+        f"/api/v1/tasks/{body['tasks'][0]['id']}/complete", json={}, headers=_h(um)
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_complete_race_second_is_409(client, db, monkeypatch) -> None:
+    """読んだ時点で未完了に見えても、書き換えは未完了の行だけ (後の 1 回は 409・上書きしない)."""
+    import app.api.v1.tasks as tasks_api
+
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    us = await _user(db, "us", "staff", staff_id=s.id)
+    p = await _patient(db, "P1")
+    v = await _visit(db, p, T, primary=s)
+    body = await _create(client, admin, p, T, memo="伝言")
+    tid = body["tasks"][0]["id"]
+    res = await client.post(
+        f"/api/v1/tasks/{tid}/complete", json={"visit_id": str(v.id)}, headers=_h(us)
+    )
+    assert res.status_code == 200, res.text
+
+    # 先の確認をすり抜けた (同時に押された) ときの形を作る
+    monkeypatch.setattr(tasks_api, "task_status", lambda _t: "open")
+    res = await client.post(f"/api/v1/tasks/{tid}/complete", headers=_h(admin))
+    assert res.status_code == 409
+    monkeypatch.undo()
+    rows = (await client.get("/api/v1/tasks?status=done", headers=_h(admin))).json()
+    assert rows[0]["done_by_name"] == "佐藤"
+    assert rows[0]["done_visit_id"] == str(v.id)
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +500,14 @@ async def test_counts_and_staff_filter(client, db) -> None:
     assert len(rows) == 2
     # 伝言は最初の 1 件に付く
     assert [r["memo"] for r in rows].count("x") == 1
+
+    # 完了の一覧: 件数は DB で絞る・看護師は完了した人で絞る
+    rows = (await client.get("/api/v1/tasks?status=all&limit=1", headers=_h(admin))).json()
+    assert len(rows) == 1
+    rows = (
+        await client.get(f"/api/v1/tasks?status=done&staff_id={b.id}", headers=_h(admin))
+    ).json()
+    assert rows == []
 
 
 # ---------------------------------------------------------------------------

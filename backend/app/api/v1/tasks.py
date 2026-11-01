@@ -24,7 +24,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 
 from app.api.v1.visits import _staff_visibility_filter
 from app.core.deps import CurrentActiveUser, DbDep, require_role
@@ -215,7 +215,21 @@ async def list_tasks(
         stmt = stmt.where(PatientTask.start_date >= date_from)
     if date_to is not None:
         stmt = stmt.where(PatientTask.start_date <= date_to)
+    if staff_id is not None:
+        # 完了は「完了した訪問の担当か完了した人」なので DB で先に絞れる。
+        # 未完了は出す訪問 (見るたびに決まる) の担当で決まるので、下で絞る。
+        stmt = stmt.where(
+            or_(
+                PatientTask.done_at.is_(None),
+                PatientTask.done_by_staff_id == staff_id,
+                PatientTask.done_visit_id.in_(
+                    select(Visit.id).where(_staff_visibility_filter(staff_id))
+                ),
+            )
+        )
     stmt = stmt.order_by(PatientTask.start_date, PatientTask.created_at, PatientTask.id)
+    if staff_id is None or status_ == "done":
+        stmt = stmt.limit(limit)
     tasks = list((await db.scalars(stmt)).all())
 
     next_by_task = await next_visits_for_tasks(db, tasks, today)
@@ -461,13 +475,29 @@ async def complete_task(
                 status_code=status.HTTP_403_FORBIDDEN, detail="担当の訪問ではありません"
             )
 
+    # 同時に押されたときは先の 1 回だけが通る (まだ完了・取消でない行だけを書き換える)。
     now = datetime.now(UTC)
-    task.done_at = now
-    task.done_by_user_id = user.id
-    task.done_by_staff_id = user.staff_id
-    task.done_visit_id = visit.id if visit else None
-    task.updated_at = now
+    result = await db.execute(
+        update(PatientTask)
+        .where(
+            PatientTask.id == task.id,
+            PatientTask.done_at.is_(None),
+            PatientTask.cancelled_at.is_(None),
+        )
+        .values(
+            done_at=now,
+            done_by_user_id=user.id,
+            done_by_staff_id=user.staff_id,
+            done_visit_id=visit.id if visit else None,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="すでに完了しています")
     await db.commit()
+    await db.refresh(task)
     return await _read_one(db, task, user)
 
 

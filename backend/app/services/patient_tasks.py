@@ -9,7 +9,8 @@
   ``max(日付, 今日)`` にする (日付が過ぎた未完了 = 持ち越しは今日以降の訪問に出す)。
 * **訪問に出るやること** (:func:`tasks_for_visits`):
     - 未完了: 患者が同じで、日付 (この日から) ≦ 訪問日。日付以降の最初の訪問より後の訪問
-      では ``carried_over`` (持ち越し) を立てる。
+      では ``carried_over`` (持ち越し) を立てる。ただし今日より後の訪問には
+      ``max(日付, 今日)`` 以降の最初の訪問 (= 一覧の「出す訪問」) にだけ出す。
     - 完了: 完了した訪問 (``done_visit_id``) にだけ出る。訪問を指さずに完了したもの
       (管理者が PC から) は、完了した日 (JST) の訪問に出る。
     - 取消: 出ない。
@@ -153,7 +154,7 @@ class StaffRef:
 
 
 async def visit_staff_map(db: AsyncSession, visits: list[Visit]) -> dict[UUID, list[StaffRef]]:
-    """訪問 id → 担当 (主担当・2 人目・VSA・コース担当・同行) をまとめて解決する.
+    """訪問 id → 担当 (主担当・2 人目・指導役・VSA・コース担当・同行) をまとめて解決する.
 
     コース担当は ``visits.py`` の可視性 (``_course_fallback_condition``) と同じ規則:
     主担当が空・手動差替えでない・コース担当が在籍中のときだけ主担当として扱う。
@@ -170,6 +171,8 @@ async def visit_staff_map(db: AsyncSession, visits: list[Visit]) -> dict[UUID, l
     for v in visits:
         _add(v.id, v.primary_staff_id, "primary")
         _add(v.id, v.secondary_staff_id, "secondary")
+        # 見える範囲 (``_staff_visibility_filter``) と同じく指導役も担当に含める。
+        _add(v.id, v.mentor_staff_id, "accompaniment")
 
     asn_rows = (
         await db.execute(
@@ -292,8 +295,12 @@ async def tasks_for_visits(
     if not tasks:
         return {}
 
+    today = jst_today()
     open_tasks = [t for t in tasks if t.done_at is None]
     first_by_task: dict[UUID, tuple[date, time, str]] = {}
+    # 今日より後の訪問には、max(日付, 今日) 以降の最初の訪問にだけ出す
+    # (まだ来ていない先の訪問へ持ち越しで重ねて出さない)。
+    next_by_task: dict[UUID, UUID] = {}
     if open_tasks:
         by_patient = await load_patient_visits(
             db,
@@ -302,9 +309,13 @@ async def tasks_for_visits(
             max_d,
         )
         for t in open_tasks:
-            fv = first_visit_on_or_after(by_patient.get(t.patient_id, []), t.start_date)
+            pvs = by_patient.get(t.patient_id, [])
+            fv = first_visit_on_or_after(pvs, t.start_date)
             if fv is not None:
                 first_by_task[t.id] = _visit_key(fv)
+            nv = first_visit_on_or_after(pvs, max(t.start_date, today))
+            if nv is not None:
+                next_by_task[t.id] = nv.id
 
     tasks_by_patient: dict[UUID, list[PatientTask]] = defaultdict(list)
     for t in tasks:
@@ -315,6 +326,8 @@ async def tasks_for_visits(
         entries: list[VisitTaskEntry] = []
         for t in tasks_by_patient.get(v.patient_id, []):
             if t.done_at is None:
+                if v.visit_date > today and next_by_task.get(t.id) != v.id:
+                    continue
                 if t.start_date <= v.visit_date:
                     first = first_by_task.get(t.id)
                     entries.append(VisitTaskEntry(t, first is not None and first < _visit_key(v)))
@@ -442,8 +455,10 @@ async def notify_task_assigned(
 ) -> int:
     """付けたやることを、その時点で出す訪問の担当 (アカウントのある職員) へ知らせる.
 
-    1 回の登録で 1 人 1 通 (項目が複数でもまとめる)。reference は最初のやることで、
-    同じ人に 2 通目を作らない。**commit しない** (呼び出し側のトランザクションに乗せる)。
+    1 回の登録の中で 1 人 1 通 (項目が複数でもまとめる・担当の役が重なっても 1 通)。
+    reference は最初のやることで、同じ ``tasks`` でもう一度呼んだときだけ 2 通目を作らない。
+    登録をもう一度送ると別のやることになり通知も別に出るので、二度押しは画面側で防ぐ前提。
+    **commit しない** (呼び出し側のトランザクションに乗せる)。
     """
     if visit is None or not tasks or not staff:
         return 0
