@@ -14,7 +14,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createEvent, fireEvent, render, screen } from '@testing-library/react';
+import { act, createEvent, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── モック ──────────────────────────────────────────────────────────────────
@@ -484,6 +484,7 @@ import { ApiError } from '@/lib/api-client';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 import { CourseDayTablePanel } from '../CourseDayTablePanel';
+import { FEASIBILITY_FOCUS_EVENT } from '@/components/schedule/feasibility/FeasibilityBand';
 import { useUIStore } from '@/lib/stores/ui';
 
 // ─── fixtures ───────────────────────────────────────────────────────────────
@@ -1353,6 +1354,39 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
 
     fireEvent.click(screen.getByTestId('course-day-tab-week'));
     expect(screen.getByTestId('staff-week-board')).toBeInTheDocument();
+  });
+
+  it('(feas) 実現性の帯の行 → 職員・その日のタイムラインへ切り替え、そのバーを光らせる', () => {
+    setupHooks();
+    renderStaffTab();
+    expect(screen.getByTestId('staff-week-board')).toBeInTheDocument();
+
+    const fire = () => {
+      const ev = new CustomEvent(FEASIBILITY_FOCUS_EVENT, {
+        detail: { visitIds: ['v1'], day: MONDAY_ISO },
+        cancelable: true,
+      });
+      act(() => {
+        window.dispatchEvent(ev);
+      });
+      return ev;
+    };
+    // 職員・週のリスト → 盤面が引き受けて、月曜のタイムラインへ移る。
+    expect(fire().defaultPrevented).toBe(true);
+    expect(screen.getByTestId('staff-timeline-view')).toBeInTheDocument();
+    expect(screen.getByTestId('course-day-tab-0')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('tl-bar-v1')).toHaveClass('ring-error');
+    // すでに職員・その日のタイムライン → 帯にそのまま任せる (引き受けない)。
+    expect(fire().defaultPrevented).toBe(false);
+    // 週の外の日は引き受けない。
+    const outside = new CustomEvent(FEASIBILITY_FOCUS_EVENT, {
+      detail: { visitIds: ['v1'], day: '2000-01-03' },
+      cancelable: true,
+    });
+    act(() => {
+      window.dispatchEvent(outside);
+    });
+    expect(outside.defaultPrevented).toBe(false);
   });
 
   it('(d) 同期バーで選んだ訪問差分が盤面ゴースト (今ここ / こう変わる) になる', () => {

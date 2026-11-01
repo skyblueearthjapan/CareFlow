@@ -38,6 +38,10 @@ import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 import { CornerPushPin } from '@/components/ui/push-pin';
 import {
+  FeasibilityMark,
+  useFeasibilityMarkFor,
+} from '@/components/schedule/feasibility/FeasibilityMark';
+import {
   isDivergedFromMaster,
   masterDivergenceCardStyle,
   masterDivergenceTitle,
@@ -384,6 +388,8 @@ function VisitCard({
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
+  // 実現性の印 (管理者だけ・Provider の外では空)。早期 return より前に読む (hooks の規則)。
+  const feasMarks = useFeasibilityMarkFor(visit.id);
   const accActive = accompaniment?.active === true;
   const accSelected = accActive && accompaniment!.isVisitSelected(visit.id);
   const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(visit.id);
@@ -651,6 +657,16 @@ function VisitCard({
       {onDeleteVisit && height >= TL_SHOW_DELETE_PX && (
         <DeleteVisitButton visit={visit} onDeleteVisit={onDeleteVisit} />
       )}
+      {/* 実現性の印 (赤「！」/ 黄「△」)。右上の角に重ね、画鋲があればその左へ。
+          押しても pointerdown / click / キーをカードへ伝えない (ドラッグ・詳細を邪魔しない)。 */}
+      <FeasibilityMark
+        marks={feasMarks}
+        testId={`tl-feas-mark-${visit.id}`}
+        className={cn(
+          'absolute -top-1.5 z-[3]',
+          visit.movability === 'locked' ? 'right-[16px]' : '-right-1',
+        )}
+      />
     </div>
   );
 }
@@ -935,6 +951,8 @@ function PairMemberRowView({
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
+  // 実現性の印 (管理者だけ・Provider の外では空)。
+  const feasMarks = useFeasibilityMarkFor(v.id);
   const pal = genderPalette(v.patient_sex);
   const s = parseHM(v.start_time);
   const e = parseHM(v.end_time);
@@ -1100,6 +1118,15 @@ function PairMemberRowView({
       )}
       {/* G2: 訪問削除 (×)。ペア行は高さが小さいので常に出す (hover で可視化)。 */}
       {onDeleteVisit && <DeleteVisitButton visit={v} onDeleteVisit={onDeleteVisit} />}
+      {/* 実現性の印。右上に重ね、画鋲があればその左へ。 */}
+      <FeasibilityMark
+        marks={feasMarks}
+        testId={`tl-feas-mark-${v.id}`}
+        className={cn(
+          'absolute -top-1 z-[3]',
+          v.movability === 'locked' ? 'right-[16px]' : '-right-1',
+        )}
+      />
     </div>
   );
 }

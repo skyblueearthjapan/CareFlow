@@ -117,6 +117,8 @@ export function FeasibilityMark({
           onPointerDownCapture={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
+          // カード (role=button) の中に置いたとき、Enter / Space でカードのメニューが開かないように。
+          onKeyDown={(e) => e.stopPropagation()}
           className={cn(
             'pointer-events-auto inline-flex items-center gap-px rounded-full shadow-[0_0_0_2px_#fff] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
             dimmed && 'opacity-50',
@@ -142,6 +144,7 @@ export function FeasibilityMark({
         data-testid={testId ? `${testId}-reasons` : undefined}
         onClick={(e) => e.stopPropagation()}
         onPointerDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <ul className="space-y-2">
           {marks.map((m, i) => (

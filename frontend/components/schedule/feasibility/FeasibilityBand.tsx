@@ -107,6 +107,29 @@ export function focusVisitCard(visitIds: string[], testIdPrefixes: string[]): bo
   return false;
 }
 
+/**
+ * 一覧の行を押したときに、盤面の持ち主 (スケジュールの CourseDayTablePanel) へ知らせる窓の
+ * イベント。持ち主が「表示を切り替えて自分で移る」なら `preventDefault()` する。誰も
+ * 受け取らなければ、帯は今の画面からカードを探す (訪問モニターなど)。
+ */
+export const FEASIBILITY_FOCUS_EVENT = 'careflow:feasibility-focus';
+
+export interface FeasibilityFocusDetail {
+  visitIds: string[];
+  /** YYYY-MM-DD */
+  day: string;
+}
+
+/** 窓へ知らせる。持ち主が引き受けたら true。 */
+function requestFocusByOwner(detail: FeasibilityFocusDetail): boolean {
+  if (typeof window === 'undefined') return false;
+  const ev = new CustomEvent<FeasibilityFocusDetail>(FEASIBILITY_FOCUS_EVENT, {
+    detail,
+    cancelable: true,
+  });
+  return !window.dispatchEvent(ev);
+}
+
 export interface FeasibilityBandProps {
   /** 「この週」「この日」 */
   scopeLabel: string;
@@ -132,6 +155,7 @@ export function FeasibilityBand({
   const { hardCount, softCount, items } = data;
   if (hardCount + softCount === 0) return null;
   const onSelect = (it: FeasibilityAlertItem) => {
+    if (requestFocusByOwner({ visitIds: it.visitIds, day: it.day })) return;
     if (!focusVisitCard(it.visitIds, cardTestIdPrefixes)) toast.info(notFoundMessage);
   };
   return (

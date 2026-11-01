@@ -211,7 +211,8 @@ function SchedulePageInner() {
           2026-08-23: 上部を畳んだときは週切替 / 拠点フィルタも Panel のコンパクト行が担うため
           onWeekChange / onOfficeChange を渡す.
           実現性の印と帯 (設計 schedule-feasibility-alerts-design-2026-11-01・管理者だけ):
-          週の印を 1 回で取り、帯は週の上、印は週の時間軸のカードに出す. */}
+          週の印を 1 回で取り、帯は週の上、印は盤面のカード (職員の時間軸・週・コースの時間軸) に出す.
+          帯の行を押すと、盤面が職員・その日のタイムラインへ切り替えて、そのカードへ移る. */}
       <FeasibilityMarksProvider
         dateFrom={weekStartYmd}
         dateTo={weekEndYmd}
@@ -222,7 +223,7 @@ function SchedulePageInner() {
           scopeLabel="この週"
           className="lg:shrink-0"
           cardTestIdPrefixes={['wtl-visit-', 'staff-week-visit-', 'tl-visit-', 'tl-bar-']}
-          notFoundMessage="このカードは今の表示にありません。「週」の時間軸にすると、印の付いたカードが見られます"
+          notFoundMessage="このカードは今の表示にありません。職員・その日のタイムラインで見られます"
         />
         <CourseDayTablePanel
           weekStart={weekStart}

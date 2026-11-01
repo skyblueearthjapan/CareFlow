@@ -66,6 +66,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
+import {
+  FeasibilityMark,
+  useFeasibilityMarkFor,
+} from '@/components/schedule/feasibility/FeasibilityMark';
 
 // ─────────────────────────────────────────────────────────────────────────
 // 型
@@ -1632,6 +1636,8 @@ const Bar = React.memo(function Bar({
   onClick,
 }: BarProps) {
   const isVisit = item.kind === 'visit';
+  // 実現性の印 (管理者だけ・Provider の外では空)。イベントには出さない。
+  const feasMarks = useFeasibilityMarkFor(isVisit ? item.id : '');
   const cancelled = isVisit ? item.visit.status === 'cancelled' : item.event.cancelled_at != null;
   // 訪問単位でサービス内容を上書きしている印 (mig 0078)。自動判定 (区分 × 資格)
   // から外れている = 後で「なぜこの訪問だけ違うのか」を追えるようにする。
@@ -1676,7 +1682,7 @@ const Bar = React.memo(function Bar({
     .filter(Boolean)
     .join(' ');
 
-  return (
+  const bar = (
     <button
       type="button"
       data-testid={isVisit ? `tl-bar-${item.id}` : `tl-event-${item.id}`}
@@ -1743,6 +1749,31 @@ const Bar = React.memo(function Bar({
         ) : null}
       </span>
     </button>
+  );
+  if (feasMarks.length === 0) return bar;
+  // 印はバー (<button>・overflow-hidden) の中に入れられないため、同じ位置・幅の高さ 0 の
+  // 層を重ね、その右上に置く。層は押せないので、バーのクリック・ドラッグを邪魔しない
+  // (印そのものは押しても pointerdown / click をバーへ伝えない)。
+  return (
+    <>
+      {bar}
+      <div
+        className="pointer-events-none absolute z-[5]"
+        style={{
+          left: `${leftPct(startMin)}%`,
+          width: `${widthPct(durationMin)}%`,
+          top,
+          height: 0,
+        }}
+        data-testid={`tl-feas-layer-${item.id}`}
+      >
+        <FeasibilityMark
+          marks={feasMarks}
+          testId={`tl-feas-mark-${item.id}`}
+          className="absolute -right-1 -top-1.5"
+        />
+      </div>
+    </>
   );
 });
 

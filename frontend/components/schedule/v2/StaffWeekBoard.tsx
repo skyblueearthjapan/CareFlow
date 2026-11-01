@@ -58,6 +58,10 @@ import {
 import type { TimelineVisit } from './cockpit/StaffTimelineView';
 import { suggestionBadgeClass, suggestionBadgeView } from './cockpit/suggestionBadge';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
+import {
+  FeasibilityMark,
+  useFeasibilityMarksData,
+} from '@/components/schedule/feasibility/FeasibilityMark';
 import { cn } from '@/lib/utils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -347,6 +351,8 @@ export function StaffWeekBoard({
   countLimit = null,
   companionVisitsByCell,
 }: StaffWeekBoardProps) {
+  // 実現性の印 (管理者だけ・Provider の外では null)。訪問ごとの印はループの中で読む。
+  const feasData = useFeasibilityMarksData();
   /** 1 日だけを出すか (氏名の列を固定幅・件数は行の頭・コースはカードを横並び)。 */
   const isDay = onlyWeekday != null;
   /**
@@ -1200,6 +1206,15 @@ export function StaffWeekBoard({
                                             kind={displayKind}
                                             testId={`staff-week-visit-inactive-${v.id}`}
                                           />
+                                          {/* 実現性の印 (赤「！」/ 黄「△」)。押すと理由。
+                                              押しても行のメニュー・ドラッグへは伝えない。 */}
+                                          {feasData?.marks[v.id]?.length ? (
+                                            <FeasibilityMark
+                                              marks={feasData.marks[v.id]!}
+                                              testId={`staff-week-feas-mark-${v.id}`}
+                                              className="shrink-0 shadow-none"
+                                            />
+                                          ) : null}
                                         </li>
                                       );
                                       // 運転席: 行そのものが VisitActionMenu のトリガー。

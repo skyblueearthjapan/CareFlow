@@ -70,6 +70,11 @@ import {
   Wrench,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  FEASIBILITY_FOCUS_EVENT,
+  focusVisitCard,
+  type FeasibilityFocusDetail,
+} from '@/components/schedule/feasibility/FeasibilityBand';
 
 import { Rakusuke } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
@@ -6289,6 +6294,66 @@ export function CourseDayTablePanel({
     resolveCourseId: resolveAccompanimentCourseId,
     weekdayDateLabel,
   });
+
+  // ─── 実現性の帯の行 → 職員・その日のタイムラインのカードへ移る ─────────────
+  // (設計 schedule-feasibility-alerts-design-2026-11-01・PO 2026-11-01: 普段は職員の表示)。
+  // 帯 (page.tsx) は窓のイベントで知らせる。いまの表示でカードが見えるならそのまま帯に任せ、
+  // 見えないなら「職員・その日・タイムライン」へ切り替えてから、そのバーを光らせる。
+  const [feasFocus, setFeasFocus] = useState<{ visitIds: string[]; seq: number } | null>(null);
+  useEffect(() => {
+    const onFocus = (ev: Event) => {
+      const detail = (ev as CustomEvent<FeasibilityFocusDetail>).detail;
+      if (!detail || detail.visitIds.length === 0) return;
+      // 同行モード中は職員の表示へ移れない (切り替えボタンと同じ決まり)。
+      if (accompaniment.active) return;
+      const [y, m, d] = detail.day.split('-').map(Number);
+      if (!y || !m || !d) return;
+      const wd = Math.round(
+        (Date.UTC(y, m - 1, d) -
+          Date.UTC(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate())) /
+          86_400_000,
+      );
+      if (wd < 0 || wd > 5) return;
+      // すでに職員・その日のタイムラインを見ている → 帯がそのままバーを探す。
+      if (unit === 'staff' && selectedDay === wd && view === 'timeline') return;
+      // コースの表示で、印の付いたカードが今見えている → 帯がそのまま探す。
+      if (
+        unit === 'course' &&
+        detail.visitIds.some((id) =>
+          ['wtl-visit-', 'tl-visit-', 'tl-visit-linked-'].some(
+            (p) => document.querySelector(`[data-testid="${p}${id}"]`) != null,
+          ),
+        )
+      )
+        return;
+      ev.preventDefault();
+      setViewState((s) => ({ ...s, unit: 'staff', day: wd, dayView: 'timeline' }));
+      setFeasFocus((prev) => ({ visitIds: detail.visitIds, seq: (prev?.seq ?? 0) + 1 }));
+    };
+    window.addEventListener(FEASIBILITY_FOCUS_EVENT, onFocus);
+    return () => window.removeEventListener(FEASIBILITY_FOCUS_EVENT, onFocus);
+  }, [accompaniment.active, unit, selectedDay, view, weekStart]);
+  // 切り替えた後、バーが描かれるのを少し待ってから移る (見つからなければ一言だけ)。
+  useEffect(() => {
+    if (!feasFocus) return;
+    let tries = 0;
+    let timer: number | undefined;
+    const attempt = () => {
+      if (focusVisitCard(feasFocus.visitIds, ['tl-bar-'])) return;
+      tries += 1;
+      if (tries < 20) {
+        timer = window.setTimeout(attempt, 100);
+      } else {
+        toast.info(
+          'このカードは職員・その日のタイムラインに見当たりません（取消や非稼働を隠しているときは出ません）',
+        );
+      }
+    };
+    attempt();
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [feasFocus]);
 
   // ─── 同行で「2人目 (slot1)」を充足した複数名対応患者をプールから消す ─────
   //   週の全同行リンク (保存済みサーバデータ) を取得し、複数名対応患者のうち

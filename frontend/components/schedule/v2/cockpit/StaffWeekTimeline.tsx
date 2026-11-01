@@ -37,6 +37,10 @@ import {
   TL_COCKPIT_START_MIN,
 } from '@/lib/scheduling/timeline';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
+import {
+  TIER_LABEL,
+  useFeasibilityMarksData,
+} from '@/components/schedule/feasibility/FeasibilityMark';
 import { cn } from '@/lib/utils';
 
 import { buildStaffWeekTimelineCellId, SWT_VISIT_DND_MIME, UNASSIGNED_ROW_KEY } from '../courseDnd';
@@ -476,6 +480,8 @@ const SwtCell = React.memo(function SwtCell({
   onVisitClick,
 }: SwtCellProps) {
   const cellKey = staffDayCountKey(rowKey, wd);
+  // 実現性の印 (管理者だけ・Provider の外では null)。細い帯なので枠の色と title で出す。
+  const feasData = useFeasibilityMarksData();
   // レーン: 訪問と同行の帯を同じ並びに (重ならないように)。
   const items = [
     ...cellVisits.flatMap((v) => {
@@ -610,6 +616,21 @@ const SwtCell = React.memo(function SwtCell({
           }
           const pal = genderPalette(v.patient_sex);
           const grabbable = canEdit && !past;
+          const feasMarks = feasData?.marks[v.id] ?? [];
+          const feasTier =
+            feasMarks.length === 0
+              ? null
+              : feasMarks.some((m) => m.tier === 'hard')
+                ? ('hard' as const)
+                : ('soft' as const);
+          const baseTitle = grabbable ? label : `${label}（今日より前の日は動かせません）`;
+          const title =
+            feasMarks.length === 0
+              ? baseTitle
+              : [
+                  baseTitle,
+                  ...feasMarks.map((m) => `${TIER_LABEL[m.tier]}（${m.kind}）：${m.reason}`),
+                ].join('\n');
           return (
             <div
               key={it.id}
@@ -620,6 +641,8 @@ const SwtCell = React.memo(function SwtCell({
                 'absolute rounded-sm border border-l-[3px]',
                 grabbable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
                 draggingVisitId === v.id && 'opacity-40',
+                feasTier === 'hard' && 'ring-2 ring-error',
+                feasTier === 'soft' && 'ring-2 ring-warning',
               )}
               style={{
                 ...style,
@@ -627,7 +650,8 @@ const SwtCell = React.memo(function SwtCell({
                 borderColor: pal.ln,
                 borderLeftColor: pal.bar,
               }}
-              title={grabbable ? label : `${label}（今日より前の日は動かせません）`}
+              title={title}
+              data-feas-tier={feasTier ?? undefined}
               draggable={grabbable}
               aria-disabled={grabbable ? undefined : true}
               onDragStart={
