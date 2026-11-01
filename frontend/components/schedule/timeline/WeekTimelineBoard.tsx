@@ -24,6 +24,7 @@ import { CornerPushPin } from '@/components/ui/push-pin';
 import {
   FeasibilityMark,
   useFeasibilityMarkFor,
+  useFeasibilityMarksData,
 } from '@/components/schedule/feasibility/FeasibilityMark';
 import {
   isDivergedFromMaster,
@@ -290,12 +291,12 @@ function WeekCard({
       )}
       {/* 常時表示 (モード外): 個別同行バッジ 👥新人名 (§7.2)。
           右上へ配置 (患者名との被り解消・PO要望)。名は左寄せ truncate なので右上は空く。
-          赤い画鋲 (完全固定) が刺さったカードは左へ寄せる。 */}
+          赤い画鋲 (完全固定)・実現性の印があるカードは、その分だけ左へ寄せる。 */}
       {accBadge && (
         <span
           className={cn(
             'absolute top-0.5 z-[2] max-w-[70%] truncate rounded-full bg-info-bg px-1 text-[8px] font-bold text-info',
-            isLocked ? 'right-[15px]' : 'right-0.5',
+            wtlBadgeRightClass(isLocked, feasMarks.length > 0),
           )}
           data-testid={`wtl-accompaniment-badge-${v.id}`}
           title={`同行: ${accBadge}`}
@@ -383,23 +384,26 @@ function WeekCard({
         <FeasibilityMark
           marks={feasMarks}
           testId={`wtl-feas-mark-${v.id}`}
-          className="absolute -right-1 -top-1.5"
+          className={cn('absolute -top-1.5', wtlMarkRightClass(isLocked))}
         />
       </div>
     </>
   );
 }
 
-/** 同住所ペアの中の 1 件の印 (ペアの箱は <div> なので、行の右上に重ねられる)。 */
-function WeekPairRowMark({ visitId }: { visitId: string }) {
-  const marks = useFeasibilityMarkFor(visitId);
-  return (
-    <FeasibilityMark
-      marks={marks}
-      testId={`wtl-feas-mark-${visitId}`}
-      className="absolute -right-1 -top-1 z-[3]"
-    />
-  );
+/**
+ * 実現性の印の右からの位置。赤い画鋲 (CornerPushPin・右上の角から約 10px 内側まで) が
+ * 刺さったカードでは、画鋲の左へ置いて重ならないようにする。
+ */
+function wtlMarkRightClass(locked: boolean): string {
+  return locked ? 'right-[12px]' : '-right-1';
+}
+
+/** 同行の札の右からの位置 (画鋲・実現性の印と重ならないよう、あるものの分だけ左へ)。 */
+function wtlBadgeRightClass(locked: boolean, marked: boolean): string {
+  if (locked && marked) return 'right-[30px]';
+  if (locked || marked) return 'right-[15px]';
+  return 'right-0.5';
 }
 
 /** 描画単位: 単独訪問 or 同住所・同時刻2名の90分占有ペア (日ビューと同じ規則)。 */
@@ -466,6 +470,8 @@ function WeekPairBox({
   accompaniment?: AccompanimentBinding;
 }) {
   const accActive = accompaniment?.active === true;
+  // 実現性の印 (管理者だけ・Provider の外では null)。行ごとの印はループの中で読む。
+  const feasData = useFeasibilityMarksData();
   const cs = Math.max(item.startMin, TL_DAY_START_MIN);
   const ce = Math.min(item.endMin, TL_DAY_END_MIN);
   if (ce <= cs) return null;
@@ -506,6 +512,9 @@ function WeekPairBox({
             accompaniment && !accompaniment.active
               ? accompaniment.visitBadgeName(v.id).join('・') || null
               : null;
+          const isLocked = v.movability === 'locked';
+          const feasMarks = feasData?.marks[v.id] ?? [];
+          const marked = feasMarks.length > 0;
           const onCardClick = accActive
             ? accInCourse || !accompaniment!.isVisitArmed
               ? undefined
@@ -551,7 +560,7 @@ function WeekPairBox({
                   <span
                     className={cn(
                       'absolute top-0.5 z-[2] max-w-[46px] truncate rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info',
-                      v.movability === 'locked' ? 'right-[15px]' : 'right-0.5',
+                      wtlBadgeRightClass(isLocked, marked),
                     )}
                     data-testid={`wtl-accompaniment-badge-${v.id}`}
                     title={`同行: ${accBadge}`}
@@ -559,15 +568,22 @@ function WeekPairBox({
                     👥{lanes === 1 ? accBadge : ''}
                   </span>
                 )}
-                {v.movability === 'locked' && <CornerPushPin className="h-4 w-4" />}
-                {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。
+                {isLocked && <CornerPushPin className="h-4 w-4" />}
+                {/* 1行目: 右端の時刻が右上バッジ・実現性の印と重ならないよう、右パディングで逃がす。
                   等分 (lanes ≥ 2) では余白も時刻も捨てて氏名を 2 行で読ませる (§2-B1)。 */}
                 <span
                   className={cn(
                     'flex min-w-0 items-center gap-1',
                     lanes === 1 &&
-                      accBadge &&
-                      (v.movability === 'locked' ? 'pr-[64px]' : 'pr-[50px]'),
+                      (accBadge
+                        ? isLocked
+                          ? marked
+                            ? 'pr-[80px]'
+                            : 'pr-[64px]'
+                          : marked
+                            ? 'pr-[64px]'
+                            : 'pr-[50px]'
+                        : marked && (isLocked ? 'pr-[28px]' : 'pr-[12px]')),
                   )}
                 >
                   <span
@@ -611,7 +627,12 @@ function WeekPairBox({
                   </span>
                 )}
               </button>
-              <WeekPairRowMark visitId={v.id} />
+              {/* 印はボタンの外 (行の右上) に重ねる。画鋲があればその左へ。 */}
+              <FeasibilityMark
+                marks={feasMarks}
+                testId={`wtl-feas-mark-${v.id}`}
+                className={cn('absolute -top-1 z-[3]', wtlMarkRightClass(isLocked))}
+              />
             </div>
           );
         })}

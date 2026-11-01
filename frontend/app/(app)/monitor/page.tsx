@@ -479,13 +479,18 @@ export default function MonitorPage() {
         {/* この日に確かめたい予定 (実現性の帯・管理者だけ・無ければ出ない。設計
             schedule-feasibility-alerts-design-2026-11-01)。印の Provider は帯とタイムラインで
             同じ query キーを使うので、取得は 1 回にまとまる。 */}
-        <FeasibilityMarksProvider dateFrom={date} dateTo={date} enabled={canReview}>
+        <FeasibilityMarksProvider
+          dateFrom={date}
+          dateTo={date}
+          officeId={officeId}
+          enabled={canReview}
+        >
           <FeasibilityBand
             scopeLabel="この日"
             showDay={false}
             className="mx-5 mb-2"
             cardTestIdPrefixes={['monitor-bar-plan-']}
-            notFoundMessage="このカードは今の表示にありません。絞り込み（拠点・異常のみ）を外してください"
+            notFoundMessage="このカードは今の表示にありません。絞り込み（異常のみ・未訪問のみ）を外してください"
           />
         </FeasibilityMarksProvider>
 
@@ -509,7 +514,12 @@ export default function MonitorPage() {
                 モニターの取得に失敗しました。再読み込みしてください。
               </div>
             ) : (
-              <FeasibilityMarksProvider dateFrom={date} dateTo={date} enabled={canReview}>
+              <FeasibilityMarksProvider
+                dateFrom={date}
+                dateTo={date}
+                officeId={officeId}
+                enabled={canReview}
+              >
                 <MonitorTimeline
                   rows={filteredRows}
                   selectedRowKey={selectedRowKey}

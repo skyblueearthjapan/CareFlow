@@ -22,6 +22,7 @@ from app.services.scheduling.feasibility_alerts import (
     fingerprint,
     reason_text,
     record_import_alerts,
+    record_import_alerts_read,
 )
 from app.services.scheduling.feasibility_check import (
     KIND_IMPOSSIBLE,
@@ -374,3 +375,21 @@ async def test_import_alerts_failure_does_not_raise(db, test_user, monkeypatch):
     # before が None (取り込み前の判定に失敗) のときも同じ
     res2 = await record_import_alerts(db, week_start=week_start, job=job, before=None)
     assert res2["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_import_alerts_read_shape_failure_does_not_raise(db, test_user, monkeypatch):
+    """応答の形に合わない結果でも例外を外へ出さず、ok=False の応答にする。"""
+    import app.services.scheduling.feasibility_alerts as fa
+
+    async def bad(*_a, **_k):
+        return {"ok": True, "items": [{"tier": "hard"}]}  # 必須の欄が足りない
+
+    week_start = date(2026, 8, 31)
+    job = await _new_job(db, week_start)
+    good = await record_import_alerts_read(db, week_start=week_start, job=job, before=set())
+    assert good.ok is True
+
+    monkeypatch.setattr(fa, "record_import_alerts", bad)
+    res = await record_import_alerts_read(db, week_start=week_start, job=job, before=set())
+    assert res.ok is False and "できませんでした" in (res.message or "")

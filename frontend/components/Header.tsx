@@ -75,6 +75,19 @@ export function leaveSheetHrefFromNotice(
   return `/admin/leave?month=${year}-${mm}&date=${year}-${mm}-${dd}`;
 }
 
+/** カイポケ取り込み後に新しく出た無理・注意の通知 (backend feasibility_alerts.py)。 */
+const FEASIBILITY_NOTIFICATION_TYPE = 'feasibility_after_import';
+
+/**
+ * 通知の `data.week_start` の週を、スケジュールの「職員・週・時間軸」で開く URL。
+ * 週が読めないときは、その表示で今週を開く。
+ */
+export function scheduleWeekHrefFromNotice(n: { data?: Record<string, unknown> | null }): string {
+  const ws = typeof n.data?.week_start === 'string' ? n.data.week_start : null;
+  const base = '/schedule?unit=staff&day=week&view=timeline';
+  return ws && /^\d{4}-\d{2}-\d{2}$/.test(ws) ? `${base}&week=${ws}` : base;
+}
+
 interface HeaderProps {
   title?: string;
   onToggleSidebar: () => void;
@@ -201,6 +214,19 @@ function NotificationButton() {
                       className="mt-1 inline-flex items-center px-2 text-xs font-medium text-brand-primary underline-offset-2 hover:underline"
                     >
                       休み・勤務表で開く
+                    </Link>
+                  )}
+                  {isAdmin && n.type === FEASIBILITY_NOTIFICATION_TYPE && (
+                    <Link
+                      href={scheduleWeekHrefFromNotice(n)}
+                      onClick={() => {
+                        if (n.read_at == null) markRead.mutate(n.id);
+                        setOpen(false);
+                      }}
+                      data-testid={`notification-open-week-${n.id}`}
+                      className="mt-1 inline-flex items-center px-2 text-xs font-medium text-brand-primary underline-offset-2 hover:underline"
+                    >
+                      スケジュールでこの週を開く
                     </Link>
                   )}
                 </li>

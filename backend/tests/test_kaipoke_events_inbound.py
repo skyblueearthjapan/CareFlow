@@ -757,6 +757,102 @@ async def test_apply_reports_visit_conflicts(client, db, stub_kaipoke) -> None:
     assert result["conflicts"][0]["patientName"] == "利用者AG　冬子"
 
 
+@pytest.mark.asyncio
+async def test_apply_reports_new_feasibility_alerts(client, db, stub_kaipoke) -> None:
+    """イベントの取り込みも前後を判定し、新しく出た無理を結果・記録・ベルに残す (dry_run は判定しない)。
+
+    🔒 (blocking) のイベントがカイポケで時刻を変えられ、訪問と重なった想定
+    (update は blocking を保持する)。
+    """
+    from datetime import datetime
+
+    from app.models.notification import Notification
+
+    seeded = await _seed_staff(db)
+    admin = await _make_admin(db)
+    await _seed_visit(db, seeded["a"].id, d=WEEK_START, start_h=10, end_h=11)
+    ext = f"690499216:4601519:{WEEK_START.isoformat()}"
+    db.add(
+        StaffEvent(
+            staff_id=seeded["a"].id,
+            event_type="event",
+            title="ケア会議",
+            starts_at=datetime.combine(WEEK_START, time(8, 0)),
+            ends_at=datetime.combine(WEEK_START, time(9, 0)),
+            source="kaipoke",
+            external_id=ext,
+            blocking=True,
+        )
+    )
+    await db.commit()
+    changes = [
+        {
+            "action": "update",
+            "externalId": ext,
+            "staffId": str(seeded["a"].id),
+            "date": WEEK_START.isoformat(),
+            "start": "09:30",
+            "end": "10:30",
+            "title": "ケア会議",
+        }
+    ]
+
+    dry = await _apply(client, admin, changes, dry_run=True)
+    assert dry["feasibility"] is None
+
+    result = await _apply(client, admin, changes, dry_run=False)
+    assert result["updated"] == 1
+    feas = result["feasibility"]
+    assert feas["ok"] is True
+    assert feas["hardCount"] == 1
+    assert feas["items"][0]["kind"] == "重なり"
+    assert all(it["day"] == WEEK_START.isoformat() for it in feas["items"])
+
+    job = await db.get(KaipokeJob, UUID(result["jobId"]))
+    assert job is not None
+    assert job.result_summary["feasibility"]["hard_count"] == feas["hardCount"]
+    bells = (
+        await db.scalars(
+            select(Notification).where(Notification.type == "feasibility_after_import")
+        )
+    ).all()
+    assert len(bells) == 1 and bells[0].reference_id == job.id
+    assert bells[0].data["week_start"] == WEEK_START.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_apply_feasibility_failure_does_not_block(client, db, stub_kaipoke, monkeypatch):
+    """判定が失敗してもイベントの取り込みは終わり、結果に「確認できませんでした」を出す。"""
+    import app.services.scheduling.feasibility_alerts as fa
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fa, "_week_alerts", boom)
+    seeded = await _seed_staff(db)
+    admin = await _make_admin(db)
+    result = await _apply(
+        client,
+        admin,
+        [
+            {
+                "action": "add",
+                "externalId": f"690499216:4601519:{WEEK_START.isoformat()}",
+                "staffId": str(seeded["a"].id),
+                "date": WEEK_START.isoformat(),
+                "start": "09:30",
+                "end": "10:30",
+                "title": "ケア会議",
+            }
+        ],
+        dry_run=False,
+    )
+    assert result["added"] == 1
+    assert result["feasibility"]["ok"] is False
+    assert "できませんでした" in result["feasibility"]["message"]
+    assert len(await _kaipoke_rows(db)) == 1
+
+
 # --- 7. 汎用 reconcile との競合 (週空間C1・2026-08-21 の 409 障害) -------------
 
 

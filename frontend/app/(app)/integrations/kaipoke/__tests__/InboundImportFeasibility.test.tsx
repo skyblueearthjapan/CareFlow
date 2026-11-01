@@ -194,3 +194,82 @@ describe('InboundControls — 取り込み後の確認', () => {
     expect(toastSuccess).toHaveBeenCalledWith(expect.not.stringContaining('新しく出た'));
   });
 });
+
+describe('InboundControls — イベントの取り込み後の確認', () => {
+  it('訪問とイベントで新しく出た分を合わせて出す', async () => {
+    applySmartMutateAsync.mockResolvedValue({
+      diff: null,
+      replace: { wiped: 1, inserted: 2, skipped: [] },
+      feasibility: {
+        ok: true,
+        hardCount: 1,
+        softCount: 0,
+        unassignedCount: 0,
+        items: [ITEM],
+        message: null,
+      },
+    });
+    applyEventsMutateAsync.mockResolvedValue({
+      added: 1,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      feasibility: {
+        ok: true,
+        hardCount: 0,
+        softCount: 1,
+        unassignedCount: 0,
+        items: [{ ...ITEM, tier: 'soft', kind: 'バッファ不足', patientName: '丙山 三郎' }],
+        message: null,
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await fetchThenApply(user);
+
+    await waitFor(() => expect(screen.getByTestId('import-feasibility-soft')).toBeInTheDocument());
+    expect(screen.getByTestId('import-feasibility-hard')).toHaveTextContent('1');
+    expect(screen.getByTestId('import-feasibility-soft')).toHaveTextContent('1');
+    expect(screen.getByTestId('import-feasibility-item-1')).toHaveTextContent('丙山 三郎様');
+    expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining('新しく出た 無理 1・注意 1'));
+  });
+
+  it('イベントの確認だけできなかったときは、訪問の分を出してその旨を添える', async () => {
+    applySmartMutateAsync.mockResolvedValue({
+      diff: null,
+      replace: { wiped: 1, inserted: 2, skipped: [] },
+      feasibility: {
+        ok: true,
+        hardCount: 1,
+        softCount: 0,
+        unassignedCount: 0,
+        items: [ITEM],
+        message: null,
+      },
+    });
+    applyEventsMutateAsync.mockResolvedValue({
+      added: 1,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      feasibility: {
+        ok: false,
+        hardCount: 0,
+        softCount: 0,
+        unassignedCount: 0,
+        items: [],
+        message: '取り込み後の確認ができませんでした（取り込みは終わっています）',
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await fetchThenApply(user);
+
+    await waitFor(() => expect(screen.getByTestId('import-feasibility')).toBeInTheDocument());
+    expect(screen.getByTestId('import-feasibility')).toHaveAttribute('data-state', 'found');
+    expect(screen.getByTestId('import-feasibility-hard')).toHaveTextContent('1');
+    expect(screen.getByTestId('import-feasibility-partial')).toHaveTextContent('できませんでした');
+  });
+});

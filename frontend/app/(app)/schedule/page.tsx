@@ -63,9 +63,28 @@ export default function SchedulePage() {
   // useSearchParams を使うため Suspense で包む (打刻履歴 /records と同じ)。
   return (
     <Suspense fallback={null}>
-      <SchedulePageInner />
+      <SchedulePageKeyed />
     </Suspense>
   );
+}
+
+/**
+ * ?week=YYYY-MM-DD (通知のベルから週を開くとき) が変わったら、画面を開き直して
+ * 週と表示 (unit/day/view) を URL から読み直す。スケジュールを開いたままベルを押したとき用。
+ */
+function SchedulePageKeyed() {
+  const searchParams = useSearchParams();
+  return <SchedulePageInner key={searchParams?.get('week') ?? ''} />;
+}
+
+/** ?week=YYYY-MM-DD → その週の月曜 (読めなければ今週)。 */
+function initialWeekStart(week: string | null | undefined): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(week ?? '');
+  if (m) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (!Number.isNaN(d.getTime())) return toWeekStart(d);
+  }
+  return toWeekStart(new Date());
 }
 
 function SchedulePageInner() {
@@ -91,7 +110,9 @@ function SchedulePageInner() {
   // 週 state.
   // ドラッグ中のエッジ自動スクロール (全 DnD 面共通・PO 報告 2026-09-02)。
   useDragAutoScroll();
-  const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
+  const [weekStart, setWeekStart] = useState<Date>(() =>
+    initialWeekStart(searchParams?.get('week')),
+  );
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
   // らく助エージェントへの画面の文脈(見ている週)
   usePublishScreenContext({ screen: 'schedule', iso_year: isoYear, iso_week: isoWeek });

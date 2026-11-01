@@ -27,7 +27,10 @@ export function feasibilityDayLabel(ymd: string): string {
   return `${m}/${d}（${wd}）`;
 }
 
-/** 指摘の一覧 (帯と取り込み結果で共通)。`onSelect` があれば行を押せる。 */
+/**
+ * 指摘の一覧 (帯と取り込み結果で共通)。`onSelect` があれば訪問の行を押せる。
+ * イベントの指摘 (訪問 ID が無い) は移る先のカードが無いので、押せない行にする。
+ */
 export function FeasibilityAlertList({
   items,
   onSelect,
@@ -63,7 +66,7 @@ export function FeasibilityAlertList({
         const key = `${it.day}-${it.at}-${it.kind}-${i}`;
         return (
           <li key={key}>
-            {onSelect ? (
+            {onSelect && it.visitIds.length > 0 ? (
               <button
                 type="button"
                 onClick={() => onSelect(it)}

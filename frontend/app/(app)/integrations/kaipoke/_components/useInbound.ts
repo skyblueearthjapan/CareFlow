@@ -102,6 +102,28 @@ export function field(obj: unknown, key: string): string {
   return '';
 }
 
+/**
+ * 訪問とイベントの取り込みで新しく出た無理・注意を 1 つにまとめる。
+ * 片方だけ確認できなかったときは、確認できた方の一覧を出し、できなかった旨を message に残す。
+ */
+export function mergeImportFeasibility(
+  a: ImportFeasibility | null,
+  b: ImportFeasibility | null,
+): ImportFeasibility | null {
+  if (!a) return b;
+  if (!b) return a;
+  const oks = [a, b].filter((f) => f.ok);
+  if (oks.length === 0) return { ...a, message: a.message ?? b.message };
+  return {
+    ok: true,
+    hardCount: oks.reduce((n, f) => n + f.hardCount, 0),
+    softCount: oks.reduce((n, f) => n + f.softCount, 0),
+    unassignedCount: Math.max(a.unassignedCount, b.unassignedCount),
+    items: oks.flatMap((f) => f.items),
+    message: oks.length < 2 ? ([a, b].find((f) => !f.ok)?.message ?? null) : null,
+  };
+}
+
 // ──────────────────────────── フック ────────────────────────────
 
 /**
@@ -409,6 +431,9 @@ export function useInbound({
           dryRun: false,
           changes: eventsPlan.changes,
         });
+        // イベントの取り込みで新しく出た無理・注意 (訪問の分と合わせて出す)。
+        feasibility = mergeImportFeasibility(feasibility, res.feasibility ?? null);
+        setImportFeasibility(feasibility);
         parts.push(
           `イベント: 追加 ${res.added} / 更新 ${res.updated} / 削除 ${res.deleted}` +
             (res.absorbed > 0 ? ` / 引き継ぎ ${res.absorbed}` : '') +

@@ -21,6 +21,13 @@ export function ImportFeasibilityPanel({ feasibility }: { feasibility: ImportFea
         件あります（重なり・移動の確認はしていません）。
       </p>
     ) : null;
+  // 訪問・イベントの片方だけ確認できなかったとき (ok のまま message が付く)。
+  const partialNote =
+    feasibility.ok && feasibility.message ? (
+      <p className="mt-1 text-xs text-warning-strong" data-testid="import-feasibility-partial">
+        {feasibility.message}
+      </p>
+    ) : null;
   if (!feasibility.ok) {
     return (
       <div
@@ -40,6 +47,7 @@ export function ImportFeasibilityPanel({ feasibility }: { feasibility: ImportFea
         data-state="none"
       >
         取り込みで新しく出た無理・注意はありません。
+        {partialNote}
         {unassignedNote}
       </div>
     );
@@ -73,7 +81,12 @@ export function ImportFeasibilityPanel({ feasibility }: { feasibility: ImportFea
       <div className="max-h-64 overflow-auto border-t border-border-subtle bg-bg-base">
         <FeasibilityAlertList items={feasibility.items} testIdPrefix="import-feasibility-item" />
       </div>
-      {unassignedNote ? <div className="px-3 pb-2">{unassignedNote}</div> : null}
+      {partialNote || unassignedNote ? (
+        <div className="px-3 pb-2">
+          {partialNote}
+          {unassignedNote}
+        </div>
+      ) : null}
     </div>
   );
 }

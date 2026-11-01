@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { FEASIBILITY_MARKS_KEY } from '@/lib/queries/feasibility';
 import { SMART_PREVIEW_DETACHED } from '@/lib/kaipokeOps';
 import type {
   InboundSnapshotList,
@@ -756,6 +757,9 @@ export function useApplyEventsInbound() {
       void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
       // イベント帯 (スケジュール画面) を最新化する。
       void qc.invalidateQueries({ queryKey: ['staff', 'events'] });
+      // 実現性の印と、取り込み後の確認のベルを読み直す。
+      void qc.invalidateQueries({ queryKey: FEASIBILITY_MARKS_KEY });
+      void qc.invalidateQueries({ queryKey: ['notifications'] });
     },
   });
 }
@@ -1014,6 +1018,9 @@ export function useApplySmartInbound() {
       void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
       void qc.invalidateQueries({ queryKey: ['visits'] });
       void qc.invalidateQueries({ queryKey: ['board'] });
+      // 実現性の印と、取り込み後の確認のベルを読み直す。
+      void qc.invalidateQueries({ queryKey: FEASIBILITY_MARKS_KEY });
+      void qc.invalidateQueries({ queryKey: ['notifications'] });
     },
   });
 }

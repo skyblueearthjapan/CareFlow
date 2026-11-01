@@ -343,6 +343,30 @@ async def record_import_alerts(
     return result
 
 
+async def record_import_alerts_read(
+    db: AsyncSession,
+    *,
+    week_start: date,
+    job: Any,
+    before: set[str] | None,
+) -> Any:
+    """``record_import_alerts`` の結果を応答の形 (``ImportFeasibilityRead``) にして返す。
+
+    応答の形に合わないときも例外を外へ出さない (取り込みを止めない・設計 §3-1)。
+    """
+    from app.schemas.v2.feasibility import ImportFeasibilityRead
+
+    result = await record_import_alerts(db, week_start=week_start, job=job, before=before)
+    try:
+        return ImportFeasibilityRead.model_validate(result)
+    except Exception:  # noqa: BLE001 - 応答の形の失敗で取り込みを止めない
+        logger.exception("feasibility read failed (week_start=%s)", week_start)
+        return ImportFeasibilityRead(
+            ok=False,
+            message="取り込み後の確認ができませんでした（取り込みは終わっています）",
+        )
+
+
 __all__ = [
     "ALERT_TIERS",
     "IMPORT_NOTIFY_TYPE",
@@ -354,4 +378,5 @@ __all__ = [
     "fingerprint",
     "reason_text",
     "record_import_alerts",
+    "record_import_alerts_read",
 ]

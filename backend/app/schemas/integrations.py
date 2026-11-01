@@ -717,6 +717,9 @@ class EventsInboundApplyResult(BaseModel):
     results: list[EventsInboundApplyItemRead] = Field(default_factory=list)
     # 取り込んだイベントと訪問の時間重なり (案A・実適用時のみ算出)
     conflicts: list[EventsInboundConflictRead] = Field(default_factory=list)
+    # 取り込みで新しく出た無理・注意 (設計 schedule-feasibility-alerts-design-2026-11-01)。
+    # dry_run では判定しないので None。
+    feasibility: ImportFeasibilityRead | None = None
 
 
 # --- 置換取り込み (週白紙化→カイポケ全挿入・2026-07-26 PO確定) --------------

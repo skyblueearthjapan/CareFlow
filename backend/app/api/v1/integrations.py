@@ -4206,6 +4206,14 @@ async def events_inbound_apply(
         for c in payload.changes
     ]
 
+    feasibility_before: set[str] | None = None
+    if not payload.dry_run:
+        # 訪問の取り込みと同じく、取り込み前の実現性の指摘を覚えて前後を比べる
+        # (設計 schedule-feasibility-alerts-design-2026-11-01 §3-1)。失敗しても止めない。
+        from app.services.scheduling.feasibility_alerts import collect_import_baseline
+
+        feasibility_before = await collect_import_baseline(db, payload.week_start)
+
     now = datetime.now(UTC)
     summary = await apply_events_changes(
         db,
@@ -4216,6 +4224,7 @@ async def events_inbound_apply(
     )
 
     job_id: UUID | None = None
+    feasibility_read: ImportFeasibilityRead | None = None
     if payload.dry_run:
         # dry-run は mutate しない (apply_events_changes も no-write)。明示 rollback。
         await db.rollback()
@@ -4274,6 +4283,12 @@ async def events_inbound_apply(
                     f"失敗{summary.failed}件があります。カイポケ連携画面で内訳を確認してください。"
                 ),
             )
+        # 取り込み後の実現性の確認 (訪問の取り込みと同じ・例外は中で握る)。
+        from app.services.scheduling.feasibility_alerts import record_import_alerts_read
+
+        feasibility_read = await record_import_alerts_read(
+            db, week_start=payload.week_start, job=job, before=feasibility_before
+        )
         await _commit_or_409(db)
         job_id = job.id
 
@@ -4315,6 +4330,7 @@ async def events_inbound_apply(
             for r in summary.results
         ],
         conflicts=[_conflict_to_read(c) for c in conflicts],
+        feasibility=feasibility_read,
     )
 
 
@@ -5919,12 +5935,10 @@ async def smart_inbound_apply(
             )
         # 取り込み後の実現性の確認: 新しく出た赤・黄を記録し、ベルで 1 行知らせる。
         # 例外は中で握る (取り込みを止めない)。job.flush 済みなので取り込みの書込は判定に見える。
-        from app.services.scheduling.feasibility_alerts import record_import_alerts
+        from app.services.scheduling.feasibility_alerts import record_import_alerts_read
 
-        feasibility_read = ImportFeasibilityRead.model_validate(
-            await record_import_alerts(
-                db, week_start=week_start, job=job, before=feasibility_before
-            )
+        feasibility_read = await record_import_alerts_read(
+            db, week_start=week_start, job=job, before=feasibility_before
         )
         await _commit_or_409(db)
         job_id = job.id

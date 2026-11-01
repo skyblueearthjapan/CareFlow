@@ -563,6 +563,32 @@ export const EventsInboundApplyItemSchema = z.object({
 });
 export type EventsInboundApplyItem = z.infer<typeof EventsInboundApplyItemSchema>;
 
+/**
+ * 取り込みで新しく出た無理・注意 (設計 schedule-feasibility-alerts-design-2026-11-01)。
+ * 訪問 (smart-inbound-apply)・イベント (events-inbound-apply) の応答で共通。
+ */
+export const ImportFeasibilitySchema = z.object({
+  ok: z.boolean(),
+  hardCount: z.number().default(0),
+  softCount: z.number().default(0),
+  unassignedCount: z.number().default(0),
+  items: z
+    .array(
+      z.object({
+        tier: z.enum(['hard', 'soft']),
+        kind: z.string(),
+        day: z.string(),
+        at: z.string(),
+        staff: z.string(),
+        patientName: z.string(),
+        reason: z.string(),
+        visitIds: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
+  message: z.string().nullable().default(null),
+});
+
 export const EventsInboundApplyResultSchema = z.object({
   jobId: z.string().uuid().nullable(),
   dryRun: z.boolean(),
@@ -574,6 +600,8 @@ export const EventsInboundApplyResultSchema = z.object({
   failed: z.number().int().default(0),
   results: z.array(EventsInboundApplyItemSchema).default([]),
   conflicts: z.array(EventsInboundConflictSchema).default([]),
+  /** 取り込みで新しく出た無理・注意。dry_run・古い BE では無い。 */
+  feasibility: ImportFeasibilitySchema.nullable().optional(),
 });
 export type EventsInboundApplyResult = z.infer<typeof EventsInboundApplyResultSchema>;
 
@@ -700,30 +728,7 @@ export const SmartInboundApplyResultSchema = z.object({
    * 取り込みで新しく出た無理・注意 (設計 schedule-feasibility-alerts-design-2026-11-01)。
    * dry_run・古い BE では無い。
    */
-  feasibility: z
-    .object({
-      ok: z.boolean(),
-      hardCount: z.number().default(0),
-      softCount: z.number().default(0),
-      unassignedCount: z.number().default(0),
-      items: z
-        .array(
-          z.object({
-            tier: z.enum(['hard', 'soft']),
-            kind: z.string(),
-            day: z.string(),
-            at: z.string(),
-            staff: z.string(),
-            patientName: z.string(),
-            reason: z.string(),
-            visitIds: z.array(z.string()).default([]),
-          }),
-        )
-        .default([]),
-      message: z.string().nullable().default(null),
-    })
-    .nullable()
-    .optional(),
+  feasibility: ImportFeasibilitySchema.nullable().optional(),
 });
 export type SmartInboundApplyResult = z.infer<typeof SmartInboundApplyResultSchema>;
 

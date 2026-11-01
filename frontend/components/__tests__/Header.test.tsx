@@ -30,7 +30,7 @@ vi.mock('@/lib/queries/notifications', () => ({
 }));
 
 import { useSession } from 'next-auth/react';
-import { Header, leaveSheetHrefFromNotice } from '../Header';
+import { Header, leaveSheetHrefFromNotice, scheduleWeekHrefFromNotice } from '../Header';
 
 function setRole(role: 'admin' | 'manager' | 'staff') {
   (useSession as Mock).mockReturnValue({
@@ -209,5 +209,22 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
         },
       }),
     ).toBe('/admin/leave?month=2026-11&date=2026-11-12&staff=s-1');
+  });
+});
+
+describe('scheduleWeekHrefFromNotice (取り込み後の確認のベル)', () => {
+  it('data.week_start の週を、職員・週・時間軸で開く', () => {
+    expect(scheduleWeekHrefFromNotice({ data: { week_start: '2026-11-02' } })).toBe(
+      '/schedule?unit=staff&day=week&view=timeline&week=2026-11-02',
+    );
+  });
+
+  it('週が読めないときは、その表示で今週を開く', () => {
+    expect(scheduleWeekHrefFromNotice({ data: null })).toBe(
+      '/schedule?unit=staff&day=week&view=timeline',
+    );
+    expect(scheduleWeekHrefFromNotice({ data: { week_start: 'bad' } })).toBe(
+      '/schedule?unit=staff&day=week&view=timeline',
+    );
   });
 });

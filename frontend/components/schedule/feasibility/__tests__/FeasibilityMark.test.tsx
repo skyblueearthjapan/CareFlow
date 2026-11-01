@@ -293,3 +293,59 @@ describe('ImportFeasibilityPanel (取り込み結果の画面)', () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe('イベントの指摘と、画鋲との位置', () => {
+  it('イベントの指摘 (訪問 ID なし) は押せない行にし、「今の表示にありません」を出さない', () => {
+    marksState.data = response({
+      hardCount: 1,
+      softCount: 0,
+      items: [
+        {
+          tier: 'hard',
+          kind: '重なり',
+          day: '2026-11-02',
+          at: '10:00',
+          staff: '看護X',
+          patientName: 'ケア会議',
+          reason: '前の予定と 30 分重なっています。',
+          visitIds: [],
+        },
+      ],
+      marks: {},
+    });
+    render(
+      <FeasibilityMarksProvider dateFrom="2026-11-02" dateTo="2026-11-08" enabled>
+        <FeasibilityBand scopeLabel="この週" cardTestIdPrefixes={['wtl-visit-']} />
+      </FeasibilityMarksProvider>,
+    );
+    fireEvent.click(screen.getByTestId('feasibility-band-toggle'));
+    const row = screen.getByTestId('feasibility-band-item-0');
+    expect(row.tagName).not.toBe('BUTTON');
+    expect(row).toHaveTextContent('ケア会議');
+    expect(row).not.toHaveTextContent('ケア会議様');
+    fireEvent.click(row);
+    expect(toastInfo).not.toHaveBeenCalled();
+  });
+
+  it('赤い画鋲 (完全固定) のカードでは、印を画鋲の左へ置く', () => {
+    const visits: WeekOverviewVisit[] = [
+      wv({
+        id: 'a',
+        weekday: 0,
+        start_time: '10:40:00',
+        end_time: '11:15:00',
+        movability: 'locked',
+      }),
+      wv({ id: 'pa', weekday: 1, same_address_key: 'addr1' }),
+      wv({ id: 'pb', weekday: 1, same_address_key: 'addr1', movability: 'locked' }),
+    ];
+    render(
+      <FeasibilityMarksProvider dateFrom="2026-11-02" dateTo="2026-11-08" enabled>
+        <WeekTimelineBoard options={[{ templateId: 't1', label: '稲毛A' }]} visits={visits} />
+      </FeasibilityMarksProvider>,
+    );
+    expect(screen.getByTestId('wtl-feas-mark-a')).toHaveClass('right-[12px]');
+    expect(screen.getByTestId('wtl-feas-mark-a')).not.toHaveClass('-right-1');
+    expect(screen.getByTestId('wtl-feas-mark-pb')).toHaveClass('right-[12px]');
+  });
+});

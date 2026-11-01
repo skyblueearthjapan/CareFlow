@@ -5,7 +5,8 @@
  * GET /api/v1/schedule/v2/feasibility-report?iso_year&iso_week[&office_id]
  * 応答には印刷用の自己完結 HTML (`html`) が同梱される。FE はそれを新しいタブに書き出す。
  */
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
@@ -131,25 +132,38 @@ export function feasibilityMarksPath(p: FeasibilityMarksParams): string {
   return `/api/v1/schedule/v2/feasibility-marks?${qs.toString()}`;
 }
 
+/** 印の query キーの頭 (取り込みの後などに、これで読み直す)。 */
+export const FEASIBILITY_MARKS_KEY = ['schedule', 'feasibility-marks'] as const;
+
 /**
  * 期間の印をまとめて 1 回で取る (スケジュール = 1 週・訪問モニター = 1 日)。
  * キーは ['schedule', …] の下に置く: 予定を動かしたときの一括失効 (invalidateScheduleAll)
- * で一緒に読み直される。盤面の個別の操作でも古くなりすぎないよう 60 秒ごとにも読み直す。
+ * で一緒に読み直される。予定を変える操作 (react-query の mutation) が成功したときも
+ * 読み直す (個別の操作は ['visits'] などだけを失効させることが多いため)。
+ * ほかの人の変更に追いつくため、5 分ごとにも読み直す。
  */
 export function useFeasibilityMarks(p: FeasibilityMarksParams) {
   const { data: session, status } = useSession();
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
   const enabled = (p.enabled ?? true) && status === 'authenticated';
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!enabled) return undefined;
+    return qc.getMutationCache().subscribe((event) => {
+      if (event.type === 'updated' && event.action.type === 'success') {
+        void qc.invalidateQueries({ queryKey: FEASIBILITY_MARKS_KEY });
+      }
+    });
+  }, [qc, enabled]);
   return useQuery<FeasibilityMarksResponse, Error>({
     queryKey: [
-      'schedule',
-      'feasibility-marks',
+      ...FEASIBILITY_MARKS_KEY,
       { dateFrom: p.dateFrom, dateTo: p.dateTo, officeId: p.officeId ?? null },
     ],
     enabled,
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: 5 * 60_000,
     refetchIntervalInBackground: false,
     queryFn: () =>
       fetcher<FeasibilityMarksResponse>(feasibilityMarksPath(p), { accessToken, refreshToken }),

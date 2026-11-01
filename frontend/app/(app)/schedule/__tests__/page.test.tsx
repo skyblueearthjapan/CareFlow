@@ -138,4 +138,19 @@ describe('/schedule — 上部折りたたみ', () => {
     spy.mockRestore();
     window.history.replaceState(null, '', '/');
   });
+
+  it('?week=YYYY-MM-DD (ベルから開く) の週を、職員・週・時間軸で開く', () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/schedule?unit=staff&day=week&view=timeline&week=2026-11-04',
+    );
+    render(<SchedulePage />);
+    const props = panelProps[panelProps.length - 1]!;
+    expect(props.initialViewState).toEqual({ unit: 'staff', day: 'week', view: 'timeline' });
+    const ws = props.weekStart as Date;
+    // 2026-11-04 (水) の週の月曜 = 11/2
+    expect([ws.getFullYear(), ws.getMonth() + 1, ws.getDate()]).toEqual([2026, 11, 2]);
+    window.history.replaceState(null, '', '/');
+  });
 });
