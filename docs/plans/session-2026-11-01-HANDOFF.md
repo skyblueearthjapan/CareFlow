@@ -29,8 +29,10 @@ PO の決定（11/1）：**らく助の QR 実績（後から合わせた時刻�
 - **develop へ push・本番反映済み（PO 了承・11/1）**：本番 7f5957fd・alembic 0102→0103。pg_dump `/opt/carelink/backups/pre-deploy-patient-tasks-20261101-0143.sql.gz`（UTC）。build → `run --rm --no-deps backend alembic upgrade head` → `up -d --no-deps --force-recreate backend frontend`。確認：公開の API 200・/api/v1/task-item-types 401（ログインが要る）・両コンテナ healthy・入れ替え後の 5xx/Traceback 0・PO の PC で「やること」ページと訪問モニターの凡例を確認。patient_tasks・task_item_types は 0 件（項目は事務所が画面で足す）。訪問週の片付けも同じ反映で本番に入った。
 - 残り：項目の初期登録（事務所）・実際に 1 件付けてスマホで見る確認（PO と）・現場は Ctrl+Shift+R。
 
-## 4. 月の実績タブ（設計の案）
-`docs/plans/kaipoke-actual-write-design-2026-11-01.md`（11/1 の画面確認・1 件の試し・夜に流す運用）、モック `docs/mockups/monthly-actual-sync-mock.html`。今日の精査の決まりを画面にする。
+## 4. 月の実績タブ（本番反映済み・11/1）
+訪問記録の 3 つ目のタブ。backend `5598d0e9`（mig 0104・判定 `services/monthly_actual/judge.py`・API `/api/v1/monthly-actual/*`・Excel 4 シート）、画面 `07093c23`。レビュー 4 回：重大 1（組み方の早い者勝ちで別の訪問の行を書き換える → 差の小さい順＋件数違い・組めない行・順番の入れ替わり・コードの違いは全部「人が見る」）を `f5f0d67e`・`b71cc545`・`5cc58b3b` で直した。本番は試しを通った行だけ送る・今月と先は送らない・要目視は流し直さない・予約は 3 時間で取り下げ・送った記録はジョブに残す。10 月の実データには同じ日に同じ方の 2 件以上の訪問が 0 件で、11/1 の手作業の反映は影響なし。
+- 本番：5cc58b3b・alembic 0103→0104・pg_dump `pre-deploy-monthly-actual-20261101-0331.sql.gz`。予約の cron を追加：`*/10 * * * * /usr/local/bin/carelink-monthly-actual-scheduled.sh`（コンテナ内から localhost:8000 の `/monthly-actual/scheduled/run` を叩く・処理は本体の backend のプロセスで動く）。
+- 10 月を開いた結果：一致 642・反映する 1（P095 10/27 シング様：らく助もカイポケも 11:47〜12:03 の 16 分 → 決まりで 12:22 まで。手作業の精査では時刻が同じで「一致」にしていて漏れていた）・人が見る 2（川名さん 10/15 木村様・熊澤さん 10/28 伊藤様）。
 
 ## 5. 残り
 - 松岡さんの回答（重なり 2 件・ご姉妹の人数）を受けてカイポケを合わせる。
