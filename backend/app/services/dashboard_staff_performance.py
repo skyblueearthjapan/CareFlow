@@ -17,6 +17,17 @@
   会議・研修など (休み以外のイベントのうち、最初の訪問開始〜最後の訪問終了に重なる分) /
   合間 (訪問と訪問の間 − 訪問間の移動 − 会議・研修など。0 未満は 0)。
 * チーム平均 = 表示中の拠点・期間で訪問のあった人の平均。
+
+距離の見張り (``docs/reports/agent/2026-11-距離の分析.html``・PO 了承 2026-11-01):
+
+* 1 日の距離の目安の線 = ``DAY_KM_TARGET`` (目安) / ``DAY_KM_CAUTION`` (注意) /
+  ``DAY_KM_HEAVY`` (多い)。8〜10 月の 3 か月分から出した仮の値。設定の表に列を足すには
+  migration が要るため、いまはここで 1 か所に持ち、応答の ``distance_lines`` で画面へ渡す。
+* いちばん遠いお宅 = その日に回ったお宅のうち、拠点からの直線距離が最大のもの (km)。
+* 拠点の外の利用者の割合 = 利用者の主の拠点が職員の拠点と違う訪問の割合 (どちらかの
+  拠点が未登録の訪問は分母から外す)。
+* 1 km 未満の移動の割合 = 訪問と訪問の間の区間 (拠点との行き帰りは除く・座標のある区間)
+  のうち 1 km 未満のものの割合。
 """
 
 from __future__ import annotations
@@ -45,6 +56,7 @@ from app.models.patient import Patient
 from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.schemas.dashboard import (
+    DistanceLines,
     PerformanceMetrics,
     PerformanceOffice,
     PerformanceWeek,
@@ -68,7 +80,34 @@ _MANAGER_ROLES = frozenset({"manager", "admin"})
 #: 週間シフトで休みの曜日 (staff_shifts.is_on = False) の扱い = 終日の休み。
 _SHIFT_OFF_KIND = "off"
 
+#: 1 日の距離 (直線・拠点の行き帰りを含む) の目安の線 (km)。3 か月分の仮の値。
+DAY_KM_TARGET = 22.0
+DAY_KM_CAUTION = 28.0
+DAY_KM_HEAVY = 36.0
+#: 「近所の連続」とみなす訪問間の区間の長さ (km 未満)。
+SHORT_LEG_KM = 1.0
+
 LatLng = tuple[float, float]
+
+
+def distance_lines() -> DistanceLines:
+    """画面に渡す 1 日の距離の目安の線。"""
+    return DistanceLines(target_km=DAY_KM_TARGET, caution_km=DAY_KM_CAUTION, heavy_km=DAY_KM_HEAVY)
+
+
+def day_km_level(km: float) -> str:
+    """1 日の距離 → 線の判定 (線ちょうどは超えていない側)。
+
+    ``"heavy"`` (多いの線を超えた) / ``"caution"`` (注意の線を超えた) /
+    ``"over_target"`` (目安を超えた) / ``"normal"``。
+    """
+    if km > DAY_KM_HEAVY:
+        return "heavy"
+    if km > DAY_KM_CAUTION:
+        return "caution"
+    if km > DAY_KM_TARGET:
+        return "over_target"
+    return "normal"
 
 
 def _leave_block_minutes(kind: str | None) -> tuple[int, int] | None:
@@ -134,6 +173,8 @@ class DayVisit:
     visit_id: UUID | None = None
     arrival_at: datetime | None = None
     departure_at: datetime | None = None
+    #: 利用者の主の拠点 (``patients.primary_office_id``)。拠点の外の割合に使う。
+    patient_office_id: UUID | None = None
 
 
 @dataclass
@@ -153,6 +194,14 @@ class DaySummary:
     meeting_min: int
     idle_min: float
     no_show: int = 0
+    #: 拠点からいちばん遠いお宅までの直線距離 (拠点か座標が無ければ None)。
+    farthest_km: float | None = None
+    #: 訪問と訪問の間の区間のうち座標のあるものの数と、そのうち 1 km 未満の数。
+    between_legs: int = 0
+    short_legs: int = 0
+    #: 利用者と職員の拠点が両方わかる訪問の数と、そのうち拠点が違う数。
+    office_known: int = 0
+    outside: int = 0
 
 
 def summarize_day(
@@ -161,6 +210,8 @@ def summarize_day(
     office_point: LatLng | None,
     events: list[tuple[int, int]],
     speed_kmh: float,
+    *,
+    office_id: UUID | None = None,
 ) -> DaySummary:
     """1 人 × 1 日の訪問から、件数・距離・1 日の内訳を出す (``visits`` は 1 件以上)。"""
     vs = sorted(visits, key=lambda v: (v.start, v.end))
@@ -168,6 +219,8 @@ def summarize_day(
     points: list[LatLng | None] = [office_point, *(v.point for v in vs), office_point]
     km = 0.0
     between_km = 0.0
+    between_legs = 0
+    short_legs = 0
     skipped = 0
     last_leg = len(points) - 2
     for i in range(len(points) - 1):
@@ -179,6 +232,22 @@ def summarize_day(
         km += d
         if 0 < i < last_leg:
             between_km += d  # 訪問と訪問の間の区間 (拠点との行き帰りは合間に入らない)
+            between_legs += 1
+            if d < SHORT_LEG_KM:
+                short_legs += 1
+    # いちばん遠いお宅 (拠点からの直線)。
+    farthest: float | None = None
+    if office_point is not None:
+        farthest = max(
+            (
+                haversine_km(office_point[0], office_point[1], v.point[0], v.point[1])
+                for v in vs
+                if v.point is not None
+            ),
+            default=None,
+        )
+    # 拠点の外の利用者: 職員と利用者の拠点が両方わかる訪問だけを数える。
+    known = [v for v in vs if v.patient_office_id is not None] if office_id is not None else []
     # 訪問と訪問の間 (重なる訪問は重ねて 1 本の帯として扱う)。
     gaps: list[tuple[int, int]] = []
     run_end = vs[0].end
@@ -207,6 +276,11 @@ def summarize_day(
         meeting_min=meeting,
         idle_min=idle,
         no_show=sum(1 for v in vs if v.no_show),
+        farthest_km=farthest,
+        between_legs=between_legs,
+        short_legs=short_legs,
+        office_known=len(known),
+        outside=sum(1 for v in known if v.patient_office_id != office_id),
     )
 
 
@@ -228,6 +302,8 @@ def metrics_of(days: list[DaySummary]) -> PerformanceMetrics:
     patients: set[UUID] = set()
     for d in days:
         patients |= d.patients
+    farthest = [d.farthest_km for d in days if d.farthest_km is not None]
+    levels = [day_km_level(d.km) for d in days]
     return PerformanceMetrics(
         days=n,
         visits=visits,
@@ -248,6 +324,14 @@ def metrics_of(days: list[DaySummary]) -> PerformanceMetrics:
         idle_min_per_day=_r(_div(sum(d.idle_min for d in days), n)),
         meeting_min_total=sum(d.meeting_min for d in days),
         no_show_count=sum(d.no_show for d in days),
+        days_over_caution=sum(1 for lv in levels if lv in ("caution", "heavy")),
+        days_over_heavy=sum(1 for lv in levels if lv == "heavy"),
+        farthest_km_avg=_r(_div(sum(farthest), len(farthest)), 2),
+        farthest_km_max=_r(max(farthest, default=None), 2),
+        outside_ratio=_r(_div(sum(d.outside for d in days), sum(d.office_known for d in days)), 3),
+        short_leg_ratio=_r(
+            _div(sum(d.short_legs for d in days), sum(d.between_legs for d in days)), 3
+        ),
     )
 
 
@@ -260,11 +344,15 @@ _MEAN_FIELDS = (
     ("travel_min_per_day", 1),
     ("meeting_min_per_day", 1),
     ("idle_min_per_day", 1),
+    ("farthest_km_avg", 2),
+    ("outside_ratio", 3),
+    ("short_leg_ratio", 3),
 )
 
 
 def team_metrics_of(people: list[PerformanceMetrics], days: list[DaySummary]) -> PerformanceMetrics:
-    """チーム平均 = 訪問のあった人の平均 (§3)。
+    """チーム平均 =訪問のあった人の平均 (§3)。いちばん遠いお宅の最大と、線を超えた日数は
+    全員の日から出す (最大・合計)。
 
     件数・日数などの数は合計。実績の平均だけは、1 人ずつの平均 (5 件未満は出ない) を
     並べると記録の多い人に偏らないため、全員の揃った訪問を合わせて 5 件以上のとき出す。
@@ -332,7 +420,14 @@ class StaffDays:
         office = self.office_of(sid)
         office_point = _point(office.lat, office.lng) if office is not None else None
         return [
-            summarize_day(d, vs, office_point, self.events_by_day.get((sid, d), []), self.speed_kmh)
+            summarize_day(
+                d,
+                vs,
+                office_point,
+                self.events_by_day.get((sid, d), []),
+                self.speed_kmh,
+                office_id=office.id if office is not None else None,
+            )
             for d, vs in sorted(self.by_staff_day.get(sid, {}).items())
         ]
 
@@ -386,6 +481,7 @@ async def load_staff_days(
                 Visit.mentor_staff_id,
                 Patient.lat,
                 Patient.lng,
+                Patient.primary_office_id.label("patient_office_id"),
             )
             .join(Patient, Patient.id == Visit.patient_id)
             .where(
@@ -556,6 +652,7 @@ async def load_staff_days(
                 visit_id=r.id,
                 arrival_at=a.arrival.at if a is not None and a.arrival is not None else None,
                 departure_at=a.departure.at if a is not None and a.departure is not None else None,
+                patient_office_id=r.patient_office_id,
             )
         )
 
@@ -633,6 +730,7 @@ async def build_staff_performance(
         office_id=office_id,
         travel_speed_kmh=speed,
         min_actual_samples=MIN_ACTUAL_SAMPLES,
+        distance_lines=distance_lines(),
         weeks=[PerformanceWeek(start=ws, end=we) for ws, we in weeks],
         offices=[
             PerformanceOffice(id=o.id, name=o.name, short_label=office_short(o.short_label, o.name))
@@ -647,12 +745,17 @@ async def build_staff_performance(
 
 
 __all__ = [
+    "DAY_KM_CAUTION",
+    "DAY_KM_HEAVY",
+    "DAY_KM_TARGET",
     "MAX_PERIOD_DAYS",
     "MIN_ACTUAL_SAMPLES",
     "DayVisit",
     "DaySummary",
     "StaffDays",
     "build_staff_performance",
+    "day_km_level",
+    "distance_lines",
     "is_leave_event",
     "load_staff_days",
     "metrics_of",

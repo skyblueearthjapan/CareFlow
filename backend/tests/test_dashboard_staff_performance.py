@@ -26,7 +26,18 @@ from app.models.office import Office
 from app.models.staff import StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_time_adjustment import VisitTimeAdjustment
-from app.services.dashboard_staff_performance import is_leave_event, week_ranges
+from app.services.dashboard_staff_performance import (
+    DAY_KM_CAUTION,
+    DAY_KM_HEAVY,
+    DAY_KM_TARGET,
+    DaySummary,
+    DayVisit,
+    day_km_level,
+    is_leave_event,
+    metrics_of,
+    summarize_day,
+    week_ranges,
+)
 from app.utils.geo import haversine_km
 
 MON = date(2026, 9, 7)  # 月曜
@@ -703,3 +714,118 @@ async def test_no_show_count_uses_no_show_checkin(client, db) -> None:
     assert (m["visits"], m["no_show_count"]) == (3, 1)
     assert _row(body, a)["weeks"][0]["no_show_count"] == 1
     assert body["team"]["period"]["no_show_count"] == 1
+
+
+# ---------- 距離の見張り (docs/reports/agent/2026-11-距離の分析.html) --------
+
+
+def test_day_km_level_lines() -> None:
+    """線ちょうどは超えていない側。22 / 28 / 36 km。"""
+    assert (DAY_KM_TARGET, DAY_KM_CAUTION, DAY_KM_HEAVY) == (22.0, 28.0, 36.0)
+    assert day_km_level(0.0) == "normal"
+    assert day_km_level(22.0) == "normal"
+    assert day_km_level(22.1) == "over_target"
+    assert day_km_level(28.0) == "over_target"
+    assert day_km_level(28.1) == "caution"
+    assert day_km_level(36.0) == "caution"
+    assert day_km_level(36.1) == "heavy"
+
+
+def _dv(minute: int, ll, office_id=None) -> DayVisit:
+    return DayVisit(
+        start=minute,
+        end=minute + 30,
+        patient_id=uuid.uuid4(),
+        point=ll,
+        patient_office_id=office_id,
+    )
+
+
+def test_summarize_day_farthest_short_legs_and_outside() -> None:
+    home, other = uuid.uuid4(), uuid.uuid4()
+    near_a = (35.620, 140.100)
+    near_b = (35.625, 140.100)  # near_a から約 0.56 km
+    far = (35.680, 140.100)  # 拠点から約 8.9 km
+    visits = [
+        _dv(540, near_a, home),
+        _dv(600, near_b, home),
+        _dv(660, far, other),
+        _dv(720, None, None),  # 座標・拠点なし
+    ]
+    d = summarize_day(MON, visits, OFFICE_LL, [], 20.0, office_id=home)
+    assert d.farthest_km == pytest.approx(haversine_km(*OFFICE_LL, *far))
+    # 訪問間: a→b (短い)・b→far (長い)・far→(座標なし) は飛ばす。
+    assert (d.between_legs, d.short_legs) == (2, 1)
+    # 拠点がわかる 3 件のうち 1 件が拠点の外。
+    assert (d.office_known, d.outside) == (3, 1)
+
+    # 拠点の座標・職員の拠点が無ければ、遠いお宅と拠点の外は出さない。
+    d2 = summarize_day(MON, visits, None, [], 20.0)
+    assert d2.farthest_km is None
+    assert (d2.office_known, d2.outside) == (0, 0)
+
+
+def test_metrics_of_distance_watch() -> None:
+    def day(km: float, farthest: float | None, **kw) -> DaySummary:
+        return DaySummary(
+            day=MON,
+            visits=5,
+            patients=set(),
+            plan_min=150,
+            actual_sum=0,
+            actual_n=0,
+            arrival_only=0,
+            km=km,
+            skipped_legs=0,
+            travel_min=0.0,
+            meeting_min=0,
+            idle_min=0.0,
+            farthest_km=farthest,
+            **kw,
+        )
+
+    days = [
+        day(20.0, 5.0, between_legs=4, short_legs=1, office_known=5, outside=0),
+        day(30.0, 7.0, between_legs=4, short_legs=0, office_known=5, outside=2),
+        day(40.0, 9.0, between_legs=4, short_legs=3, office_known=0, outside=0),
+        day(28.0, None),
+    ]
+    m = metrics_of(days)
+    assert (m.days_over_caution, m.days_over_heavy) == (2, 1)
+    assert m.farthest_km_avg == pytest.approx(7.0)
+    assert m.farthest_km_max == pytest.approx(9.0)
+    assert m.outside_ratio == pytest.approx(0.2)  # 2 / 10
+    assert m.short_leg_ratio == pytest.approx(0.333)  # 4 / 12
+    empty = metrics_of([])
+    assert (empty.farthest_km_avg, empty.outside_ratio, empty.short_leg_ratio) == (None,) * 3
+
+
+@pytest.mark.asyncio
+async def test_distance_watch_in_response(client, db) -> None:
+    """応答に線と 3 項目が入る。拠点の外 = 利用者の主の拠点が職員の拠点と違う訪問。"""
+    office = await _office(db, "拠点A")
+    other = await _office(db, "拠点B", ll=(35.70, 140.20))
+    a = await _staff(db, "Aさん", office)
+    p1 = await _patient(db, "PDW-1", P1_LL)
+    p2 = await _patient(db, "PDW-2", P2_LL)
+    p3 = await _patient(db, "PDW-3", P1_LL)  # 拠点が未登録 → 分母から外す
+    p1.primary_office_id = office.id
+    p2.primary_office_id = other.id
+    await db.commit()
+    await _visit(db, p1, MON, "09:00", "09:30", staff=a)
+    await _visit(db, p2, MON, "10:00", "10:30", staff=a)
+    await _visit(db, p3, MON, "11:00", "11:30", staff=a)
+
+    body = await _get(client, await _admin(db), MON, MON)
+    assert body["distance_lines"] == {"target_km": 22.0, "caution_km": 28.0, "heavy_km": 36.0}
+    m = _row(body, a)["period"]
+    assert m["outside_ratio"] == pytest.approx(0.5)
+    # P2→P3(=P1 と同じ場所) は約 2.7 km、P1→P2 も同じ → 1 km 未満はなし。
+    assert m["short_leg_ratio"] == 0.0
+    far = round(max(haversine_km(*OFFICE_LL, *P1_LL), haversine_km(*OFFICE_LL, *P2_LL)), 2)
+    assert m["farthest_km_avg"] == pytest.approx(far)
+    assert m["farthest_km_max"] == pytest.approx(far)
+    assert (m["days_over_caution"], m["days_over_heavy"]) == (0, 0)
+    team = body["team"]["period"]
+    assert team["outside_ratio"] == pytest.approx(0.5)
+    assert team["farthest_km_max"] == pytest.approx(far)

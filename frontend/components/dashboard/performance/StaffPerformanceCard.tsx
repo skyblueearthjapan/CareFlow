@@ -7,7 +7,12 @@
 import * as React from 'react';
 
 import { diff1, monthDay, r0, r1 } from '@/lib/dashboard-period';
-import type { PerformanceMetrics, StaffPerformanceRow } from '@/lib/schemas/dashboard';
+import type {
+  DistanceLines,
+  PerformanceMetrics,
+  StaffPerformanceRow,
+} from '@/lib/schemas/dashboard';
+import { cn } from '@/lib/utils';
 
 import { PERF_COLORS } from './colors';
 
@@ -38,9 +43,52 @@ export function actualText(m: PerformanceMetrics, minSamples: number): string {
   return '実績 —（QR の記録がありません）';
 }
 
-function Tile({ k, v, unit, d }: { k: string; v: string; unit: string; d: string }) {
+export type KmLevel = 'normal' | 'over_target' | 'caution' | 'heavy';
+
+/** 1 日の距離 → 線の判定 (backend の day_km_level と同じ・線ちょうどは超えていない側)。 */
+export function kmLevel(km: number | null | undefined, lines: DistanceLines): KmLevel {
+  if (km == null) return 'normal';
+  if (km > lines.heavy_km) return 'heavy';
+  if (km > lines.caution_km) return 'caution';
+  if (km > lines.target_km) return 'over_target';
+  return 'normal';
+}
+
+/** 線の判定の枠と文字の色 (注意 = 橙・多い = 赤)。 */
+export const KM_LEVEL_CLASS: Record<KmLevel, string> = {
+  normal: 'border-border-default',
+  over_target: 'border-border-default',
+  caution: 'border-border-warning bg-warning-bg text-warning-strong',
+  heavy: 'border-border-error bg-error-bg text-error',
+};
+
+/** 割合 (0〜1) → 「12%」。null は「—」。 */
+export function pct(ratio: number | null | undefined): string {
+  return ratio == null ? '—' : `${Math.round(ratio * 100)}%`;
+}
+
+/** 距離の見張りの 3 項目の一言 (遠いお宅・拠点の外・1 km 未満)。 */
+export function distanceWatchText(m: PerformanceMetrics): string {
+  return `遠いお宅 平均 ${r1(m.farthest_km_avg)} km（最大 ${r1(m.farthest_km_max)}）・拠点の外 ${pct(
+    m.outside_ratio,
+  )}・1 km 未満の移動 ${pct(m.short_leg_ratio)}`;
+}
+
+function Tile({
+  k,
+  v,
+  unit,
+  d,
+  className,
+}: {
+  k: string;
+  v: string;
+  unit: string;
+  d: string;
+  className?: string;
+}) {
   return (
-    <div className="rounded-md border border-border-default px-2.5 py-2">
+    <div className={cn('rounded-md border border-border-default px-2.5 py-2', className)}>
       <div className="text-[11.5px] text-text-secondary">{k}</div>
       <div className="text-[22px] font-bold leading-tight tnum text-text-primary">
         {v}
@@ -89,6 +137,7 @@ export interface StaffPerformanceCardProps {
   team: PerformanceMetrics;
   weekStarts: string[];
   minActualSamples: number;
+  distanceLines: DistanceLines;
   onOpen: (staffId: string) => void;
 }
 
@@ -97,12 +146,14 @@ export function StaffPerformanceCard({
   team,
   weekStarts,
   minActualSamples,
+  distanceLines,
   onOpen,
 }: StaffPerformanceCardProps) {
   const m = row.period;
   const labels = weekStarts.map(monthDay);
   const perDayDiff = diff1(m.per_day, team.per_day);
   const kmDiff = diff1(m.km_per_day, team.km_per_day);
+  const level = kmLevel(m.km_per_day, distanceLines);
   return (
     // カード全体を押せるように、見出しのボタンを枠いっぱいに広げる (article の中に
     // 見出し・表を置くため、ボタンで全体を包まない = HTML として正しい形)。
@@ -155,8 +206,23 @@ export function StaffPerformanceCard({
           v={r1(m.km_per_day)}
           unit="km/日"
           d={`平均 ${r1(team.km_per_day)}${kmDiff ? `（${kmDiff}）` : ''}・${r1(m.km_per_visit)} km/件`}
+          className={KM_LEVEL_CLASS[level]}
         />
       </div>
+      <p className="mb-2 text-xs tnum text-text-secondary" data-testid="perf-distance-watch">
+        <span
+          className={cn(
+            m.days_over_caution > 0 && 'font-bold text-warning-strong',
+            m.days_over_heavy > 0 && 'text-error',
+          )}
+        >
+          {distanceLines.caution_km} km 超え {m.days_over_caution} 日
+          {m.days_over_heavy > 0
+            ? `（うち ${distanceLines.heavy_km} km 超え ${m.days_over_heavy} 日）`
+            : ''}
+        </span>
+        ・{distanceWatchText(m)}
+      </p>
       <div className="mb-0.5 text-[11.5px] text-text-secondary">週ごとの 1 日あたり件数</div>
       <MiniBars weeks={row.weeks} labels={labels} />
       <div className="mt-1 flex gap-1">

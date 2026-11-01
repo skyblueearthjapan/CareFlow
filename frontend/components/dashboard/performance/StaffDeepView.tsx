@@ -12,7 +12,7 @@ import type { PerformanceMetrics, StaffPerformanceResponse } from '@/lib/schemas
 import { cn } from '@/lib/utils';
 
 import { PERF_COLORS } from './colors';
-import { Tag, actualText, roleTags } from './StaffPerformanceCard';
+import { KM_LEVEL_CLASS, Tag, actualText, kmLevel, pct, roleTags } from './StaffPerformanceCard';
 import { WeeklyLineChart } from './WeeklyLineChart';
 
 const SELF = { key: 'self', name: 'この人', color: PERF_COLORS.self };
@@ -74,6 +74,12 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
   const team = data.team.period;
   const max = Math.max(1, ...[m, team].map((x) => PARTS.reduce((t, p) => t + (x[p.key] ?? 0), 0)));
   const speed = data.travel_speed_kmh;
+  const lines = data.distance_lines;
+  const kmRefLines = [
+    { y: lines.target_km, label: `目安 ${lines.target_km} km`, color: PERF_COLORS.lineTarget },
+    { y: lines.caution_km, label: `注意 ${lines.caution_km} km`, color: PERF_COLORS.lineCaution },
+    { y: lines.heavy_km, label: `多い ${lines.heavy_km} km`, color: PERF_COLORS.lineHeavy },
+  ];
 
   return (
     <div className="space-y-3" data-testid="perf-deep-view">
@@ -146,10 +152,11 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
         />
         <WeeklyLineChart
           title="1 日あたりの移動距離"
-          note="拠点からの行き帰りを含む直線距離"
+          note="拠点からの行き帰りを含む直線距離。点線は 1 日の目安の線"
           unit="km"
           rows={rows((x) => x.km_per_day)}
           series={[SELF, TEAM]}
+          refLines={kmRefLines}
         />
         <WeeklyLineChart
           title="1 日あたりの訪問の合間"
@@ -194,6 +201,63 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
         ) : null}
       </Card>
 
+      <Card className="space-y-2 px-4 py-3" data-testid="perf-distance">
+        <h4 className="text-sm font-bold text-text-primary">移動距離の見張り</h4>
+        <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
+          {[
+            {
+              k: `${lines.caution_km} km を超えた日`,
+              v: `${m.days_over_caution} 日`,
+              d:
+                m.days_over_heavy > 0
+                  ? `うち ${lines.heavy_km} km 超え ${m.days_over_heavy} 日`
+                  : `${lines.heavy_km} km 超えはなし`,
+              cls: KM_LEVEL_CLASS[
+                m.days_over_heavy > 0 ? 'heavy' : m.days_over_caution > 0 ? 'caution' : 'normal'
+              ],
+            },
+            {
+              k: '1 件あたり',
+              v: `${r1(m.km_per_visit)} km`,
+              d: `1 日 ${r1(m.km_per_day)} km（チーム平均 ${r1(team.km_per_day)}）`,
+              cls: KM_LEVEL_CLASS[kmLevel(m.km_per_day, lines)],
+            },
+            {
+              k: 'いちばん遠いお宅',
+              v: `${r1(m.farthest_km_avg)} km`,
+              d: `日の平均・最大 ${r1(m.farthest_km_max)} km（チーム平均 ${r1(team.farthest_km_avg)}）`,
+              cls: KM_LEVEL_CLASS.normal,
+            },
+            {
+              k: '拠点の外の利用者',
+              v: pct(m.outside_ratio),
+              d: `チーム平均 ${pct(team.outside_ratio)}`,
+              cls: KM_LEVEL_CLASS.normal,
+            },
+            {
+              k: '1 km 未満の移動',
+              v: pct(m.short_leg_ratio),
+              d: `チーム平均 ${pct(team.short_leg_ratio)}`,
+              cls: KM_LEVEL_CLASS.normal,
+            },
+          ].map((t) => (
+            <div key={t.k} className={cn('rounded-md border px-2.5 py-2', t.cls)}>
+              <div className="text-[11.5px]">{t.k}</div>
+              <div className="text-lg font-bold leading-tight tnum">{t.v}</div>
+              <div className="text-[11.5px] tnum">{t.d}</div>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-text-secondary">
+          距離は直線で、拠点との行き帰りを含みます。1 日の目安 {lines.target_km} km・注意{' '}
+          {lines.caution_km} km・多い {lines.heavy_km} km は、8〜10 月の 3
+          か月分から出した仮の目安です。いちばん遠いお宅 =
+          その日に回ったお宅のうち拠点から最も遠い所までの直線／拠点の外 =
+          利用者の主の拠点が職員の拠点と違う訪問の割合／1 km 未満の移動 = 訪問と訪問の間の移動のうち
+          1 km 未満の割合（近所の連続）。
+        </p>
+      </Card>
+
       <Card className="overflow-x-auto">
         <table className="w-full border-collapse text-[13px]" data-testid="perf-week-table">
           <thead>
@@ -210,6 +274,8 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
                 '実績（QR）',
                 '移動 km/日',
                 'km/件',
+                `${lines.caution_km} km 超え`,
+                '遠いお宅 km',
                 '会議・研修など（週計）',
                 '合間/日',
               ].map((h, i) => (
@@ -242,6 +308,8 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
                   w.actual_min != null ? `${r0(w.actual_min)} 分（${w.actual_samples} 件）` : '—',
                   r1(w.km_per_day),
                   r1(w.km_per_visit),
+                  has(w) ? `${w.days_over_caution} 日` : '—',
+                  r1(w.farthest_km_avg),
                   hhmm(w.meeting_min_total),
                   has(w) ? hhmm(w.idle_min_per_day) : '—',
                 ].map((v, j) => (

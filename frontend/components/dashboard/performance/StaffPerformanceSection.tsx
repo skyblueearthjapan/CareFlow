@@ -213,7 +213,11 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
           value={r1(team?.km_per_day)}
           unit="km/日"
           isLoading={query.isLoading}
-          caption={team ? `1 件あたり ${r1(team.km_per_visit)} km` : undefined}
+          caption={
+            team && data
+              ? `1 件あたり ${r1(team.km_per_visit)} km・${data.distance_lines.caution_km} km 超え のべ ${team.days_over_caution} 日`
+              : undefined
+          }
         />
         <KpiCard
           label="QR で時間が取れた訪問"
@@ -268,6 +272,7 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
               team={data.team.period}
               weekStarts={data.weeks.map((w) => w.start)}
               minActualSamples={data.min_actual_samples}
+              distanceLines={data.distance_lines}
               onOpen={setSelected}
             />
           ))}
@@ -290,8 +295,16 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
           </li>
           <li>
             <b>距離は直線です。</b>
-            人どうしの比較には使えますが、実際の走行距離や燃料費の計算には使えません。
+            人どうしの比較には使えますが、実際の走行距離や燃料費の計算には使えません。拠点との行き帰りを含みます。
           </li>
+          {data ? (
+            <li data-testid="perf-distance-lines">
+              <b>1 日の距離の線は仮の目安です。</b>目安 {data.distance_lines.target_km} km・注意{' '}
+              {data.distance_lines.caution_km} km・多い {data.distance_lines.heavy_km} km は、8〜10
+              月の 3 か月分の実績から出しました。カードの移動は、1
+              日の平均が注意の線を超えると橙、多いの線を超えると赤になります。
+            </li>
+          ) : null}
         </ul>
       </Card>
     </section>

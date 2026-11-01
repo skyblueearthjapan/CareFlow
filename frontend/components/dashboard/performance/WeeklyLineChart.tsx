@@ -9,6 +9,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -28,6 +29,13 @@ export interface WeeklySeries {
   dashed?: boolean;
 }
 
+/** 横の目安の線 (例: 1 日の距離の目安・注意・多い)。 */
+export interface WeeklyRefLine {
+  y: number;
+  label: string;
+  color: string;
+}
+
 export interface WeeklyLineChartProps {
   title: string;
   note: string;
@@ -35,6 +43,7 @@ export interface WeeklyLineChartProps {
   /** 1 行 = 1 週。label は「9/7」。値が null の週は線を切る。 */
   rows: Array<{ label: string } & Record<string, number | string | null>>;
   series: WeeklySeries[];
+  refLines?: WeeklyRefLine[];
   height?: number;
 }
 
@@ -80,6 +89,7 @@ export function WeeklyLineChart({
   unit,
   rows,
   series,
+  refLines = [],
   height = 170,
 }: WeeklyLineChartProps) {
   const Tip = React.useMemo(() => makeTooltip(unit), [unit]);
@@ -103,8 +113,17 @@ export function WeeklyLineChart({
               axisLine={false}
               width={34}
               allowDecimals={false}
-              domain={[0, 'auto']}
+              domain={[0, (max: number) => Math.max(max, ...refLines.map((r) => r.y))]}
             />
+            {refLines.map((r) => (
+              <ReferenceLine
+                key={r.label}
+                y={r.y}
+                stroke={r.color}
+                strokeDasharray="2 3"
+                ifOverflow="extendDomain"
+              />
+            ))}
             <Tooltip content={<Tip />} cursor={{ stroke: PERF_COLORS.idle }} />
             {series.map((s) => (
               <Line
@@ -133,6 +152,16 @@ export function WeeklyLineChart({
               aria-hidden
             />
             {s.name}
+          </li>
+        ))}
+        {refLines.map((r) => (
+          <li key={r.label} className="flex items-center gap-1.5">
+            <span
+              className="inline-block w-4 border-t border-dashed"
+              style={{ borderColor: r.color }}
+              aria-hidden
+            />
+            {r.label}
           </li>
         ))}
       </ul>

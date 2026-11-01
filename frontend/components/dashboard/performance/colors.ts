@@ -3,6 +3,7 @@
  *
  * 主役 (この人) = らく助ピンク、実績 (QR) = 青、チーム平均 = 濃い灰の破線 (主役でない文脈の線)。
  * 1 日の内訳は 訪問 = 主役のピンク / 移動 = らく助の橙 / 会議・研修など = 紫 / 合間 = 中立の灰。
+ * 1 日の距離の目安の線だけは意味が「注意」「多い」なので状態色 (警告・エラー) を使う。
  */
 export const PERF_COLORS = {
   self: 'var(--chart-self, #d6457a)',
@@ -14,4 +15,7 @@ export const PERF_COLORS = {
   idle: 'var(--chart-idle, #8a847d)',
   grid: 'var(--chart-grid, #efece7)',
   axis: 'var(--text-secondary, #57534e)',
+  lineTarget: 'var(--text-secondary, #57534e)',
+  lineCaution: 'var(--warning, #d97706)',
+  lineHeavy: 'var(--error, #dc2626)',
 } as const;

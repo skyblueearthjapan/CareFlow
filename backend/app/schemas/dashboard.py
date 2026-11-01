@@ -100,6 +100,22 @@ class PerformanceMetrics(BaseModel):
         description="同行した日数 (副担当・メンター・同行リンク。件数・出勤日数には入れない)",
     )
     accompany_visits: int = Field(0, ge=0, description="同行した訪問の件数")
+    days_over_caution: int = Field(
+        0, ge=0, description="1 日の距離が注意の線 (distance_lines.caution_km) を超えた日数"
+    )
+    days_over_heavy: int = Field(
+        0, ge=0, description="1 日の距離が多いの線 (distance_lines.heavy_km) を超えた日数"
+    )
+    farthest_km_avg: float | None = Field(
+        None, description="その日いちばん遠いお宅 (拠点からの直線 km) の期間の平均"
+    )
+    farthest_km_max: float | None = Field(None, description="同じく期間の最大")
+    outside_ratio: float | None = Field(
+        None, description="利用者の主の拠点が職員の拠点と違う訪問の割合 (0〜1)"
+    )
+    short_leg_ratio: float | None = Field(
+        None, description="訪問と訪問の間の区間のうち 1 km 未満の割合 (0〜1)"
+    )
     staff_count: int | None = Field(None, description="チーム平均のときだけ: 訪問のあった人数")
 
 
@@ -114,6 +130,14 @@ class PerformanceOffice(BaseModel):
     id: UUID
     name: str
     short_label: str
+
+
+class DistanceLines(BaseModel):
+    """1 日の距離 (直線・拠点の行き帰りを含む) の目安の線 (km)。"""
+
+    target_km: float
+    caution_km: float
+    heavy_km: float
 
 
 class StaffPerformanceRow(BaseModel):
@@ -139,6 +163,7 @@ class StaffPerformanceResponse(BaseModel):
     office_id: UUID | None
     travel_speed_kmh: float
     min_actual_samples: int
+    distance_lines: DistanceLines
     weeks: list[PerformanceWeek]
     offices: list[PerformanceOffice]
     team: StaffPerformanceTeam

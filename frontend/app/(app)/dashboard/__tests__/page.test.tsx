@@ -61,6 +61,12 @@ function metrics(over: Partial<PerformanceMetrics> = {}): PerformanceMetrics {
     no_show_count: 0,
     accompany_days: 0,
     accompany_visits: 0,
+    days_over_caution: 0,
+    days_over_heavy: 0,
+    farthest_km_avg: 6.2,
+    farthest_km_max: 9.1,
+    outside_ratio: 0.15,
+    short_leg_ratio: 0.2,
     staff_count: null,
     ...over,
   };
@@ -77,6 +83,7 @@ const PERF: StaffPerformanceResponse = {
   office_id: null,
   travel_speed_kmh: 20,
   min_actual_samples: 5,
+  distance_lines: { target_km: 22, caution_km: 28, heavy_km: 36 },
   weeks: [
     { start: '2026-09-01', end: '2026-09-06' },
     { start: '2026-09-07', end: '2026-09-13' },
@@ -105,7 +112,15 @@ const PERF: StaffPerformanceResponse = {
       is_manager: true,
       is_trainee: false,
       qualification: '准看護師',
-      period: metrics({ per_day: 5.5, actual_min: 41, actual_samples: 6, qr_ratio: 0.3 }),
+      period: metrics({
+        per_day: 5.5,
+        actual_min: 41,
+        actual_samples: 6,
+        qr_ratio: 0.3,
+        km_per_day: 30,
+        days_over_caution: 3,
+        days_over_heavy: 1,
+      }),
       weeks: [metrics({ per_day: 5 }), metrics({ per_day: 6 })],
     },
     {
@@ -204,6 +219,10 @@ describe('管理者', () => {
     expect(caveats).toHaveTextContent('実績の時間は参考値です。');
     expect(caveats).toHaveTextContent('役割の札');
     expect(caveats).toHaveTextContent('距離は直線です。');
+    expect(caveats).toHaveTextContent('拠点との行き帰りを含みます。');
+    expect(screen.getByTestId('perf-distance-lines')).toHaveTextContent(
+      '目安 22 km・注意 28 km・多い 36 km',
+    );
     // 実績は「今月」から始まる。
     const params = useStaffPerformance.mock.calls.at(-1)?.[0] as { from: string; enabled: boolean };
     expect(params.from).toMatch(/^\d{4}-\d{2}-01$/);
@@ -231,6 +250,13 @@ describe('管理者', () => {
     // 同行は別の行に、N > 0 のときだけ (訪問件数には入れない)。
     expect(second.getByTestId('perf-accompany')).toHaveTextContent('同行 2 日・3 件');
     expect(first.queryByTestId('perf-accompany')).not.toBeInTheDocument();
+    // 距離の見張り: 注意の線を超えた日数と 3 項目。1 日 30 km は注意の色。
+    expect(first.getByTestId('perf-distance-watch')).toHaveTextContent(
+      '28 km 超え 3 日（うち 36 km 超え 1 日）・遠いお宅 平均 6.2 km（最大 9.1）・拠点の外 15%・1 km 未満の移動 20%',
+    );
+    expect(second.getByTestId('perf-distance-watch')).toHaveTextContent('28 km 超え 0 日・');
+    expect(first.getByText('移動（直線）').parentElement).toHaveClass('bg-warning-bg');
+    expect(second.getByText('移動（直線）').parentElement).not.toHaveClass('bg-warning-bg');
     // カードは article・押す所は名前付きのボタン。
     expect(cards[0]!.tagName).toBe('ARTICLE');
     expect(
@@ -271,6 +297,14 @@ describe('管理者', () => {
     expect(breakdown).toHaveTextContent('時速 20km');
     expect(deep).toHaveTextContent('うち不在 2 件（訪問件数に含めています）');
     expect(within(deep).getByText('会議・研修など（週計）')).toBeInTheDocument();
+    // 移動距離の見張り (3 項目と定義)・推移の目安の線の凡例。
+    const distance = screen.getByTestId('perf-distance');
+    expect(distance).toHaveTextContent('いちばん遠いお宅6.2 km');
+    expect(distance).toHaveTextContent('拠点の外の利用者15%');
+    expect(distance).toHaveTextContent('1 km 未満の移動20%');
+    expect(distance).toHaveTextContent('拠点との行き帰りを含みます');
+    expect(within(deep).getByText('注意 28 km')).toBeInTheDocument();
+    expect(within(deep).getByText('28 km 超え')).toBeInTheDocument();
     // 週ごとの表 (訪問の無い週は「—」)。
     const rows = within(screen.getByTestId('perf-week-table')).getAllByRole('row');
     expect(rows).toHaveLength(3);
