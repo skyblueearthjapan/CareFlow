@@ -5,7 +5,8 @@
  * - 6 段に、その曜日の訪問が 1 日の表と同じ帯 (帯の中に時刻・コース・患者名) で出る
  * - 職員の並びは 6 段で同じ (知らない担当・担当なしを含む)。休みはその曜日の段だけ
  * - ドラッグは段の中だけ (時刻・担当)。曜日は入れない。新人の行には落とせず案内を出す
- * - 固定の全員イベントは行に出さず「全員（固定）」帯だけ
+ * - 全員の固定イベントは行に出さず「全員（固定）」帯だけ。一部の人だけの固定イベントは行に出す
+ * - 別の曜日の段の行で離しても担当を変えない
  * - 件数の札と、数える帯 (取消・非稼働を除く) が合う
  */
 import * as React from 'react';
@@ -210,7 +211,22 @@ describe('StaffWeekTimelineStack — 描画', () => {
             }),
           ],
         ],
-        [B, [ev({ id: 'fx-b', staff_id: B, source: 'fixed' })]],
+        [
+          B,
+          [
+            ev({ id: 'fx-b', staff_id: B, source: 'fixed' }),
+            // 一部の人だけの固定イベント (火曜のカンファのような 1 人だけのもの)。
+            ev({
+              id: 'conf-b',
+              staff_id: B,
+              source: 'fixed',
+              title: 'カンファor研修',
+              start_time: '09:00',
+              end_time: '10:00',
+            }),
+          ],
+        ],
+        [T, [ev({ id: 'fx-t', staff_id: T, source: 'fixed' })]],
       ]),
       fixedAllDayByDay: [[{ start: '08:30', end: '08:45', title: '朝会' }], [], [], [], [], []],
     });
@@ -218,7 +234,51 @@ describe('StaffWeekTimelineStack — 描画', () => {
     expect(day(1).queryByTestId('tl-lane-fixed')).toBeNull();
     expect(screen.queryByTestId('tl-event-fx-a')).toBeNull();
     expect(screen.queryByTestId('tl-event-fx-b')).toBeNull();
+    expect(screen.queryByTestId('tl-event-fx-t')).toBeNull();
     expect(day(0).getByTestId('tl-event-own')).toHaveTextContent('会議');
+    expect(day(0).getByTestId('tl-event-conf-b')).toHaveTextContent('カンファor研修');
+  });
+
+  it('その日に休みの人がいても、残りの全員が持つ固定イベントは行から外す', () => {
+    const ev = (staff: string, id: string): TimelineEvent =>
+      ({
+        id,
+        staff_id: staff,
+        date: '2026-11-03',
+        title: '朝会',
+        start_time: '08:30',
+        end_time: '08:45',
+        type: 'イベント',
+        blocking: false,
+        source: 'fixed',
+      }) as TimelineEvent;
+    renderStack({
+      events: new Map([
+        [A, [ev(A, 'tue-a')]],
+        [B, [ev(B, 'tue-b')]],
+      ]),
+      // 火曜は新人T が休み → A・B の 2 人で全員。月曜には朝会がない。
+      offByStaffWeekday: new Map([[`${T}:1`, { type: '休み' } as WeekOverrideRead]]),
+    });
+    expect(screen.queryByTestId('tl-event-tue-a')).toBeNull();
+    expect(screen.queryByTestId('tl-event-tue-b')).toBeNull();
+  });
+
+  it('曜日の分からない印 (weekday なし) はどの段にも出さない', () => {
+    renderStack({
+      markers: [
+        {
+          action: 'add',
+          externalId: 'mk-null',
+          title: '曜日なし',
+          start: '15:00',
+          end: '15:30',
+          staffId: A,
+          weekday: null,
+        },
+      ],
+    });
+    expect(screen.queryAllByTestId(/^tl-marker-/)).toHaveLength(0);
   });
 
   it('件数の札は、描いた帯のうち数える帯 (取消・非稼働を除く) と合う', () => {
@@ -298,6 +358,42 @@ describe('StaffWeekTimelineStack — 段の中のドラッグ', () => {
     firePointer(bar2, 'pointermove', 100, 200);
     firePointer(bar2, 'pointerup', 100, 200);
     expect(onVisitMove.mock.calls[1]![0]).toMatchObject({ toStaffId: null });
+  });
+
+  it('別の曜日の段の行の上で離しても担当を変えない (move を呼ばない)', () => {
+    const { onVisitMove } = renderStack();
+    const bar = day(2).getByTestId('tl-bar-wed1');
+    // 水曜の帯を、月曜の段の職員A の行の上で離す。
+    pointAt(day(0).getByTestId(`tl-lane-${A}`));
+    firePointer(bar, 'pointerdown', 100, 10);
+    firePointer(bar, 'pointermove', 100, 300);
+    firePointer(bar, 'pointerup', 100, 300);
+    expect(onVisitMove).not.toHaveBeenCalled();
+  });
+
+  it('別の曜日の段の行の上で、時刻だけ動かしたときは担当を入れない', () => {
+    const { onVisitMove } = renderStack();
+    const bar = day(2).getByTestId('tl-bar-wed1');
+    pointAt(day(0).getByTestId(`tl-lane-${A}`));
+    firePointer(bar, 'pointerdown', 100, 10);
+    firePointer(bar, 'pointermove', 130, 300);
+    firePointer(bar, 'pointerup', 130, 300);
+    expect(onVisitMove).toHaveBeenCalledTimes(1);
+    const payload = onVisitMove.mock.calls[0]![0];
+    expect(payload.toStart).toBe('13:30');
+    expect('toStaffId' in payload).toBe(false);
+  });
+
+  it('別の曜日の段の新人の行の上では、案内を出さず何も変えない', () => {
+    const { onVisitMove } = renderStack();
+    const bar = day(2).getByTestId('tl-bar-wed1');
+    pointAt(day(0).getByTestId(`tl-lane-${T}`));
+    firePointer(bar, 'pointerdown', 100, 10);
+    firePointer(bar, 'pointermove', 100, 300);
+    expect(screen.queryByTestId(`tl-trainee-block-${T}`)).toBeNull();
+    firePointer(bar, 'pointerup', 100, 300);
+    expect(onVisitMove).not.toHaveBeenCalled();
+    expect(toastWarning).not.toHaveBeenCalled();
   });
 
   it('動かさずに離すとメニュー (onVisitClick)・move は呼ばない', () => {

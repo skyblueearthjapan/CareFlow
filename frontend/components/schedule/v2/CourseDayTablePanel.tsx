@@ -219,6 +219,8 @@ import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import type { VisitRead } from '@/lib/schemas/visit';
 import { ServiceContentDialog } from './cockpit/ServiceContentDialog';
 import {
+  allStaffFixedKeys,
+  fixedEventKey,
   resolveVisitRowKey,
   StaffTimelineView,
   type StaffSwapPayload,
@@ -4867,7 +4869,9 @@ export function CourseDayTablePanel({
   const handleTimelineVisitMove = async (payload: VisitMovePayload) => {
     const { visit, toStart, toStaffId, toWeekday } = payload;
     const opGroupId = crypto.randomUUID();
-    // 職員の週タイムライン: 曜日だけ変わったときも move を呼ぶ (時刻は今のまま)。
+    // 曜日をまたぐ処理 (toWeekday) は今は未使用 (入れる部品がない)。曜日をまたぐドラッグ
+    // (案 C・A) を後で入れるときのため残す。今の週の 6 段 (案 B) は段の中だけを動かす。
+    // 曜日だけ変わったときも move を呼ぶ (時刻は今のまま)。
     const moved = toStart != null || toWeekday !== undefined;
     // 曜日をまたぐとコースが付け替わり、BE は担当をそのコースの担当にする。落とした行の
     // 担当に必ず合わせ直す (部品は曜日が変わると toStaffId を必ず入れる)。同じ組 = 戻る 1 回。
@@ -5562,15 +5566,23 @@ export function CourseDayTablePanel({
   /**
    * タイムライン先頭の「全員（固定）」帯 (曜日ごとに、その日の固定イベントを重複除去)。
    * 1 日の表は見ている曜日の分、週の 6 段は 6 曜日分を使う。
+   * 帯に出すのは、表に出ている職員 (休みでない在籍の方) の全員が持つ固定イベントだけ
+   * (`allStaffFixedKeys`・行から外すものと同じ決まり)。一部の人だけのものは各行に出る。
    */
   const staffTimelineFixedBandsByDay = useMemo(
     () =>
       [0, 1, 2, 3, 4, 5].map((wd) => {
         const dayIso = isoOfWeekday(wd);
+        const dayRows = staffTimelineRows.map((r) => ({
+          ...r,
+          off: offByStaffWeekday.get(`${r.staffId}:${wd}`) ?? null,
+        }));
+        const allFixed = allStaffFixedKeys(dayRows, staffEventsByStaff, dayIso);
         const seen = new Map<string, { start: string; end: string; title: string }>();
         for (const ev of fixedWeekEvents) {
           if (ev.date !== dayIso || ev.cancelled_at) continue;
-          const key = `${ev.start_time}|${ev.title}`;
+          const key = fixedEventKey(ev);
+          if (!allFixed.has(key)) continue;
           if (!seen.has(key)) {
             seen.set(key, {
               start: ev.start_time.slice(0, 5),
@@ -5581,7 +5593,7 @@ export function CourseDayTablePanel({
         }
         return [...seen.values()];
       }),
-    [fixedWeekEvents, isoOfWeekday],
+    [fixedWeekEvents, isoOfWeekday, staffTimelineRows, offByStaffWeekday, staffEventsByStaff],
   );
   const staffTimelineFixedBands = staffTimelineFixedBandsByDay[staffTimelineDay];
 

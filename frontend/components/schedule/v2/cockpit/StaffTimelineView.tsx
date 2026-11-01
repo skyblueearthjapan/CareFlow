@@ -31,7 +31,9 @@
  * (FE-A) のメニュー項目が担う。ここはポインタ操作の近道でしかない。
  *
  *   - 新人の行へは落とせない (新人は担当になれない)。落とそうとしたら案内を出す (PO 2026-11-01)。
- *   - 固定の全員イベント (source='fixed') は行に描かず、先頭の「全員（固定）」帯だけに出す。
+ *   - 固定イベント (source='fixed') のうち、表に出ている職員 (休み・担当なし・不明を除く) の
+ *     全員が持つもの (朝会など) は行に描かず、先頭の「全員（固定）」帯だけに出す。
+ *     一部の人だけの固定イベントは行に出す (`allStaffFixedKeys`・PO 決定 2026-11-01)。
  *
  * この部品は API を呼ばない (結線は FE-C = CourseDayTablePanel)。
  * 曜日跨ぎの移動は訪問のメニューの「📅 曜日を移動…」の担当で、ここでは扱わない。
@@ -137,6 +139,46 @@ export interface FixedAllDayBand {
   title: string;
 }
 
+/** 固定イベントが「同じもの」かを見る鍵 (その日・開始時刻・題)。 */
+export function fixedEventKey(ev: { date: string; start_time: string; title: string }): string {
+  return `${ev.date}|${ev.start_time.slice(0, 5)}|${ev.title}`;
+}
+
+/**
+ * その日の固定イベントのうち、表に出ている職員の**全員**が持つものの鍵 (`fixedEventKey`)。
+ *
+ * 表に出ている職員 = 担当なし・不明な担当・休み (`off` あり) を除いた行。
+ * 「今週だけ外す」(`cancelled_at`) を付けた人は持っていない扱い = 全員ではなくなる。
+ * 該当の職員が 1 人もいない日は空 (何も帯へ寄せない)。
+ * 1 日の表・週の 6 段の行と、パネルの「全員（固定）」帯が同じ決まりで使う (PO 決定 2026-11-01)。
+ */
+export function allStaffFixedKeys(
+  rows: StaffTimelineRow[],
+  events: Map<string, TimelineEvent[]> | undefined,
+  dayIso: string,
+): Set<string> {
+  const eligible = rows.filter(
+    (r) => r.staffId !== UNASSIGNED_ROW_KEY && r.unknown !== true && r.off == null,
+  );
+  if (!events || eligible.length === 0) return new Set();
+  const keysOf = (staffId: string): Set<string> => {
+    const own = new Set<string>();
+    for (const ev of events.get(staffId) ?? []) {
+      if (ev.source !== 'fixed' || ev.date !== dayIso || ev.cancelled_at) continue;
+      own.add(fixedEventKey(ev));
+    }
+    return own;
+  };
+  const [first, ...rest] = eligible;
+  let common = keysOf(first!.staffId);
+  for (const r of rest) {
+    if (common.size === 0) break;
+    const own = keysOf(r.staffId);
+    common = new Set([...common].filter((k: string) => own.has(k)));
+  }
+  return common;
+}
+
 /**
  * カイポケ突合のゴーストマーカー (C1 の `ReconcileMarker` を訪問へ拡張した形)。
  * before = 青点線 (今ここ) / after = 紫実線 (こう変わる) / delete = 青の打消し。
@@ -179,8 +221,9 @@ export interface VisitMovePayload {
   /** 担当変更を伴うときだけ入る。null = （担当なし）へ。undefined = 担当変更なし。 */
   toStaffId?: string | null;
   /**
-   * 曜日を変えるときだけ入る (0=月..5=土・職員の週タイムライン)。undefined = 同じ曜日。
-   * 1 日タイムラインは曜日をまたがないので入れない。
+   * 曜日を変えるときだけ入る (0=月..5=土)。undefined = 同じ曜日。
+   * 今は未使用 (入れる部品がない)。曜日をまたぐドラッグ (案 C・A) を後で入れるときのため残す。
+   * 今の週の 6 段 (案 B) は段の中だけを動かし、曜日はメニューの「📅 曜日を移動…」で変える。
    */
   toWeekday?: number;
 }
@@ -577,8 +620,12 @@ export function StaffTimelineView({
   );
 
   const visibleMarkers = React.useMemo(
-    () => (markers ?? []).filter((m) => m.weekday == null || m.weekday === day),
-    [markers, day],
+    () =>
+      (markers ?? []).filter((m) =>
+        // 週の 6 段では曜日の分からない印 (weekday なし) をどの段にも出さない (6 段に同じ印が並ぶため)。
+        embedded ? m.weekday === day : m.weekday == null || m.weekday === day,
+      ),
+    [markers, day, embedded],
   );
 
   const rows: StaffTimelineRow[] = React.useMemo(() => {
@@ -827,13 +874,15 @@ export function StaffTimelineView({
     }
 
     if (events) {
+      // 全員の固定イベント (朝会など) は先頭の「全員（固定）」帯だけに出す
+      // (PO 決定 2026-11-01・行に二重に出さない)。一部の人だけの固定イベントは行に出す。
+      // 渡された職員だけで見る (この部品が足した「不明」「担当なし」の行は職員ではない)。
+      const allFixed = allStaffFixedKeys(staffRows, events, dayIso);
       for (const r of rows) {
         if (r.staffId === UNASSIGNED_ROW_KEY) continue;
         for (const ev of events.get(r.staffId) ?? []) {
           if (ev.date !== dayIso) continue;
-          // 固定の全員イベント (朝会など) は先頭の「全員（固定）」帯だけに出す
-          // (PO 決定 2026-11-01・行に二重に出さない)。その人だけのイベントは行に出す。
-          if (ev.source === 'fixed') continue;
+          if (ev.source === 'fixed' && allFixed.has(fixedEventKey(ev))) continue;
           const startMin = parseHM(ev.start_time);
           if (startMin === null) continue;
           const endRaw = parseHM(ev.end_time);
@@ -940,6 +989,7 @@ export function StaffTimelineView({
     companionVisitsByCell,
     day,
     rows,
+    staffRows,
     dayVisits,
     events,
     dayIso,
@@ -1045,7 +1095,10 @@ export function StaffTimelineView({
     try {
       const el = document.elementFromPoint?.(e.clientX, e.clientY) as HTMLElement | null;
       const lane = el?.closest?.('[data-lane-key]') as HTMLElement | null;
-      const key = lane?.dataset.laneKey;
+      // 自分の表の行だけを相手にする。週の 6 段は同じ data-lane-key の行が段ごとにあるため、
+      // 別の曜日の段の行の上では行を変えない (曜日が元のまま担当だけ変わるのを防ぐ)。
+      const ownLane = lane && tblRef.current?.contains(lane) ? lane : null;
+      const key = ownLane?.dataset.laneKey;
       if (key && rowKeySetRef.current.has(key)) {
         // 新人は担当になれない (同行で割り当てる) → 新人の行へは落とせない。
         if (key !== d.fromRowKey && rowByIdRef.current.get(key)?.isTrainee === true) {

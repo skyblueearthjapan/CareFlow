@@ -39,6 +39,8 @@ import {
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
+/** 段へ移ったとき、上に固定した曜日の札の下へ見出しが来るように空ける幅 (px)。 */
+const DAY_SCROLL_OFFSET_PX = 56;
 
 /** 段を memo で包む = パネルが描き直されても、渡すものが同じ段は描き直さない。 */
 const DayTimeline = React.memo(StaffTimelineView);
@@ -187,7 +189,22 @@ export function StaffWeekTimelineStack({
   // ── 曜日の札 → その段へ移る ──
   const dayRefs = React.useRef<Array<HTMLElement | null>>([]);
   const jumpTo = React.useCallback((wd: number, behavior: ScrollBehavior = 'smooth') => {
-    dayRefs.current[wd]?.scrollIntoView?.({ block: 'start', behavior });
+    const el = dayRefs.current[wd];
+    if (!el) return;
+    // 縦に送れるいちばん近い入れ物 (画面の main) だけを送る。scrollIntoView は外側の
+    // 入れ物やページ全体まで動かしてしまうため使わない。
+    let box: HTMLElement | null = el.parentElement;
+    while (box) {
+      const oy = getComputedStyle(box).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') && box.scrollHeight > box.clientHeight) break;
+      box = box.parentElement;
+    }
+    // 中に入れ物が無い画面では、ページそのものが入れ物になる。
+    const scroller = box ?? (document.scrollingElement as HTMLElement | null);
+    if (!scroller) return;
+    const boxTop = box ? box.getBoundingClientRect().top : 0;
+    const top = scroller.scrollTop + el.getBoundingClientRect().top - boxTop - DAY_SCROLL_OFFSET_PX;
+    scroller.scrollTo?.({ top, behavior });
   }, []);
 
   // 開いたときは今日 (無ければ次の日) の段へ移る。月曜なら動かさない。
@@ -255,7 +272,7 @@ export function StaffWeekTimelineStack({
               dayRefs.current[wd] = el;
             }}
             // 上に固定した札の下へ見出しが来るようにする。
-            style={{ scrollMarginTop: 56 }}
+            style={{ scrollMarginTop: DAY_SCROLL_OFFSET_PX }}
             className="border-b-2"
             data-testid={`swt-day-${wd}`}
             data-tl-day={wd}

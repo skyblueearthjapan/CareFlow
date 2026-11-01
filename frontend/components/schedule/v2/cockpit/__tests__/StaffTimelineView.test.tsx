@@ -19,6 +19,8 @@ const toastWarning = vi.fn();
 vi.mock('sonner', () => ({ toast: { warning: (...a: unknown[]) => toastWarning(...a) } }));
 
 import {
+  allStaffFixedKeys,
+  fixedEventKey,
   snapXOffsetToMinutes,
   TRAINEE_DROP_MESSAGE,
   STAFF_SWAP_MIME,
@@ -26,6 +28,7 @@ import {
   UNASSIGNED_ROW_KEY,
   type StaffSwapPayload,
   type StaffTimelineRow,
+  type TimelineEvent,
   type TimelineMarker,
   type TimelineVisit,
   type VisitMovePayload,
@@ -1070,6 +1073,78 @@ describe('StaffTimelineView — 固定の全員イベント (PO 決定 2026-11-0
     expect(screen.queryByTestId('tl-event-fx1')).toBeNull();
     expect(screen.queryByTestId('tl-event-fx2')).toBeNull();
     expect(screen.getByTestId('tl-event-own1')).toHaveTextContent('会議');
+  });
+
+  it('一部の人だけの固定イベントは行に出す。休みの人は「全員」の数に入れない', () => {
+    const base = {
+      staff_id: STAFF_1,
+      date: '2026-08-17',
+      start_time: '08:30',
+      end_time: '08:45',
+      type: 'イベント',
+      blocking: false,
+      source: 'fixed',
+    };
+    const events = new Map([
+      [
+        STAFF_1,
+        [
+          { ...base, id: 'fx1', title: '朝会' },
+          { ...base, id: 'conf1', title: 'カンファor研修', start_time: '09:00', end_time: '10:00' },
+        ],
+      ],
+      [STAFF_2, [{ ...base, id: 'fx2', staff_id: STAFF_2, title: '朝会' }]],
+    ]) as React.ComponentProps<typeof StaffTimelineView>['events'];
+    renderView({ visits: [], events });
+    // 朝会は 2 人とも持つ → 行から外す。カンファは 1 人だけ → 行に出す。
+    expect(screen.queryByTestId('tl-event-fx1')).toBeNull();
+    expect(screen.queryByTestId('tl-event-fx2')).toBeNull();
+    expect(screen.getByTestId('tl-event-conf1')).toHaveTextContent('カンファor研修');
+    cleanup();
+
+    // STAFF_2 が休みなら、表に出ている職員は STAFF_1 だけ → カンファも「全員」になる。
+    renderView({
+      visits: [],
+      events,
+      staffRows: [
+        rows[0]!,
+        { ...rows[1]!, off: { type: '休み' } as StaffTimelineRow['off'] },
+        rows[2]!,
+      ],
+    });
+    expect(screen.queryByTestId('tl-event-conf1')).toBeNull();
+  });
+
+  it('allStaffFixedKeys: 全員が持つ固定イベントの鍵だけ (担当なし・不明・休み・今週だけ外すを考える)', () => {
+    const ev = (staff: string, title: string, over: Partial<TimelineEvent> = {}) =>
+      ({
+        id: `${staff}-${title}`,
+        staff_id: staff,
+        date: '2026-08-17',
+        start_time: '08:30:00',
+        end_time: '08:45:00',
+        title,
+        type: 'イベント',
+        blocking: false,
+        source: 'fixed',
+        ...over,
+      }) as TimelineEvent;
+    const events = new Map<string, TimelineEvent[]>([
+      [STAFF_1, [ev(STAFF_1, '朝会'), ev(STAFF_1, '会議')]],
+      [STAFF_2, [ev(STAFF_2, '朝会')]],
+    ]);
+    const withUnknown = [...rows, { staffId: STAFF_X, name: '（不明なスタッフ）', unknown: true }];
+    expect([...allStaffFixedKeys(withUnknown, events, '2026-08-17')]).toEqual([
+      fixedEventKey(ev(STAFF_1, '朝会')),
+    ]);
+    // 別の日は何もない。
+    expect(allStaffFixedKeys(rows, events, '2026-08-18').size).toBe(0);
+    // 1 人が今週だけ外した → 全員ではない。
+    const cancelled = new Map(events);
+    cancelled.set(STAFF_2, [ev(STAFF_2, '朝会', { cancelled_at: '2026-08-10T00:00:00Z' })]);
+    expect(allStaffFixedKeys(rows, cancelled, '2026-08-17').size).toBe(0);
+    // 表に出ている職員がいない → 空。
+    expect(allStaffFixedKeys([rows[2]!], events, '2026-08-17').size).toBe(0);
   });
 });
 
