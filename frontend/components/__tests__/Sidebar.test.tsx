@@ -34,7 +34,7 @@ vi.mock('@/lib/queries/leave', () => ({
   },
 }));
 
-// メニューの「やること」の未完了の件数 (patient-tasks-design §2-6)
+// メニューの「タスク管理」の未完了の件数 (patient-tasks-design §2-6)
 let openTasks: unknown[] = [];
 const taskCalls: unknown[][] = [];
 vi.mock('@/lib/queries/tasks', () => ({
@@ -128,11 +128,11 @@ describe('Sidebar — ロール別メニュー表示', () => {
     expect(screen.getByTestId('nav-badge-dot')).toHaveTextContent('未処理の申請 3 件');
   });
 
-  it('やること: 管理者には訪問モニターの下に出し、未完了の件数をバッジに出す', () => {
+  it('タスク管理: 管理者には訪問モニターの下に出し、未完了の件数をバッジに出す', () => {
     setRole('admin');
     openTasks = [{}, {}, {}];
     render(<Sidebar collapsed={false} />);
-    const link = screen.getByRole('link', { name: /やること/ });
+    const link = screen.getByRole('link', { name: /タスク管理/ });
     expect(link).toHaveAttribute('href', '/tasks');
     expect(link.textContent).toContain('3');
     const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href'));
@@ -140,10 +140,10 @@ describe('Sidebar — ロール別メニュー表示', () => {
     expect(taskCalls[0]).toEqual([{ status: 'open' }, { enabled: true, refetchInterval: 60_000 }]);
   });
 
-  it('やること: 職員には出さず、読みにも行かない', () => {
+  it('タスク管理: 職員には出さず、読みにも行かない', () => {
     setRole('staff');
     render(<Sidebar collapsed={false} />);
-    expect(screen.queryByRole('link', { name: /やること/ })).toBeNull();
+    expect(screen.queryByRole('link', { name: /タスク管理/ })).toBeNull();
     expect(taskCalls[0]?.[1]).toEqual({ enabled: false, refetchInterval: 60_000 });
   });
 });

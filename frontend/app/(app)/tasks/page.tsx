@@ -113,7 +113,7 @@ export default function TasksPage() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <RakusukeTitle
           pose="idea"
-          title="やること"
+          title="タスク管理"
           subtitle="事務所から看護師へのやることです。その方の訪問のときにスマホに出し、済んだら完了になります。"
         />
         <Button type="button" onClick={() => setAddOpen(true)} data-testid="tasks-add-open">

@@ -27,7 +27,7 @@ import { useTasks } from '@/lib/queries/tasks';
 
 /** メニューの未処理の休みの申請の件数を読み直す間隔 (60 秒に 1 回まで・PO 決定)。 */
 const LEAVE_PENDING_POLL_MS = 60_000;
-/** メニューの「やること」の未完了の件数を読み直す間隔 (休みの申請と同じ 60 秒)。 */
+/** メニューの「タスク管理」の未完了の件数を読み直す間隔 (休みの申請と同じ 60 秒)。 */
 const TASKS_OPEN_POLL_MS = 60_000;
 
 interface SidebarProps {
@@ -42,7 +42,7 @@ const NAV_ITEMS = [
   // (BE GET も staff 許可済み。確認済み操作等の書込みは admin/manager のまま)。
   { href: '/monitor', label: '訪問モニター', icon: MapPin },
   // 事務所からのやること (patient-tasks-design-2026-11-01 §2-6)。管理者だけ・未完了の件数のバッジ。
-  { href: '/tasks', label: 'やること', icon: ClipboardList, adminOnly: true, strictAdmin: true },
+  { href: '/tasks', label: 'タスク管理', icon: ClipboardList, adminOnly: true, strictAdmin: true },
   // 訪問記録 (打刻履歴 + 音声記録の 2 タブ)。全ロール同一表示 — staff は BE が
   // 自分の分に固定するので自分の分だけが見える (visit-voice-record-design §11-2 /
   // visit-history-design-2026-09-30 §3)。音声専用ではなくなったので書類のアイコン。
@@ -99,7 +99,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
   // 「休み・勤務表」の未処理の申請の件数 = 月をまたいだ申請中 (summary の pending_total・管理者だけ)
   const leaveSummary = useLeaveMonthSummary(upcomingLeaveMonth(), isAdmin, LEAVE_PENDING_POLL_MS);
   const leavePendingCount = isAdmin ? (leaveSummary.data?.pending_total ?? 0) : 0;
-  // 「やること」の未完了の件数 (管理者だけ)
+  // 「タスク管理」の未完了の件数 (管理者だけ)
   const openTasks = useTasks(
     { status: 'open' },
     { enabled: isAdmin, refetchInterval: TASKS_OPEN_POLL_MS },
@@ -151,7 +151,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
             const badge =
               href === '/admin/leave' ? leavePendingCount : href === '/tasks' ? openTaskCount : 0;
             const badgeLabel =
-              href === '/tasks' ? `未完了のやること ${badge} 件` : `未処理の申請 ${badge} 件`;
+              href === '/tasks' ? `未完了のタスク ${badge} 件` : `未処理の申請 ${badge} 件`;
             return (
               <li key={href}>
                 <Link
