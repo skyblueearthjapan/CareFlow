@@ -34,6 +34,16 @@ vi.mock('@/lib/queries/leave', () => ({
   },
 }));
 
+// メニューの「やること」の未完了の件数 (patient-tasks-design §2-6)
+let openTasks: unknown[] = [];
+const taskCalls: unknown[][] = [];
+vi.mock('@/lib/queries/tasks', () => ({
+  useTasks: (...args: unknown[]) => {
+    taskCalls.push(args);
+    return { data: openTasks };
+  },
+}));
+
 import { useSession } from 'next-auth/react';
 import { Sidebar } from '../Sidebar';
 
@@ -49,6 +59,8 @@ describe('Sidebar — ロール別メニュー表示', () => {
     vi.clearAllMocks();
     pendingTotal = 0;
     pendingCalls.length = 0;
+    openTasks = [];
+    taskCalls.length = 0;
   });
 
   it('1. admin → 連携・監査ログ・申請履歴が表示される', () => {
@@ -114,5 +126,24 @@ describe('Sidebar — ロール別メニュー表示', () => {
     unmount();
     render(<Sidebar collapsed />);
     expect(screen.getByTestId('nav-badge-dot')).toHaveTextContent('未処理の申請 3 件');
+  });
+
+  it('やること: 管理者には訪問モニターの下に出し、未完了の件数をバッジに出す', () => {
+    setRole('admin');
+    openTasks = [{}, {}, {}];
+    render(<Sidebar collapsed={false} />);
+    const link = screen.getByRole('link', { name: /やること/ });
+    expect(link).toHaveAttribute('href', '/tasks');
+    expect(link.textContent).toContain('3');
+    const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href'));
+    expect(hrefs.indexOf('/tasks')).toBe(hrefs.indexOf('/monitor') + 1);
+    expect(taskCalls[0]).toEqual([{ status: 'open' }, { enabled: true, refetchInterval: 60_000 }]);
+  });
+
+  it('やること: 職員には出さず、読みにも行かない', () => {
+    setRole('staff');
+    render(<Sidebar collapsed={false} />);
+    expect(screen.queryByRole('link', { name: /やること/ })).toBeNull();
+    expect(taskCalls[0]?.[1]).toEqual({ enabled: false, refetchInterval: 60_000 });
   });
 });
