@@ -76,7 +76,7 @@ function installFakePicker() {
     picker: {
       PickerBuilder,
       DocsView,
-      ViewId: { FOLDERS: 'folders' },
+      ViewId: { FOLDERS: 'folders', DOCS: 'docs' },
       Feature: { SUPPORT_DRIVES: 'sdr' },
       Action: { PICKED: 'picked', CANCEL: 'cancel' },
     },
@@ -93,20 +93,25 @@ afterEach(() => {
 });
 
 describe('pickDriveFolder', () => {
-  it('共有アイテム・マイドライブ・共有ドライブの 3 つのタブでフォルダだけを出す', async () => {
+  it('共有アイテムと共有ドライブの 2 つのタブを、ViewId を分けて出す', async () => {
     const fake = installFakePicker();
     const p = pickDriveFolder({ accessToken: 't', apiKey: 'k', appId: 'a' });
     await Promise.resolve();
     await Promise.resolve();
 
     const added = fake.builderCalls.addView as Record<string, unknown>[];
-    expect(added.map((v) => v.label)).toEqual(['共有アイテム', 'マイドライブ', '共有ドライブ']);
+    expect(added.map((v) => v.label)).toEqual(['共有アイテム', '共有ドライブ']);
+    // Picker は同じ ViewId の view を 1 つのタブにまとめるため、ViewId を分ける。
+    expect(new Set(added.map((v) => v.viewId)).size).toBe(added.length);
+    expect(added[0].viewId).toBe('docs');
     expect(added[0].ownedByMe).toBe(false);
     expect(added[0].enableDrives).toBeUndefined();
-    expect(added[1].ownedByMe).toBe(true);
-    expect(added[2].enableDrives).toBe(true);
+    expect(added[1].viewId).toBe('folders');
+    expect(added[1].enableDrives).toBe(true);
+    expect(added[1].ownedByMe).toBeUndefined();
     for (const v of added) {
       expect(v.selectFolder).toBe(true);
+      expect(v.includeFolders).toBe(true);
       expect(v.mime).toBe('application/vnd.google-apps.folder');
     }
     expect(fake.builderCalls.enableFeature).toEqual(['sdr']);
