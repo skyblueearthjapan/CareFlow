@@ -25,7 +25,9 @@ PO の決定（11/1）：**らく助の QR 実績（後から合わせた時刻�
 
 ## 3. 事務所からのやること（作業中・ブランチ feat/patient-tasks）
 - 設計 `docs/plans/patient-tasks-design-2026-11-01.md`、モック `docs/mockups/patient-tasks-mock.html`（PO と方向を決めた：患者＋日付「この日から出す」・持ち越し・完了は担当と事務所・PC は訪問モニターの詳細＋左メニューの新しいページ「やること」）。
-- backend（mig 0103）と frontend の型・hooks：`7cbe340b`・`e9194a74`（試験 15 件通過）。**レビューと画面はまだ**。
+- backend（mig 0103）→ レビュー（軽微で可）→ 指摘を直す `1a3d37d2`（先の訪問へ重ねて出さない・mentor を担当に・同時押し 409）。画面（PC 訪問モニターの印と詳細の枠・左メニューの「やること」ページ・スマホの帯／カードの印／訪問詳細）`29795095`・`dfbb2d9c`・`62ac8420` → レビュー（軽微で可）→ 指摘を直す `7f5957fd`（二度押し・done_from・/tasks を管理者だけ）。
+- **develop へ push・本番反映済み（PO 了承・11/1）**：本番 7f5957fd・alembic 0102→0103。pg_dump `/opt/carelink/backups/pre-deploy-patient-tasks-20261101-0143.sql.gz`（UTC）。build → `run --rm --no-deps backend alembic upgrade head` → `up -d --no-deps --force-recreate backend frontend`。確認：公開の API 200・/api/v1/task-item-types 401（ログインが要る）・両コンテナ healthy・入れ替え後の 5xx/Traceback 0・PO の PC で「やること」ページと訪問モニターの凡例を確認。patient_tasks・task_item_types は 0 件（項目は事務所が画面で足す）。訪問週の片付けも同じ反映で本番に入った。
+- 残り：項目の初期登録（事務所）・実際に 1 件付けてスマホで見る確認（PO と）・現場は Ctrl+Shift+R。
 
 ## 4. 月の実績タブ（設計の案）
 `docs/plans/kaipoke-actual-write-design-2026-11-01.md`（11/1 の画面確認・1 件の試し・夜に流す運用）、モック `docs/mockups/monthly-actual-sync-mock.html`。今日の精査の決まりを画面にする。
