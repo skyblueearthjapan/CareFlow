@@ -69,6 +69,11 @@ vi.mock('@/lib/queries/visit-recordings', async (importOriginal) => {
   });
 });
 
+// 月の実績タブ（管理者だけ）: 中身は monthlyActual.test.tsx で縛る。ここでは出し分けだけ見る。
+vi.mock('../_components/monthly-actual/MonthlyActualTab', () => ({
+  MonthlyActualTab: () => <div data-testid="monthly-actual-tab" />,
+}));
+
 // 打刻履歴タブ: 純関数は本物のまま、ネットワークを踏むフックだけ差し替える。
 vi.mock('@/lib/queries/visit-history', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -431,5 +436,30 @@ describe('RecordsPage — タブ', () => {
     expect(screen.getByText(/QR で読み取った到着・退出の時刻/)).toBeInTheDocument();
     fireEvent.click(tab('音声記録'));
     expect(screen.getByText(/現場で録音した音声の要約/)).toBeInTheDocument();
+  });
+});
+
+describe('RecordsPage — 月の実績タブ（管理者だけ）', () => {
+  it('管理者には「月の実績」のタブが出て、?tab=monthly で開く', () => {
+    mockSearchParams.value = new Map([['tab', 'monthly']]);
+    render(<RecordsPage />);
+    expect(screen.getByRole('tab', { name: '月の実績' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('monthly-actual-tab')).toBeInTheDocument();
+  });
+
+  it('管理者以外にはタブを出さず、?tab=monthly でも打刻履歴を開く', () => {
+    mockRole.value = 'staff';
+    mockSearchParams.value = new Map([['tab', 'monthly']]);
+    render(<RecordsPage />);
+    expect(screen.queryByRole('tab', { name: '月の実績' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('monthly-actual-tab')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '打刻履歴' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('セッションの読み込み中は「月の実績」を出さない', () => {
+    mockSessionStatus.value = 'loading';
+    mockSearchParams.value = new Map();
+    render(<RecordsPage />);
+    expect(screen.queryByRole('tab', { name: '月の実績' })).not.toBeInTheDocument();
   });
 });

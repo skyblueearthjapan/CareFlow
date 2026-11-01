@@ -2,9 +2,11 @@
 
 /**
  * `/records` — PC 訪問記録。「打刻履歴」「音声記録」の 2 タブ
- * （PO 決定 2026-09-30・`docs/plans/visit-history-design-2026-09-30.md` §4）。
+ * （PO 決定 2026-09-30・`docs/plans/visit-history-design-2026-09-30.md` §4）＋
+ * 管理者だけの「月の実績」（2026-11-01・`kaipoke-actual-write-design-2026-11-01.md` §5-3）。
+ * 「月の実績」は管理者以外にはタブ自体を出さない（`?tab=monthly` で開いても打刻履歴になる）。
  *
- * タブは `?tab=history|voice`。既定は打刻履歴だが、`?patient=` / `?staff=` / `?visit=`
+ * タブは `?tab=history|voice|monthly`。既定は打刻履歴だが、`?patient=` / `?staff=` / `?visit=`
  * の付いた既存の導線（患者詳細・スタッフ詳細の「すべて見る」、モニターの
  * 「🎙 記録を見る」）は従来どおり音声記録を開く。
  *
@@ -22,7 +24,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Check, Clock, Mic } from 'lucide-react';
+import { CalendarCheck, Check, Clock, Mic } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { usePublishScreenContext } from '@/components/agent/screenContext';
@@ -48,18 +50,21 @@ import {
   recordPeriodRange,
   type RecordsFilterState,
 } from './_components/RecordsFilterBar';
+import { MonthlyActualTab } from './_components/monthly-actual/MonthlyActualTab';
 import { VisitHistoryTab } from './_components/VisitHistoryTab';
 
 /** 1 ページの件数（設計 §11-2）。 */
 const PAGE_SIZE = 50;
 
-type RecordsTab = 'history' | 'voice';
+type RecordsTab = 'history' | 'voice' | 'monthly';
 
 const RECORDS_TABS: ReadonlyArray<{
   key: RecordsTab;
   label: string;
   icon: typeof Clock;
   subtitle: string;
+  /** 管理者だけに出すタブ。 */
+  adminOnly?: boolean;
 }> = [
   {
     key: 'history',
@@ -74,6 +79,14 @@ const RECORDS_TABS: ReadonlyArray<{
     icon: Mic,
     subtitle: '現場で録音した音声の要約・文字起こしを読み、確認します。',
   },
+  {
+    key: 'monthly',
+    label: '月の実績',
+    icon: CalendarCheck,
+    subtitle:
+      'らく助の QR の実績とカイポケの実績を月ごとに突き合わせ、差がある行をカイポケへ反映します。',
+    adminOnly: true,
+  },
 ];
 
 /**
@@ -82,7 +95,7 @@ const RECORDS_TABS: ReadonlyArray<{
  */
 function initialTab(params: { get: (key: string) => string | null }): RecordsTab {
   const tab = params.get('tab');
-  if (tab === 'history' || tab === 'voice') return tab;
+  if (tab === 'history' || tab === 'voice' || tab === 'monthly') return tab;
   return params.get('patient') || params.get('staff') || params.get('visit') ? 'voice' : 'history';
 }
 
@@ -104,12 +117,14 @@ export default function RecordsPage() {
 
 function RecordsPageInner() {
   const searchParams = useSearchParams();
+  const { data: session, status: sessionStatus } = useSession();
+  // 「月の実績」は管理者だけ。セッション取得中は出さない（出してから消すと、ちらつく）。
+  const isAdmin = sessionStatus !== 'loading' && isAdminRole(session?.user?.role);
+  const visibleTabs = RECORDS_TABS.filter((t) => !t.adminOnly || isAdmin);
   const [tab, setTab] = useState<RecordsTab>(() => initialTab(searchParams));
   // 一度開いたタブは畳むだけで外さない（行き来しても期間・絞り込み・ページを失わない）。
   // 開いていないタブは描かない = そのタブの問い合わせも飛ばない。
   const [opened, setOpened] = useState<ReadonlySet<RecordsTab>>(() => new Set([tab]));
-  // らく助エージェントへの画面の文脈(開いているタブ。患者・職員の ID は道の ?patient= / ?staff= から)
-  usePublishScreenContext({ screen: 'records', tab });
 
   const selectTab = (next: RecordsTab) => {
     setTab(next);
@@ -121,7 +136,11 @@ function RecordsPageInner() {
     window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
   };
 
-  const current = RECORDS_TABS.find((t) => t.key === tab) ?? RECORDS_TABS[0];
+  // 管理者でない人が `?tab=monthly` で開いたら、打刻履歴を出す。
+  const shownTab: RecordsTab = visibleTabs.some((t) => t.key === tab) ? tab : 'history';
+  const current = visibleTabs.find((t) => t.key === shownTab) ?? RECORDS_TABS[0];
+  // らく助エージェントへの画面の文脈(開いているタブ。患者・職員の ID は道の ?patient= / ?staff= から)
+  usePublishScreenContext({ screen: 'records', tab: shownTab });
 
   return (
     <section className="flex flex-col gap-3">
@@ -134,9 +153,9 @@ function RecordsPageInner() {
         aria-label="訪問記録の種類"
         className="flex gap-1 border-b border-border-default"
       >
-        {RECORDS_TABS.map((t) => {
+        {visibleTabs.map((t) => {
           const Icon = t.icon;
-          const active = tab === t.key;
+          const active = shownTab === t.key;
           return (
             <button
               key={t.key}
@@ -160,16 +179,22 @@ function RecordsPageInner() {
         })}
       </div>
 
-      {RECORDS_TABS.map((t) =>
-        opened.has(t.key) ? (
+      {visibleTabs.map((t) =>
+        opened.has(t.key) || shownTab === t.key ? (
           <div
             key={t.key}
             role="tabpanel"
             id={`records-panel-${t.key}`}
             aria-labelledby={`records-tab-${t.key}`}
-            hidden={tab !== t.key}
+            hidden={shownTab !== t.key}
           >
-            {t.key === 'history' ? <VisitHistoryTab /> : <VoiceRecordsTab />}
+            {t.key === 'history' ? (
+              <VisitHistoryTab />
+            ) : t.key === 'monthly' ? (
+              <MonthlyActualTab />
+            ) : (
+              <VoiceRecordsTab />
+            )}
           </div>
         ) : null,
       )}
