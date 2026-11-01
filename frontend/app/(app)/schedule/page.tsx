@@ -30,6 +30,8 @@ import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { usePublishScreenContext } from '@/components/agent/screenContext';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { FeasibilityCheckButton } from '@/components/schedule/FeasibilityCheckButton';
+import { FeasibilityBand } from '@/components/schedule/feasibility/FeasibilityBand';
+import { FeasibilityMarksProvider } from '@/components/schedule/feasibility/FeasibilityMark';
 import { TemplateWorkspaceLink } from '@/components/template-ws/TemplateWorkspaceLink';
 import { ReconcileToolbar } from '@/components/integrations/ReconcileReportButton';
 import { useDragAutoScroll } from '@/lib/hooks/useDragAutoScroll';
@@ -101,6 +103,14 @@ function SchedulePageInner() {
       ).padStart(2, '0')}`,
     [weekStart],
   );
+  // 実現性の印・帯の期間 (月〜日)。
+  const weekEndYmd = useMemo(() => {
+    const e = new Date(weekStart);
+    e.setDate(e.getDate() + 6);
+    return `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, '0')}-${String(
+      e.getDate(),
+    ).padStart(2, '0')}`;
+  }, [weekStart]);
 
   // 拠点フィルタ. null = 全拠点.
   const [officeId, setOfficeId] = useState<string | null>(null);
@@ -178,31 +188,46 @@ function SchedulePageInner() {
       {/* メイン: CourseDayTablePanel (Card 2).
           Phase G-41: 主要 4 ボタン + 曜日タブ + テーブル/リスト + 二次操作を 1 つの Card にまとめる.
           2026-08-23: 上部を畳んだときは週切替 / 拠点フィルタも Panel のコンパクト行が担うため
-          onWeekChange / onOfficeChange を渡す. */}
-      <CourseDayTablePanel
-        weekStart={weekStart}
+          onWeekChange / onOfficeChange を渡す.
+          実現性の印と帯 (設計 schedule-feasibility-alerts-design-2026-11-01・管理者だけ):
+          週の印を 1 回で取り、帯は週の上、印は週の時間軸のカードに出す. */}
+      <FeasibilityMarksProvider
+        dateFrom={weekStartYmd}
+        dateTo={weekEndYmd}
         officeId={officeId}
-        canEdit={canEdit}
-        onWeekChange={setWeekStart}
-        onOfficeChange={setOfficeId}
-        initialViewState={initialViewState}
-        onViewStateChange={handleViewStateChange}
-        // コンパクト表示では「コースの作業場」を「ツール」の一時展開に入れる (D5)。
-        compactToolsExtra={headerCollapsed ? <TemplateWorkspaceLink canEdit={canEdit} /> : null}
-        compactExtra={
-          headerCollapsed ? (
-            <>
-              <FeasibilityCheckButton
-                isoYear={isoYear}
-                isoWeek={isoWeek}
-                officeId={officeId}
-                canEdit={canEdit}
-              />
-              <ReconcileToolbar weekStart={weekStartYmd} canEdit={canEdit} />
-            </>
-          ) : null
-        }
-      />
+        enabled={canEdit}
+      >
+        <FeasibilityBand
+          scopeLabel="この週"
+          className="lg:shrink-0"
+          cardTestIdPrefixes={['wtl-visit-', 'staff-week-visit-', 'tl-visit-', 'tl-bar-']}
+          notFoundMessage="このカードは今の表示にありません。「週」の時間軸にすると、印の付いたカードが見られます"
+        />
+        <CourseDayTablePanel
+          weekStart={weekStart}
+          officeId={officeId}
+          canEdit={canEdit}
+          onWeekChange={setWeekStart}
+          onOfficeChange={setOfficeId}
+          initialViewState={initialViewState}
+          onViewStateChange={handleViewStateChange}
+          // コンパクト表示では「コースの作業場」を「ツール」の一時展開に入れる (D5)。
+          compactToolsExtra={headerCollapsed ? <TemplateWorkspaceLink canEdit={canEdit} /> : null}
+          compactExtra={
+            headerCollapsed ? (
+              <>
+                <FeasibilityCheckButton
+                  isoYear={isoYear}
+                  isoWeek={isoWeek}
+                  officeId={officeId}
+                  canEdit={canEdit}
+                />
+                <ReconcileToolbar weekStart={weekStartYmd} canEdit={canEdit} />
+              </>
+            ) : null
+          }
+        />
+      </FeasibilityMarksProvider>
     </section>
   );
 }

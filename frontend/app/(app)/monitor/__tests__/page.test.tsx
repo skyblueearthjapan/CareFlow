@@ -53,6 +53,10 @@ vi.mock('@/lib/queries/staff-events', () => ({
   buildStaffEventsMap: () => new Map(),
 }));
 
+// 実現性の印・帯 (react-query を使うため)。ここでは印なしに固定する。
+vi.mock('@/lib/queries/feasibility', () => ({
+  useFeasibilityMarks: () => ({ data: undefined }),
+}));
 // 事務所からのやること (カードの印・詳細の枠)。ここでは 0 件に固定する。
 vi.mock('@/lib/queries/tasks', () => ({
   useVisitTaskCounts: () => ({ data: { date: '2026-01-01', counts: {} } }),

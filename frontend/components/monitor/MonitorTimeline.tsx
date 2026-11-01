@@ -37,6 +37,10 @@ import { actualTimeParts, minutesToHm } from '@/lib/format/actualTime';
 import { LEAVE_LABEL_OF_TYPE, LEAVE_TYPES, leaveWindow } from '@/lib/leave';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import {
+  FeasibilityMark,
+  useFeasibilityMarkFor,
+} from '@/components/schedule/feasibility/FeasibilityMark';
 import { TaskCountBadge } from '@/components/tasks/TaskCountBadge';
 import { classifyVisitDisplay, type VisitDisplayKind } from '@/lib/schedule/visitVisibility';
 
@@ -891,6 +895,8 @@ function VisitBars({
   /** 事務所からのやることの件数 (無ければ印を出さない)。 */
   taskCount?: VisitTaskCount;
 }) {
+  // 実現性の印 (管理者だけ・Provider の外では空)。
+  const feasMarks = useFeasibilityMarkFor(visit.visit_id);
   const pos = lanePos(lane);
   const ps = hmToMinutes(visit.start_time);
   const pe = hmToMinutes(visit.end_time);
@@ -1011,6 +1017,20 @@ function VisitBars({
           style={{ left: `${minutesToPct(pe)}%`, top: pos.distTop }}
         >
           →{formatDistance(dn)}
+        </div>
+      ) : null}
+      {/* 実現性の印 (管理者だけ)。カードは <button> なので中に入れず、右上に重ねる。
+          終わった訪問 (退出済み) は薄く出す。 */}
+      {feasMarks.length > 0 ? (
+        <div
+          className="pointer-events-none absolute z-[4]"
+          style={{ left: `calc(${pL + pW}% - 10px)`, top: pos.cardTop - 6 }}
+        >
+          <FeasibilityMark
+            marks={feasMarks}
+            testId={`monitor-feas-mark-${visit.visit_id}`}
+            dimmed={departureIso != null}
+          />
         </div>
       ) : null}
       {/* 予定カード (M-4a): スケジュールと同じ性別ウォッシュ+左帯+角丸の2行カード。

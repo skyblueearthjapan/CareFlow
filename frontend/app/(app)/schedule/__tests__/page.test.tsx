@@ -38,6 +38,10 @@ vi.mock('@/components/template-ws/TemplateWorkspaceLink', () => ({
 vi.mock('@/components/schedule/FeasibilityCheckButton', () => ({
   FeasibilityCheckButton: () => <div data-testid="feasibility-check-stub" />,
 }));
+// 実現性の印・帯も同様 (react-query を使うため)。ここでは印なしに固定する。
+vi.mock('@/lib/queries/feasibility', () => ({
+  useFeasibilityMarks: () => ({ data: undefined }),
+}));
 // 突合レポートボタンも同様に stub (react-query mutation を使うため)。
 vi.mock('@/components/integrations/ReconcileReportButton', () => ({
   ReconcileReportButton: () => <div data-testid="reconcile-report-stub" />,

@@ -53,6 +53,8 @@ import { useStaffList } from '@/lib/queries/staff';
 import { buildStaffEventsMap, useWeekStaffEvents } from '@/lib/queries/staff-events';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { isAdminRole } from '@/lib/rbac';
+import { FeasibilityBand } from '@/components/schedule/feasibility/FeasibilityBand';
+import { FeasibilityMarksProvider } from '@/components/schedule/feasibility/FeasibilityMark';
 import { useVisitTaskCounts } from '@/lib/queries/tasks';
 
 type OnlyFilter = null | 'anomaly' | 'missing';
@@ -474,6 +476,19 @@ export default function MonitorPage() {
           <span className="text-text-muted">→1.2km 次までの距離</span>
         </div>
 
+        {/* この日に確かめたい予定 (実現性の帯・管理者だけ・無ければ出ない。設計
+            schedule-feasibility-alerts-design-2026-11-01)。印の Provider は帯とタイムラインで
+            同じ query キーを使うので、取得は 1 回にまとまる。 */}
+        <FeasibilityMarksProvider dateFrom={date} dateTo={date} enabled={canReview}>
+          <FeasibilityBand
+            scopeLabel="この日"
+            showDay={false}
+            className="mx-5 mb-2"
+            cardTestIdPrefixes={['monitor-bar-plan-']}
+            notFoundMessage="このカードは今の表示にありません。絞り込み（拠点・異常のみ）を外してください"
+          />
+        </FeasibilityMarksProvider>
+
         {/* 本体: タイムライン (全幅)。地図・順路・詳細は選んだ行の下に開く (設計 §4)。 */}
         <div className="flex min-h-0 flex-1">
           {/* M-4c改: self-start + max-h-full で高さを内容にフィットさせ、横スクロールバーが
@@ -494,51 +509,53 @@ export default function MonitorPage() {
                 モニターの取得に失敗しました。再読み込みしてください。
               </div>
             ) : (
-              <MonitorTimeline
-                rows={filteredRows}
-                selectedRowKey={selectedRowKey}
-                selectedVisitId={selectedVisitId}
-                nowMinutes={nowMinutes}
-                onSelectRow={onSelectRow}
-                onSelectVisit={onSelectVisit}
-                patientMetaById={patientMetaById}
-                staffSexById={staffSexById}
-                eventsByStaffId={eventsByStaffId}
-                // 「入院中」バッジの日付条件 (2026-09-10)。
-                dateIso={date}
-                officeIds={officeIds}
-                visitById={visitById}
-                taskCounts={taskCounts}
-                renderRowPanel={(row) => (
-                  <MonitorRowPanel
-                    row={row}
-                    visit={
-                      selectedVisit && row.visits.some((v) => v.visit_id === selectedVisitId)
-                        ? selectedVisit
-                        : null
-                    }
-                    onSelectVisit={onSelectVisit}
-                    onClose={closePanel}
-                    matchM={data?.thresholds.match_m ?? 100}
-                    nearby={nearbyQuery.data?.items ?? EMPTY_NEARBY}
-                    officeIds={officeIds}
-                    maxInprogressMin={data?.thresholds.max_inprogress_min}
-                    onReview={canReview ? onReview : undefined}
-                    onUnreview={canReview ? onUnreview : undefined}
-                    reviewPending={reviewPending}
-                    // 実績の時刻を合わせる (管理者だけ・pc-actual-time-edit-design D1)。
-                    canAdjust={canReview}
-                    // 経路は「異常のみ」等で絞る前の 1 日の順番で (レビュー 2026-10-17)。
-                    routeVisits={
-                      row.staff_id != null
-                        ? data?.staff.find((r) => r.staff_id === row.staff_id)?.visits
-                        : undefined
-                    }
-                    // 事務所からのやること (管理者だけ)。
-                    tasksDate={canReview ? date : null}
-                  />
-                )}
-              />
+              <FeasibilityMarksProvider dateFrom={date} dateTo={date} enabled={canReview}>
+                <MonitorTimeline
+                  rows={filteredRows}
+                  selectedRowKey={selectedRowKey}
+                  selectedVisitId={selectedVisitId}
+                  nowMinutes={nowMinutes}
+                  onSelectRow={onSelectRow}
+                  onSelectVisit={onSelectVisit}
+                  patientMetaById={patientMetaById}
+                  staffSexById={staffSexById}
+                  eventsByStaffId={eventsByStaffId}
+                  // 「入院中」バッジの日付条件 (2026-09-10)。
+                  dateIso={date}
+                  officeIds={officeIds}
+                  visitById={visitById}
+                  taskCounts={taskCounts}
+                  renderRowPanel={(row) => (
+                    <MonitorRowPanel
+                      row={row}
+                      visit={
+                        selectedVisit && row.visits.some((v) => v.visit_id === selectedVisitId)
+                          ? selectedVisit
+                          : null
+                      }
+                      onSelectVisit={onSelectVisit}
+                      onClose={closePanel}
+                      matchM={data?.thresholds.match_m ?? 100}
+                      nearby={nearbyQuery.data?.items ?? EMPTY_NEARBY}
+                      officeIds={officeIds}
+                      maxInprogressMin={data?.thresholds.max_inprogress_min}
+                      onReview={canReview ? onReview : undefined}
+                      onUnreview={canReview ? onUnreview : undefined}
+                      reviewPending={reviewPending}
+                      // 実績の時刻を合わせる (管理者だけ・pc-actual-time-edit-design D1)。
+                      canAdjust={canReview}
+                      // 経路は「異常のみ」等で絞る前の 1 日の順番で (レビュー 2026-10-17)。
+                      routeVisits={
+                        row.staff_id != null
+                          ? data?.staff.find((r) => r.staff_id === row.staff_id)?.visits
+                          : undefined
+                      }
+                      // 事務所からのやること (管理者だけ)。
+                      tasksDate={canReview ? date : null}
+                    />
+                  )}
+                />
+              </FeasibilityMarksProvider>
             )}
           </div>
         </div>

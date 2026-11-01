@@ -22,6 +22,10 @@ import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 import { CornerPushPin } from '@/components/ui/push-pin';
 import {
+  FeasibilityMark,
+  useFeasibilityMarkFor,
+} from '@/components/schedule/feasibility/FeasibilityMark';
+import {
   isDivergedFromMaster,
   masterDivergenceCardStyle,
   masterDivergenceTitle,
@@ -188,6 +192,8 @@ function WeekCard({
   laneInfo?: CardLane;
   accompaniment?: AccompanimentBinding;
 }) {
+  // 実現性の印 (管理者だけ・Provider の外では空)。早期 return より前に読む (hooks の規則)。
+  const feasMarks = useFeasibilityMarkFor(v.id);
   const accActive = accompaniment?.active === true;
   const accSelected = accActive && accompaniment!.isVisitSelected(v.id);
   const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(v.id);
@@ -239,7 +245,7 @@ function WeekCard({
       ? undefined
       : () => accompaniment!.toggleVisit(v.id)
     : onClick;
-  return (
+  const card = (
     <button
       type="button"
       onClick={effectiveOnClick}
@@ -363,6 +369,37 @@ function WeekCard({
       )}
     </button>
   );
+  if (feasMarks.length === 0) return card;
+  // 印はカード (<button>) の中に入れられない (ボタンの入れ子は不可) ため、同じ位置・幅の
+  // 高さ 0 の層を重ね、その右上に置く。層は押せないので、カードの操作を邪魔しない。
+  return (
+    <>
+      {card}
+      <div
+        className="pointer-events-none absolute z-[5]"
+        style={{ top, height: 0, ...laneStyle }}
+        data-testid={`wtl-feas-layer-${v.id}`}
+      >
+        <FeasibilityMark
+          marks={feasMarks}
+          testId={`wtl-feas-mark-${v.id}`}
+          className="absolute -right-1 -top-1.5"
+        />
+      </div>
+    </>
+  );
+}
+
+/** 同住所ペアの中の 1 件の印 (ペアの箱は <div> なので、行の右上に重ねられる)。 */
+function WeekPairRowMark({ visitId }: { visitId: string }) {
+  const marks = useFeasibilityMarkFor(visitId);
+  return (
+    <FeasibilityMark
+      marks={marks}
+      testId={`wtl-feas-mark-${visitId}`}
+      className="absolute -right-1 -top-1 z-[3]"
+    />
+  );
 }
 
 /** 描画単位: 単独訪問 or 同住所・同時刻2名の90分占有ペア (日ビューと同じ規則)。 */
@@ -477,103 +514,105 @@ function WeekPairBox({
               ? () => onPatientClick(v.patient_id)
               : undefined;
           return (
-            <button
-              key={v.id}
-              type="button"
-              data-testid={`wtl-visit-${v.id}`}
-              data-accompaniment-selected={accSelected ? 'true' : undefined}
-              onClick={onCardClick}
-              title={
-                accActive && !accompaniment!.isVisitArmed
-                  ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
-                  : accInCourse
-                    ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-                    : undefined
-              }
-              className={cn(
-                'relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
-                accOverlap && 'ring-2 ring-error',
-                accSelected && !accOverlap && 'ring-2 ring-brand-primary',
-              )}
-              style={{
-                background: pal.bg,
-                borderColor: accOverlap ? 'var(--error)' : pal.ln,
-                borderLeftColor: accOverlap ? 'var(--error)' : pal.bar,
-                color: pal.ink,
-              }}
-            >
-              {accActive && accSelected && (
-                <span
-                  className="absolute left-0.5 top-0.5 z-[2] grid h-3 w-3 place-items-center rounded-full bg-brand-primary text-[7px] font-bold text-white"
-                  aria-hidden="true"
-                >
-                  ✓
-                </span>
-              )}
-              {accBadge && (
-                <span
-                  className={cn(
-                    'absolute top-0.5 z-[2] max-w-[46px] truncate rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info',
-                    v.movability === 'locked' ? 'right-[15px]' : 'right-0.5',
-                  )}
-                  data-testid={`wtl-accompaniment-badge-${v.id}`}
-                  title={`同行: ${accBadge}`}
-                >
-                  👥{lanes === 1 ? accBadge : ''}
-                </span>
-              )}
-              {v.movability === 'locked' && <CornerPushPin className="h-4 w-4" />}
-              {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。
-                  等分 (lanes ≥ 2) では余白も時刻も捨てて氏名を 2 行で読ませる (§2-B1)。 */}
-              <span
+            <div key={v.id} className="relative flex min-h-0 flex-1 flex-col">
+              <button
+                type="button"
+                data-testid={`wtl-visit-${v.id}`}
+                data-accompaniment-selected={accSelected ? 'true' : undefined}
+                onClick={onCardClick}
+                title={
+                  accActive && !accompaniment!.isVisitArmed
+                    ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+                    : accInCourse
+                      ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+                      : undefined
+                }
                 className={cn(
-                  'flex min-w-0 items-center gap-1',
-                  lanes === 1 &&
-                    accBadge &&
-                    (v.movability === 'locked' ? 'pr-[64px]' : 'pr-[50px]'),
+                  'relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+                  accOverlap && 'ring-2 ring-error',
+                  accSelected && !accOverlap && 'ring-2 ring-brand-primary',
                 )}
+                style={{
+                  background: pal.bg,
+                  borderColor: accOverlap ? 'var(--error)' : pal.ln,
+                  borderLeftColor: accOverlap ? 'var(--error)' : pal.bar,
+                  color: pal.ink,
+                }}
               >
-                <span
-                  className={cn(
-                    'font-bold leading-tight',
-                    lanes > 1
-                      ? 'min-w-0 line-clamp-2 break-words text-[10.5px]'
-                      : 'truncate text-[11px]',
-                  )}
-                >
-                  {v.patient_name ?? '—'}
-                </span>
-                {/* 非稼働患者のバッジ (§3-4)。 */}
-                <InactiveVisitBadge
-                  visit={v}
-                  kind={classifyVisitDisplay(v, { showInactive: true })}
-                  testId={`wtl-inactive-badge-${v.id}`}
-                />
-                {lanes === 1 && (
-                  <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
-                    {(v.start_time ?? '').slice(0, 5)}
-                    {dm !== null ? `・${dm}分` : ''}
+                {accActive && accSelected && (
+                  <span
+                    className="absolute left-0.5 top-0.5 z-[2] grid h-3 w-3 place-items-center rounded-full bg-brand-primary text-[7px] font-bold text-white"
+                    aria-hidden="true"
+                  >
+                    ✓
                   </span>
                 )}
-              </span>
-              {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
-              {v.patient_address && (
-                <span className="flex min-w-0 items-center gap-0.5 text-[8.5px] opacity-75">
-                  <span className="shrink-0">📍</span>
-                  <span className="truncate">{v.patient_address}</span>
-                </span>
-              )}
-              {/* 3行目: 条件 (単独カードと同じ情報)。 */}
-              {(v.patient_sex_restriction === 'female_only' ||
-                v.patient_sex_restriction === 'male_only') && (
+                {accBadge && (
+                  <span
+                    className={cn(
+                      'absolute top-0.5 z-[2] max-w-[46px] truncate rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info',
+                      v.movability === 'locked' ? 'right-[15px]' : 'right-0.5',
+                    )}
+                    data-testid={`wtl-accompaniment-badge-${v.id}`}
+                    title={`同行: ${accBadge}`}
+                  >
+                    👥{lanes === 1 ? accBadge : ''}
+                  </span>
+                )}
+                {v.movability === 'locked' && <CornerPushPin className="h-4 w-4" />}
+                {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。
+                  等分 (lanes ≥ 2) では余白も時刻も捨てて氏名を 2 行で読ませる (§2-B1)。 */}
                 <span
-                  className="w-fit shrink-0 rounded-full px-1 py-px text-[7.5px] font-bold text-white"
-                  style={{ background: pal.bar }}
+                  className={cn(
+                    'flex min-w-0 items-center gap-1',
+                    lanes === 1 &&
+                      accBadge &&
+                      (v.movability === 'locked' ? 'pr-[64px]' : 'pr-[50px]'),
+                  )}
                 >
-                  {v.patient_sex_restriction === 'female_only' ? '女性のみ' : '男性のみ'}
+                  <span
+                    className={cn(
+                      'font-bold leading-tight',
+                      lanes > 1
+                        ? 'min-w-0 line-clamp-2 break-words text-[10.5px]'
+                        : 'truncate text-[11px]',
+                    )}
+                  >
+                    {v.patient_name ?? '—'}
+                  </span>
+                  {/* 非稼働患者のバッジ (§3-4)。 */}
+                  <InactiveVisitBadge
+                    visit={v}
+                    kind={classifyVisitDisplay(v, { showInactive: true })}
+                    testId={`wtl-inactive-badge-${v.id}`}
+                  />
+                  {lanes === 1 && (
+                    <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
+                      {(v.start_time ?? '').slice(0, 5)}
+                      {dm !== null ? `・${dm}分` : ''}
+                    </span>
+                  )}
                 </span>
-              )}
-            </button>
+                {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
+                {v.patient_address && (
+                  <span className="flex min-w-0 items-center gap-0.5 text-[8.5px] opacity-75">
+                    <span className="shrink-0">📍</span>
+                    <span className="truncate">{v.patient_address}</span>
+                  </span>
+                )}
+                {/* 3行目: 条件 (単独カードと同じ情報)。 */}
+                {(v.patient_sex_restriction === 'female_only' ||
+                  v.patient_sex_restriction === 'male_only') && (
+                  <span
+                    className="w-fit shrink-0 rounded-full px-1 py-px text-[7.5px] font-bold text-white"
+                    style={{ background: pal.bar }}
+                  >
+                    {v.patient_sex_restriction === 'female_only' ? '女性のみ' : '男性のみ'}
+                  </span>
+                )}
+              </button>
+              <WeekPairRowMark visitId={v.id} />
+            </div>
           );
         })}
       </div>

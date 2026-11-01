@@ -27,6 +27,7 @@ import type {
 
 import { SyncReportButton } from '@/components/integrations/SyncReportButton';
 import { EventVisitConflictNotice } from '@/components/schedule/v2/EventVisitConflictNotice';
+import { ImportFeasibilityPanel } from './ImportFeasibilityPanel';
 import { type InboundVm, fmtDayLabel, fmtRelativeWeek, fmtWeekLabel } from './useInbound';
 
 const EVENT_ACTION_META: Record<string, { label: string; cls: string }> = {
@@ -65,6 +66,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     eventsError,
     applyError,
     applyRetryable,
+    importFeasibility,
     hasEventChanges,
     eventsOnly,
     setEventsOnly,
@@ -389,6 +391,9 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
           </div>
         )}
       </div>
+
+      {/* ── 取り込み後の確認 (新しく出た無理・注意)。成功後も次の読み込みまで残す ── */}
+      <ImportFeasibilityPanel feasibility={importFeasibility} />
 
       {/* ── 確認ダイアログ ── */}
       {/* ── 直近の取り込み (PO 要望 2026-08-09: どの週を取り込んだかを枠内で見える化)。

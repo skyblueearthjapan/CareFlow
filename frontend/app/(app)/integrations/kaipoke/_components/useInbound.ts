@@ -32,6 +32,7 @@ import {
   opLabel,
 } from '@/lib/kaipokeOps';
 import type { EventsInboundPreview, SmartInboundPreview } from '@/lib/schemas/integration';
+import type { ImportFeasibility } from '@/lib/queries/feasibility';
 
 // ──────────────────────────── 定数 ────────────────────────────
 
@@ -140,6 +141,10 @@ export function useInbound({
   // 訪問 apply が「カイポケが別の処理中 (409 kaipoke busy)」で止まった。サーバーは何も
   // 書かずに戻している (rollback) ので、❶を取り直さずにそのまま❸を押し直してよい。
   const [applyRetryable, setApplyRetryable] = useState(false);
+  // 取り込みで新しく出た無理・注意 (設計 schedule-feasibility-alerts-design-2026-11-01 §3-4)。
+  // 成功後は計画を消す (resetPlan) が、これはトーストと違って画面に残す。
+  // 次の読み込み・週の切り替え・次の取り込みで消す。
+  const [importFeasibility, setImportFeasibility] = useState<ImportFeasibility | null>(null);
   const [confirm, setConfirm] = useState(false);
   // 取り込み対象 (kaipoke-event-two-way-design.md §3-③): false = 訪問＋イベント (従来) /
   // true = イベントのみ (訪問には一切触れない・RPA 1オペで所要も約半分)
@@ -289,15 +294,18 @@ export function useInbound({
   const changeWeek = (delta: number) => {
     setWeekOffset((o) => Math.min(MAX_FUTURE_WEEKS, o + delta));
     resetPlan();
+    setImportFeasibility(null);
   };
 
   const goToThisWeek = () => {
     setWeekOffset(0);
     resetPlan();
+    setImportFeasibility(null);
   };
 
   const runDiff = async () => {
     resetPlan();
+    setImportFeasibility(null);
     // ❶ 訪問(smart) → イベント を直列で取得 (RPA は単一スロットのため並列不可)。
     // 片方が失敗しても他方は続行し、失敗側は Alert / eventsError で明示する。
     // イベントのみモードでは訪問取得を丸ごとスキップする (訪問盤面に一切触れない)。
@@ -343,8 +351,10 @@ export function useInbound({
     setConfirm(false);
     setApplyError(null);
     setApplyRetryable(false);
+    setImportFeasibility(null);
     const parts: string[] = [];
     let failed = false;
+    let feasibility: ImportFeasibility | null = null;
 
     // 訪問 (smart: 差分=実績日・置換=クリーン日を単一トランザクションで)
     if (hasVisitTarget) {
@@ -366,6 +376,8 @@ export function useInbound({
               (res.replace.skipped.length > 0 ? ` / 対象外 ${res.replace.skipped.length}` : ''),
           );
         }
+        feasibility = res.feasibility ?? null;
+        setImportFeasibility(feasibility);
       } catch (e) {
         failed = true;
         if (e instanceof ApiError && e.status === 409 && apiErrorMessage(e) === 'kaipoke busy') {
@@ -416,7 +428,11 @@ export function useInbound({
     // 部分失敗で成功トーストを出さない — 数秒で消える成功表示が、画面に残る
     // Alert より先に目に入ると「取り込めた」と誤認される (2026-09-16 A-3)。
     if (!failed && parts.length > 0) {
-      toast.success(`取り込み完了 — ${parts.join(' ｜ ')}`);
+      const feasNote =
+        feasibility && feasibility.ok && feasibility.hardCount + feasibility.softCount > 0
+          ? ` ｜ 新しく出た 無理 ${feasibility.hardCount}・注意 ${feasibility.softCount}`
+          : '';
+      toast.success(`取り込み完了 — ${parts.join(' ｜ ')}${feasNote}`);
     }
     if (!failed) {
       resetPlan();
@@ -457,6 +473,8 @@ export function useInbound({
     eventsError,
     applyError,
     applyRetryable,
+    /** 取り込みで新しく出た無理・注意 (成功後も画面に残す) */
+    importFeasibility,
     hasEventChanges,
     // 取り込み対象モード (③イベントのみ取込)
     eventsOnly,

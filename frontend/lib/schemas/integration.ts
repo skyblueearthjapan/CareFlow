@@ -696,6 +696,34 @@ export const SmartInboundApplyResultSchema = z.object({
   dryRun: z.boolean(),
   diff: ApplyInboundResultSchema.nullable(),
   replace: ReplaceInboundResultSchema.nullable(),
+  /**
+   * 取り込みで新しく出た無理・注意 (設計 schedule-feasibility-alerts-design-2026-11-01)。
+   * dry_run・古い BE では無い。
+   */
+  feasibility: z
+    .object({
+      ok: z.boolean(),
+      hardCount: z.number().default(0),
+      softCount: z.number().default(0),
+      unassignedCount: z.number().default(0),
+      items: z
+        .array(
+          z.object({
+            tier: z.enum(['hard', 'soft']),
+            kind: z.string(),
+            day: z.string(),
+            at: z.string(),
+            staff: z.string(),
+            patientName: z.string(),
+            reason: z.string(),
+            visitIds: z.array(z.string()).default([]),
+          }),
+        )
+        .default([]),
+      message: z.string().nullable().default(null),
+    })
+    .nullable()
+    .optional(),
 });
 export type SmartInboundApplyResult = z.infer<typeof SmartInboundApplyResultSchema>;
 

@@ -5,7 +5,7 @@
  * GET /api/v1/schedule/v2/feasibility-report?iso_year&iso_week[&office_id]
  * 応答には印刷用の自己完結 HTML (`html`) が同梱される。FE はそれを新しいタブに書き出す。
  */
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
@@ -64,6 +64,94 @@ export function useFeasibilityReport() {
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
   return useMutation<FeasibilityReport, Error, FeasibilityParams>({
-    mutationFn: (p) => fetcher<FeasibilityReport>(feasibilityReportPath(p), { accessToken, refreshToken }),
+    mutationFn: (p) =>
+      fetcher<FeasibilityReport>(feasibilityReportPath(p), { accessToken, refreshToken }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// カードの印・帯 (設計 docs/plans/schedule-feasibility-alerts-design-2026-11-01.md 第 1 段)
+//
+// GET /api/v1/schedule/v2/feasibility-marks?date_from&date_to[&office_id] (admin・7 日まで)。
+// 赤 (hard) と黄 (soft) だけが返る (参考は返らない)。印は保存せず毎回計算される。
+// ---------------------------------------------------------------------------
+
+export type FeasibilityTier = 'hard' | 'soft';
+
+/** 帯・一覧・取り込み結果に出す指摘 1 件。理由の文は backend で作る。 */
+export interface FeasibilityAlertItem {
+  tier: FeasibilityTier;
+  kind: string;
+  day: string; // YYYY-MM-DD
+  at: string; // HH:MM ('' = 日単位)
+  staff: string;
+  patientName: string;
+  reason: string;
+  visitIds: string[];
+}
+
+/** カード 1 枚に付ける印 1 件。 */
+export interface FeasibilityMarkEntry {
+  tier: FeasibilityTier;
+  kind: string;
+  reason: string;
+}
+
+export interface FeasibilityMarksResponse {
+  dateFrom: string;
+  dateTo: string;
+  hardCount: number;
+  softCount: number;
+  unassignedCount: number;
+  items: FeasibilityAlertItem[];
+  marks: Record<string, FeasibilityMarkEntry[]>;
+}
+
+/** 取り込みで新しく出た無理・注意 (smart-inbound-apply の応答の feasibility)。 */
+export interface ImportFeasibility {
+  ok: boolean;
+  hardCount: number;
+  softCount: number;
+  unassignedCount: number;
+  items: FeasibilityAlertItem[];
+  message: string | null;
+}
+
+export interface FeasibilityMarksParams {
+  dateFrom: string; // YYYY-MM-DD
+  dateTo: string; // YYYY-MM-DD
+  officeId?: string | null;
+  /** 管理者だけ取る (印は管理者だけに出す・PO 決定 2026-11-01)。 */
+  enabled?: boolean;
+}
+
+export function feasibilityMarksPath(p: FeasibilityMarksParams): string {
+  const qs = new URLSearchParams({ date_from: p.dateFrom, date_to: p.dateTo });
+  if (p.officeId) qs.set('office_id', p.officeId);
+  return `/api/v1/schedule/v2/feasibility-marks?${qs.toString()}`;
+}
+
+/**
+ * 期間の印をまとめて 1 回で取る (スケジュール = 1 週・訪問モニター = 1 日)。
+ * キーは ['schedule', …] の下に置く: 予定を動かしたときの一括失効 (invalidateScheduleAll)
+ * で一緒に読み直される。盤面の個別の操作でも古くなりすぎないよう 60 秒ごとにも読み直す。
+ */
+export function useFeasibilityMarks(p: FeasibilityMarksParams) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const enabled = (p.enabled ?? true) && status === 'authenticated';
+  return useQuery<FeasibilityMarksResponse, Error>({
+    queryKey: [
+      'schedule',
+      'feasibility-marks',
+      { dateFrom: p.dateFrom, dateTo: p.dateTo, officeId: p.officeId ?? null },
+    ],
+    enabled,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    queryFn: () =>
+      fetcher<FeasibilityMarksResponse>(feasibilityMarksPath(p), { accessToken, refreshToken }),
   });
 }
