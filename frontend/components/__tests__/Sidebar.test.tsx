@@ -93,12 +93,12 @@ describe('Sidebar — ロール別メニュー表示', () => {
     expect(screen.getByRole('link', { name: /訪問モニター/ })).toBeInTheDocument();
   });
 
-  it('4. 「休み・勤務表」は申請履歴のすぐ下・管理者だけ', () => {
+  it('4. 管理者のメニューの並び：患者 → 休み・勤務表 → 申請履歴 → 連携 → 監査ログ（PO 2026-11-01）', () => {
     setRole('admin');
     render(<Sidebar collapsed={false} />);
     const links = screen.getAllByRole('link').map((a) => a.textContent);
-    const i = links.indexOf('申請履歴');
-    expect(links[i + 1]).toBe('休み・勤務表');
+    const i = links.indexOf('患者');
+    expect(links.slice(i, i + 5)).toEqual(['患者', '休み・勤務表', '申請履歴', '連携', '監査ログ']);
     expect(screen.getByRole('link', { name: '休み・勤務表' })).toHaveAttribute(
       'href',
       '/admin/leave',

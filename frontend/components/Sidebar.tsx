@@ -52,14 +52,6 @@ const NAV_ITEMS = [
   { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/patients', label: '患者', icon: Users },
-  // 「連携」= カイポケ ジョブセンター（操作卓）を直接開く。Geocoding キャッシュ等の
-  // 管理ユーティリティはジョブセンター画面内のリンクから /integrations へ。
-  // 連携はページ側が admin 限定 (認証情報等のセンシティブ) のためメニューも admin のみに揃える
-  // (旧: manager にも表示されるが中身で拒否される矛盾があった)。
-  { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true, strictAdmin: true },
-  // 申請履歴ページ右カラムに「休み・月確定」パネルを同居 (staff-shift-confirmation-design.md §3・
-  // 2026-08-18 サブ配置へ移設。独立ページ /admin/staff-leave は廃止)
-  { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
   // 休み・勤務表 (leave-and-kinmu-sheet-design §5): 全員×日付の月の表。管理者だけ
   {
     href: '/admin/leave',
@@ -68,6 +60,14 @@ const NAV_ITEMS = [
     adminOnly: true,
     strictAdmin: true,
   },
+  // 申請履歴ページ右カラムに「休み・月確定」パネルを同居 (staff-shift-confirmation-design.md §3・
+  // 2026-08-18 サブ配置へ移設。独立ページ /admin/staff-leave は廃止)
+  { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
+  // 「連携」= カイポケ ジョブセンター（操作卓）を直接開く。Geocoding キャッシュ等の
+  // 管理ユーティリティはジョブセンター画面内のリンクから /integrations へ。
+  // 連携はページ側が admin 限定 (認証情報等のセンシティブ) のためメニューも admin のみに揃える
+  // (旧: manager にも表示されるが中身で拒否される矛盾があった)。
+  { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true, strictAdmin: true },
   // Wave 4-F: admin audit logs (admin role only). User management was moved
   // to the header rightmost button so admins can reach it from any screen.
   {
