@@ -337,3 +337,98 @@ def test_same_item_key_with_a_kaipoke_only_twin_goes_to_review() -> None:
     paired = [r for r in rows if r.rk is not None]
     assert len(paired) == 1 and paired[0].status == rules.STATUS_REVIEW
     assert rules.FLAG_DUP_TARGET in codes(paired[0])
+
+
+def test_swapped_order_sends_every_pair_of_that_day_to_review() -> None:
+    # 再レビューの中: らく助 A 09:30〜10:00・B 10:00〜10:30、カイポケ a 09:45〜10:25・
+    # b 10:20〜10:50。差の小さい順だと A→b・B→a と組まれ、両方「反映する」になっていた。
+    rows = rules.judge(
+        [
+            rk("A", "前川 七海", "09:30", "10:00"),
+            rk("B", "前川 七海", "10:00", "10:30"),
+        ],
+        [kp("前川　七海", "09:45", "10:25"), kp("前川　七海", "10:20", "10:50")],
+    )
+    by_id = {r.rk.visit_id: r for r in rows if r.rk}
+    assert by_id["A"].kp is not None and by_id["A"].kp.start == "10:20"
+    assert by_id["B"].kp is not None and by_id["B"].kp.start == "09:45"
+    for row in by_id.values():
+        assert row.status == rules.STATUS_REVIEW
+        assert rules.FLAG_ORDER_SWAP in codes(row)
+        assert row.default_selected is False
+
+
+def test_same_order_is_not_flagged_as_swapped() -> None:
+    rows = rules.judge(
+        [
+            rk("A", "前川 七海", "09:30", "10:00"),
+            rk("B", "前川 七海", "13:00", "13:30"),
+        ],
+        [kp("前川　七海", "09:32", "10:00"), kp("前川　七海", "13:05", "13:30")],
+    )
+    assert all(rules.FLAG_ORDER_SWAP not in codes(r) for r in rows)
+    assert all(r.status == rules.STATUS_APPLY for r in rows)
+
+
+def test_two_patient_codes_under_one_name_go_to_review() -> None:
+    # 字体をそろえると 髙橋様 と 高橋様 (別の方) が同じ (日・利用者) になる。
+    visits = [
+        rules.RkVisit(
+            visit_id="1",
+            date=D1,
+            patient="髙橋 一",
+            patient_code="P001",
+            staff=(NURSE_A,),
+            plan_start="09:00",
+            arrival="09:00",
+            departure="09:40",
+        ),
+        rules.RkVisit(
+            visit_id="2",
+            date=D1,
+            patient="高橋 一",
+            patient_code="P002",
+            staff=(NURSE_A,),
+            plan_start="14:00",
+            arrival="14:02",
+            departure="14:40",
+        ),
+    ]
+    rows = rules.judge(visits, [kp("高橋　一", "09:00", "09:30"), kp("高橋　一", "14:00", "14:40")])
+    paired = [r for r in rows if r.rk is not None]
+    assert len(paired) == 2
+    for row in paired:
+        assert row.status == rules.STATUS_REVIEW
+        assert rules.FLAG_CODE_VARIANT in codes(row)
+
+
+def test_same_patient_code_is_not_flagged() -> None:
+    visits = [
+        rules.RkVisit(
+            visit_id="1",
+            date=D1,
+            patient="高橋 一",
+            patient_code="P001",
+            staff=(NURSE_A,),
+            plan_start="09:00",
+            arrival="09:00",
+            departure="09:40",
+        ),
+    ]
+    rows = rules.judge(visits, [kp("高橋　一", "09:00", "09:30")])
+    assert rules.FLAG_CODE_VARIANT not in codes(rows[0])
+    assert rows[0].status == rules.STATUS_APPLY
+
+
+def test_equal_gap_prefers_the_row_with_the_same_staff() -> None:
+    # 差が同じ (どちらも 10 分) なら、職員1 が担当と一致する行を先に選ぶ。
+    rows = rules.judge(
+        [rk("1", "青木 さくら", "10:00", "10:40", staff=(NURSE_B,))],
+        [
+            kp("青木　さくら", "09:50", "10:30", staff=("佐藤　花子",)),
+            kp("青木　さくら", "10:10", "10:50", staff=("鈴木　一郎",)),
+        ],
+    )
+    paired = [r for r in rows if r.rk is not None]
+    assert len(paired) == 1 and paired[0].kp is not None
+    assert paired[0].kp.start == "10:10"

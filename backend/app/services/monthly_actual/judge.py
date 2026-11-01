@@ -7,9 +7,11 @@ PO の決まり (``docs/plans/session-2026-11-01-HANDOFF.md`` §1)。
     (日・利用者) で組にする。利用者名は字体 (齋/齊・髙/高・﨑/崎・栁/柳・邉邊/辺・濵濱/浜・
     德/徳・冨/富 など) と空白をそろえる。同じ (日・利用者) のらく助の訪問とカイポケの行の
     全部の組を、到着 (無ければ予定の開始) とカイポケの開始の差の小さい順に割り当てる (差 0 を
-    先に固定・120 分以内・1 つのカイポケの行は 1 回だけ)。近い順の早い者勝ちにすると、別の
-    訪問の行を取って書き換えてしまう。らく助とカイポケの件数が違う (日・利用者) は、組めた行も
-    全部「人が見る」にする (組めなかったらく助の訪問は「カイポケに無い」)。
+    先に固定・差が同じなら担当 (職員1) が一致する組を先に・120 分以内・1 つのカイポケの行は
+    1 回だけ)。近い順の早い者勝ちにすると、別の訪問の行を取って書き換えてしまう。らく助と
+    カイポケの件数が違う (日・利用者) は、組めた行も全部「人が見る」にする (組めなかったらく助の
+    訪問は「カイポケに無い」)。組んだ後に順番が入れ替わっている組がある (日・利用者) と、
+    らく助の利用者コードが 2 種類以上ある (日・利用者) も、組を全部「人が見る」にする。
 
 新しい時刻
     らく助の QR 実績 (後から合わせた時刻を含む) が正。30 分未満の滞在と、退出の QR が無い
@@ -25,7 +27,8 @@ PO の決まり (``docs/plans/session-2026-11-01-HANDOFF.md`` §1)。
 反映しない印 (人が見る)
     1 時間以上ずれる・同じ職員の別の訪問と時間が重なる・担当が違う・2 名訪問の人数が違う・
     QR の到着が無い・同じカイポケの行を 2 件が指す・同じ日の訪問の数が違う・
-    30 分未満 (退出なし) で到着＋35 分にするのにカイポケの滞在が 60 分以上ある。
+    30 分未満 (退出なし) で到着＋35 分にするのにカイポケの滞在が 60 分以上ある・
+    順番が入れ替わっている・同じ名前の別の方の可能性。
 反映してよい印
     30 分未満→到着＋35 分・退出の QR が無い→到着＋35 分・カイポケの終了が開始より前・
     記録書Ⅱと 10 分以上ずれる・滞在が長い。
@@ -86,6 +89,8 @@ FLAG_NO_ARRIVAL: Final = "no_arrival"
 FLAG_DUP_TARGET: Final = "dup_target"
 FLAG_COUNT_DIFF: Final = "count_diff"
 FLAG_KP_LONGER: Final = "kp_longer"
+FLAG_ORDER_SWAP: Final = "order_swap"
+FLAG_CODE_VARIANT: Final = "code_variant"
 FLAG_SHORT_STAY: Final = "short_stay"
 FLAG_NO_DEPARTURE: Final = "no_departure"
 FLAG_KP_END_BEFORE_START: Final = "kp_end_before_start"
@@ -101,6 +106,8 @@ REVIEW_FLAGS: Final = frozenset(
         FLAG_DUP_TARGET,
         FLAG_COUNT_DIFF,
         FLAG_KP_LONGER,
+        FLAG_ORDER_SWAP,
+        FLAG_CODE_VARIANT,
     }
 )
 
@@ -255,8 +262,9 @@ def pair_rows(
 ) -> list[tuple[RkVisit | None, KpRow | None]]:
     """(日・利用者) ごとに、全部の組を差の小さい順に割り当てる (差 0 を先に固定)。
 
-    差 = 到着 (無ければ予定の開始) とカイポケの開始の差。同じ差なら退出とカイポケの終了の差が
-    小さい方。120 分を超える組は作らない。
+    差 = 到着 (無ければ予定の開始) とカイポケの開始の差。同じ差なら担当 (カイポケの職員1 が
+    らく助の担当に居る) が一致する方、次に退出とカイポケの終了の差が小さい方。120 分を超える
+    組は作らない。
     """
     rk_by: dict[tuple[date, str], list[RkVisit]] = defaultdict(list)
     kp_by: dict[tuple[date, str], list[KpRow]] = defaultdict(list)
@@ -277,6 +285,7 @@ def pair_rows(
             if ref is None:
                 continue
             dep = to_minutes(v.departure)
+            rk_staff = {name_key(s) for s in v.staff if s}
             for ri, r in enumerate(rows):
                 start = to_minutes(r.start)
                 if start is None:
@@ -286,10 +295,11 @@ def pair_rows(
                     continue
                 end = to_minutes(r.end)
                 end_gap = abs(end - dep) if end is not None and dep is not None else 10**6
-                candidates.append((gap, end_gap, vi, ri))
+                staff_miss = 0 if r.staff1 and name_key(r.staff1) in rk_staff else 1
+                candidates.append((gap, staff_miss, end_gap, vi, ri))
         matched: dict[int, int] = {}
         used: set[int] = set()
-        for _gap, _end_gap, vi, ri in sorted(candidates):
+        for _gap, _staff_miss, _end_gap, vi, ri in sorted(candidates):
             if vi in matched or ri in used:
                 continue
             matched[vi] = ri
@@ -425,6 +435,54 @@ def _mark_count_diffs(
             )
 
 
+def _rk_ref(v: RkVisit) -> int | None:
+    """組むときの基準の時刻 = 到着 (無ければ予定の開始)。"""
+    ref = to_minutes(v.arrival)
+    return ref if ref is not None else to_minutes(v.plan_start)
+
+
+def _mark_order_swaps(rows: Sequence[JudgedRow]) -> None:
+    """同じ (日・利用者) で、らく助の順とカイポケの開始の順が逆の組が 1 つでもあれば、組を全部人が見るにする。
+
+    例: らく助 09:30・10:00、カイポケ 09:45・10:20 が 09:30→10:20・10:00→09:45 と組まれると、
+    両方「反映する」になって行を取り違えて書き換えてしまう。
+    """
+    groups: dict[tuple[date, str], list[JudgedRow]] = defaultdict(list)
+    for row in rows:
+        if row.rk is not None and row.kp is not None:
+            groups[_group_key(row.rk.date, row.rk.patient)].append(row)
+    for group in groups.values():
+        keys: list[tuple[int, int]] = []
+        for row in group:
+            assert row.rk is not None and row.kp is not None
+            ref = _rk_ref(row.rk)
+            start = to_minutes(row.kp.start)
+            if ref is not None and start is not None:
+                keys.append((ref, start))
+        swapped = any(
+            (r1 - r2) * (k1 - k2) < 0 for i, (r1, k1) in enumerate(keys) for r2, k2 in keys[i + 1 :]
+        )
+        if swapped:
+            for row in group:
+                row.add(FLAG_ORDER_SWAP, "順番が入れ替わっている")
+
+
+def _mark_code_variants(rows: Sequence[JudgedRow]) -> None:
+    """同じ (日・利用者) にらく助の利用者コードが 2 種類以上あれば、組を全部人が見るにする。
+
+    字体をそろえたせいで、同じ名前の別の方 (髙橋様と高橋様など) を 1 つにまとめたおそれがある。
+    """
+    groups: dict[tuple[date, str], list[JudgedRow]] = defaultdict(list)
+    for row in rows:
+        if row.rk is not None:
+            groups[_group_key(row.rk.date, row.rk.patient)].append(row)
+    for group in groups.values():
+        patient_codes = {row.rk.patient_code for row in group if row.rk and row.rk.patient_code}
+        if len(patient_codes) >= 2:
+            for row in group:
+                row.add(FLAG_CODE_VARIANT, "同じ名前の別の方の可能性")
+
+
 def judge(rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]) -> list[JudgedRow]:
     """突き合わせて判定する。並びは 人が見る → 反映する → カイポケに無い → カイポケだけ → 一致。"""
     rows: list[JudgedRow] = []
@@ -442,6 +500,8 @@ def judge(rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]) -> list[Judged
     _mark_overlaps(rows)
     _mark_duplicate_targets(rows)
     _mark_count_diffs(rows, rk_visits, kp_rows)
+    _mark_order_swaps(rows)
+    _mark_code_variants(rows)
 
     for row in rows:
         if row.rk is None:
@@ -482,6 +542,7 @@ def count_statuses(rows: Iterable[Any]) -> dict[str, int]:
 
 __all__ = [
     "FLAG_BIG_GAP",
+    "FLAG_CODE_VARIANT",
     "FLAG_COUNT_DIFF",
     "FLAG_DUP_TARGET",
     "FLAG_K2_GAP",
@@ -490,6 +551,7 @@ __all__ = [
     "FLAG_LONG_STAY",
     "FLAG_NO_ARRIVAL",
     "FLAG_NO_DEPARTURE",
+    "FLAG_ORDER_SWAP",
     "FLAG_OVERLAP",
     "FLAG_SHORT_STAY",
     "FLAG_STAFF_COUNT",
