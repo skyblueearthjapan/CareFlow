@@ -415,6 +415,54 @@ async def test_open_task_not_on_later_future_visits(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_staff_cannot_complete_request_on_future_visit(client, db) -> None:
+    """職員は先の日の訪問でお願い (項目あり) を完了できない (422)。伝言は先の日でも読みました.
+
+    管理者は先の日の訪問でもお願いを完了できる (mobile-future-days・PO 2026-11-01)。
+    """
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    us = await _user(db, "us", "staff", staff_id=s.id)
+    p = await _patient(db, "P1")
+    v = await _visit(db, p, T + timedelta(days=2), primary=s)
+    iid = await _item(client, admin, "サイン")
+    req = (await _create(client, admin, p, T + timedelta(days=1), item_ids=[iid]))["tasks"][0]
+    msg = (await _create(client, admin, p, T + timedelta(days=1), memo="伝言"))["tasks"][0]
+
+    res = await client.post(
+        f"/api/v1/tasks/{req['id']}/complete", json={"visit_id": str(v.id)}, headers=_h(us)
+    )
+    assert res.status_code == 422
+    assert res.json()["detail"] == "先の日の訪問では完了できません"
+
+    res = await client.post(
+        f"/api/v1/tasks/{msg['id']}/complete", json={"visit_id": str(v.id)}, headers=_h(us)
+    )
+    assert res.status_code == 200, res.text
+
+    res = await client.post(
+        f"/api/v1/tasks/{req['id']}/complete", json={"visit_id": str(v.id)}, headers=_h(admin)
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_staff_completes_request_on_today_visit(client, db) -> None:
+    """今日の訪問なら、職員もお願い (項目あり) を完了できる."""
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    us = await _user(db, "us", "staff", staff_id=s.id)
+    p = await _patient(db, "P1")
+    v = await _visit(db, p, T, primary=s)
+    iid = await _item(client, admin, "サイン")
+    req = (await _create(client, admin, p, T, item_ids=[iid]))["tasks"][0]
+    res = await client.post(
+        f"/api/v1/tasks/{req['id']}/complete", json={"visit_id": str(v.id)}, headers=_h(us)
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
 async def test_overdue_shows_only_on_next_future_visit(client, db) -> None:
     """日付が過ぎた未完了 (今日の訪問なし) は、明日以降の最初の訪問にだけ持ち越しで出る."""
     admin = await _user(db, "adm", "admin")

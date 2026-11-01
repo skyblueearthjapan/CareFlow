@@ -455,6 +455,13 @@ async def complete_task(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="この訪問には出ていないやることです",
             )
+        # 職員はお願い (項目のあるやること) を先の日の訪問で完了できない。伝言は先の日でも
+        # 「読みました」にできる (mobile-future-days・PO 2026-11-01)。管理者は制限なし。
+        if not is_admin and task.item_type_id is not None and visit.visit_date > jst_today():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="先の日の訪問では完了できません",
+            )
     elif not is_admin:
         candidates = list(
             (

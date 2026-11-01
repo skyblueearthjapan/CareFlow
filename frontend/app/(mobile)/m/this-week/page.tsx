@@ -49,6 +49,12 @@ const WEEK_TITLE: Record<WeekChoice, string> = {
   next: '来週の予定',
 };
 
+const WEEK_EMPTY: Record<WeekChoice, string> = {
+  last: '先週の訪問はありません',
+  this: '今週の訪問はありません',
+  next: '来週の訪問はありません',
+};
+
 function parseWeekChoice(raw: string | null | undefined): WeekChoice {
   return raw === 'last' || raw === 'next' ? raw : 'this';
 }
@@ -400,7 +406,7 @@ function ThisWeekContent() {
         <Card className="p-6">
           <RakusukeNote
             pose="calendar"
-            title={`${WEEK_TITLE[week].replace('の予定', '')}の訪問はありません`}
+            title={WEEK_EMPTY[week]}
             comment="新しい予定が入ったら、ここでお知らせしますね"
           />
         </Card>

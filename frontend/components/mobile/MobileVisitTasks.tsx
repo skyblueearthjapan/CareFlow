@@ -8,8 +8,8 @@
  * 完了にしたものだけ・BE の can_reopen)。伝言 = 項目の無いやること。「読みました」で完了。
  * 見られるのは担当の訪問だけ (BE が絞る・見えない訪問は 404 なので何も出さない)。
  *
- * `readOnly` (先の日の訪問・mobile-future-days) では中身は見せるが、完了・戻す・
- * 「読みました」は押せない (今日の訪問だけで押す)。
+ * `readOnly` (先の日の訪問・mobile-future-days) ではお願いの完了・戻すは押せない
+ * (今日の訪問だけで押す)。伝言の「読みました」は先の日でも押せる (PO 2026-11-01)。
  */
 import { ClipboardList, MessageSquare } from 'lucide-react';
 
@@ -24,7 +24,7 @@ export function MobileVisitTasks({
   readOnly = false,
 }: {
   visitId: string;
-  /** 先の日の訪問: 見るだけ (完了・読みましたを押せない)。 */
+  /** 先の日の訪問: お願いの完了を押せない (伝言の「読みました」は押せる)。 */
   readOnly?: boolean;
 }) {
   const { data, isError } = useVisitTasks(visitId);
@@ -169,13 +169,6 @@ export function MobileVisitTasks({
                 {t.status === 'done' ? (
                   <span className="inline-block rounded-full bg-success-bg px-2 py-0.5 text-xs font-bold text-success">
                     読みました {taskDoneLabel(t)}
-                  </span>
-                ) : readOnly ? (
-                  <span
-                    className="text-xs text-text-muted"
-                    data-testid={`mobile-message-readonly-${t.id}`}
-                  >
-                    「読みました」は当日の訪問で押せます
                   </span>
                 ) : (
                   <button

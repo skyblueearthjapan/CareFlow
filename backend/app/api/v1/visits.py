@@ -340,16 +340,6 @@ def _today_jst() -> date:
     return datetime.now(UTC).astimezone(JST).date()
 
 
-def _staff_read_horizon() -> date:
-    """staff ロールが読める訪問の最終日 = 来週の日曜 (JST).
-
-    スマホで明日以降・来週の予定を先回りして見る (mobile-future-days・PO 2026-11-01)。
-    それより先は一覧では空、詳細では 403 にする。過去は制限しない。
-    """
-    today = _today_jst()
-    return today - timedelta(days=today.weekday()) + timedelta(days=13)
-
-
 def _actual_adjust_allowed(
     user: User,
     visit: Visit,
@@ -638,10 +628,7 @@ async def list_visits(
     if user.role == "staff":
         if user.staff_id is None:
             return []
-        horizon = _staff_read_horizon()
-        if week_start is not None and week_start > horizon:
-            return []
-        stmt = stmt.where(_staff_visibility_filter(user.staff_id), Visit.visit_date <= horizon)
+        stmt = stmt.where(_staff_visibility_filter(user.staff_id))
     elif staff_id is not None:
         stmt = stmt.where(_staff_visibility_filter(staff_id))
     if week_start is not None:
@@ -898,12 +885,6 @@ async def get_visit(
         if not visible:
             # Hide existence from non-assigned staff.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-        # 先の予定は来週の日曜まで (一覧と同じ線)。見える訪問なので 404 ではなく 403。
-        if visit.visit_date > _staff_read_horizon():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="来週の日曜より先の訪問は見られません",
-            )
     actuals = (await load_actuals(db, [visit.id])).get(visit.id)
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, [visit])
     # QR capability だけで見えている担当外は、自分がこの訪問を打刻していれば合わせられる。

@@ -168,7 +168,7 @@ describe('MobileVisitTasks', () => {
     expect(toastError).toHaveBeenCalledWith('読みましたにできませんでした', expect.any(Object));
   });
 
-  it('先の日 (readOnly) は見せるが、完了も「読みました」も押せない', () => {
+  it('先の日 (readOnly) はお願いの完了を押せないが、伝言の「読みました」は押せる', () => {
     tasks = [
       makeTask({ id: 'r1', memo: 'サインをもらう' }),
       makeTask({ id: 'm1', is_message: true, item_type_id: null, item_type_name: null, memo: 'x' }),
@@ -183,7 +183,7 @@ describe('MobileVisitTasks', () => {
       '完了は当日の訪問で押せます',
     );
     expect(screen.getByTestId('mobile-visit-messages').textContent).toContain('x');
-    expect(screen.queryByTestId('mobile-message-read-m1')).toBeNull();
-    expect(screen.getByTestId('mobile-message-readonly-m1')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('mobile-message-read-m1'));
+    expect(completeMutate).toHaveBeenCalledTimes(1);
   });
 });

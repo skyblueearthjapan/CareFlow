@@ -1613,7 +1613,7 @@ function MobileVisitDetailPageInner() {
           </Card>
 
           {/* ---- 事務所からのお願い・伝言 (patient-tasks-design §3) ------------ */}
-          {/* 先の日は見るだけ (完了・読みましたは当日の訪問で押す)。 */}
+          {/* 先の日はお願いの完了を押せない (伝言の「読みました」は押せる)。 */}
           <MobileVisitTasks visitId={visit.id} readOnly={isFutureDay} />
 
           {/* ---- Preview / confirm overlay (BEFORE the single POST) ------- */}
