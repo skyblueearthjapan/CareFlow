@@ -9,7 +9,14 @@
  * 大きく上がった・下がったマスに ▲▼。担い手・休み・昼休みを変えたらサーバーに問い合わせ直す。
  * 試算: docs/reports/agent/2026-11-受け入れ枠の月の埋まり.html。
  */
-import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { ChevronLeft, ChevronRight, Printer } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -389,6 +396,7 @@ function HeatCell({
 function MonthSummary({ data, fetching }: { data: MonthPayload; fetching: boolean }) {
   const pd = (items: MonthPayload['peaks']['utilization'], fmt: (v: number) => string) =>
     items.map((p) => `${DOW[p.weekday]} ${p.slot}（${fmt(p.value)}）`).join('、') || '－';
+  const everyone = data.weekday_summary_all;
   return (
     <Card className="space-y-2 p-3 text-sm" aria-label="月の要約">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
@@ -408,7 +416,7 @@ function MonthSummary({ data, fetching }: { data: MonthPayload; fetching: boolea
       <table className="w-full table-fixed border-collapse text-xs" aria-label="曜日ごとの合計">
         <thead>
           <tr className="text-text-secondary">
-            <th className="w-24 text-left font-medium" />
+            <th className="w-36 text-left font-medium" />
             {data.weekday_summary.map((r) => (
               <th key={r.weekday} className="text-center font-medium">
                 {DOW[r.weekday]}
@@ -417,24 +425,36 @@ function MonthSummary({ data, fetching }: { data: MonthPayload; fetching: boolea
           </tr>
         </thead>
         <tbody>
-          <tr>
-            <th className="text-left font-medium">件数 / 1 日</th>
-            {data.weekday_summary.map((r) => (
-              <td key={r.weekday} className="text-center tabular-nums">
-                {num(r.visits_per_day)}
-              </td>
-            ))}
-          </tr>
-          <tr>
-            <th className="text-left font-medium">稼働率</th>
-            {data.weekday_summary.map((r) => (
-              <td key={r.weekday} className="text-center tabular-nums">
-                {pct(r.utilization)}
-              </td>
-            ))}
-          </tr>
+          {(
+            [
+              ['事業所全体', everyone],
+              ['担い手', data.weekday_summary],
+            ] as const
+          ).map(([label, rows]) => (
+            <Fragment key={label}>
+              <tr>
+                <th className="text-left font-medium">{label} 件数 / 1 日</th>
+                {data.weekday_summary.map((r) => (
+                  <td key={r.weekday} className="text-center tabular-nums">
+                    {num(rows.find((x) => x.weekday === r.weekday)?.visits_per_day)}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <th className="text-left font-medium">{label} 稼働率</th>
+                {data.weekday_summary.map((r) => (
+                  <td key={r.weekday} className="text-center tabular-nums">
+                    {pct(rows.find((x) => x.weekday === r.weekday)?.utilization)}
+                  </td>
+                ))}
+              </tr>
+            </Fragment>
+          ))}
         </tbody>
       </table>
+      <p className="text-xs text-text-secondary" data-testid="month-summary-note">
+        件数は主担当の件数です（事業所全体＝マネージャー・新人を含む全員の主担当の件数、担い手＝担い手の主担当の件数）。空き（○△×）は担い手だけで数えています。勤務の型は今のものを使っているため、過去の月は空きが多めに出ることがあります。入職より前の日は数えていません。
+      </p>
       <p className="text-xs">
         <b>ピーク</b> 稼働率：{pd(data.peaks.utilization, (v) => pct(v))}／始まる訪問（1
         日あたり）：{pd(data.peaks.starts, (v) => num(v))}

@@ -351,7 +351,7 @@ _MEAN_FIELDS = (
 
 
 def team_metrics_of(people: list[PerformanceMetrics], days: list[DaySummary]) -> PerformanceMetrics:
-    """チーム平均 =訪問のあった人の平均 (§3)。いちばん遠いお宅の最大と、線を超えた日数は
+    """チーム平均 = 訪問のあった人の平均 (§3)。いちばん遠いお宅の最大と、線を超えた日数は
     全員の日から出す (最大・合計)。
 
     件数・日数などの数は合計。実績の平均だけは、1 人ずつの平均 (5 件未満は出ない) を

@@ -4,12 +4,16 @@
 
 * 訪問はらく助の ``visits`` (取消・削除を除く) だけを読む。先の月は予定、過去の月は訪問の記録で、
   どちらも同じ表。カイポケの材料 (段階 0 の表) は使わない (過去の分が残っていないため)。
-* 勤務の型は今の ``staff_shifts`` (履歴が無い)。休みはらく助の週だけの休み
+* 勤務の型は今の ``staff_shifts`` (履歴が無い)。入職より前の日は数えない (週の判定の
+  ``not_employed`` と同じ考え)。入職の目安 = らく助の訪問に初めて出た日と、職員の登録日
+  (``staff.created_at``・JST) の早い方。休みはらく助の週だけの休み
   (``staff_weekly_overrides``) と ``staff_events`` (カイポケから取り込んだ個別業務を含む)。
   休みの判定は今の受け入れ枠と同じ (``app.core.leave``)。
 * 祝日は平日として数える (実際に訪問しているため)。訪問が ``OPEN_DAY_MIN_VISITS`` 件に
   満たない日は、休業か予定がまだ無い日として数えない。
 * 行は拠点で絞らない (他の拠点での訪問の時間も塞ぐ)。拠点で絞るのは担い手の候補だけ。
+* 曜日ごとの要約は「事業所全体 (候補の全員・マネージャーと新人を含む)」と「選んだ担い手」の
+  2 つ。空き (○△×) は担い手だけで数える (PO 決定 2026-11-01)。
 * 読むだけ (DB に書かない)。
 """
 
@@ -21,12 +25,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import leave
 from app.models.patient import Patient
-from app.models.staff import StaffEvent, StaffShift, StaffWeeklyOverride
+from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.services.scheduling.acceptance_month import (
     BUSY_DAY_VISITS,
@@ -40,6 +44,7 @@ from app.services.scheduling.acceptance_month import (
     month_rules,
     month_slots,
     summarize_month,
+    weekday_summary,
 )
 from app.services.scheduling.acceptance_strict import (
     KaipokeLeave,
@@ -116,6 +121,29 @@ def _event_interval(starts_at: datetime, ends_at: datetime) -> tuple[date, int, 
     return day, s.hour * 60 + s.minute, end
 
 
+async def _employed_from(db: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, date]:
+    """入職の目安 = 訪問 (主担当・副担当・メンター) に初めて出た日と登録日 (JST) の早い方。"""
+    if not ids:
+        return {}
+    out = {
+        sid: jst_today(created)
+        for sid, created in (
+            await db.execute(select(Staff.id, Staff.created_at).where(Staff.id.in_(ids)))
+        ).all()
+        if created is not None
+    }
+    for col in (Visit.primary_staff_id, Visit.secondary_staff_id, Visit.mentor_staff_id):
+        rows = await db.execute(
+            select(col, func.min(Visit.visit_date))
+            .where(col.in_(ids), Visit.deleted_at.is_(None))
+            .group_by(col)
+        )
+        for sid, first in rows.all():
+            if first is not None and (sid not in out or first < out[sid]):
+                out[sid] = first
+    return out
+
+
 @dataclass
 class _MonthMaterial:
     month_days: list[date]
@@ -131,6 +159,7 @@ async def _load_month(
     candidates: list[_Candidate],
     shifts: dict[tuple[uuid.UUID, int], StaffShift],
     config: SchedulingConfig,
+    employed_from: dict[uuid.UUID, date],
 ) -> _MonthMaterial:
     last = _next_month(first) - timedelta(days=1)
     month_days = [
@@ -233,6 +262,9 @@ async def _load_month(
             shift = shifts.get((c.id, d.weekday()))
             if shift is None or not shift.is_on:
                 continue
+            since = employed_from.get(c.id)
+            if since is not None and d < since:
+                continue  # 入職より前
             win = (
                 minutes_of(shift.start_time or config.business_start),
                 minutes_of(shift.end_time or config.business_end),
@@ -318,10 +350,11 @@ async def build_month_view(
     )
     shifts = {(s.staff_id, s.weekday): s for s in shift_rows}
     use_off = mode != "ignore"
+    employed_from = await _employed_from(db, candidate_ids)
 
-    cur = await _load_month(db, first, weekdays, candidates, shifts, config)
+    cur = await _load_month(db, first, weekdays, candidates, shifts, config, employed_from)
     prev_first = _prev_month(first)
-    prev = await _load_month(db, prev_first, weekdays, candidates, shifts, config)
+    prev = await _load_month(db, prev_first, weekdays, candidates, shifts, config, employed_from)
     summary = summarize_month(
         cur.month_days, cur.open_days, cur.staff_days, selected, weekdays, rules, use_off=use_off
     )
@@ -365,6 +398,15 @@ async def build_month_view(
         "visit_count": cur.visit_count,
         "prev_utilization": prev_summary["utilization"],
         **summary,
+        "weekday_summary_all": weekday_summary(
+            cur.month_days,
+            cur.open_days,
+            cur.staff_days,
+            {str(c.id) for c in candidates},
+            weekdays,
+            rules,
+            use_off=use_off,
+        ),
     }
 
 

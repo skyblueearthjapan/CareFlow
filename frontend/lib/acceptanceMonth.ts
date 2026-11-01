@@ -36,6 +36,13 @@ const monthCellSchema = z.object({
 });
 
 const peakSchema = z.object({ weekday: z.number(), slot: z.string(), value: z.number() });
+const weekdaySummarySchema = z.object({
+  weekday: z.number(),
+  days: z.number(),
+  total: z.number(),
+  visits_per_day: ratio,
+  utilization: ratio,
+});
 
 export const monthPayloadSchema = z.object({
   month: z.string(),
@@ -78,15 +85,9 @@ export const monthPayloadSchema = z.object({
   prev_utilization: ratio,
   utilization: ratio,
   cells: z.record(z.string(), monthCellSchema),
-  weekday_summary: z.array(
-    z.object({
-      weekday: z.number(),
-      days: z.number(),
-      total: z.number(),
-      visits_per_day: ratio,
-      utilization: ratio,
-    }),
-  ),
+  weekday_summary: z.array(weekdaySummarySchema),
+  /** 事業所全体 (マネージャー・新人を含む全員) の曜日の要約。 */
+  weekday_summary_all: z.array(weekdaySummarySchema).default([]),
   peaks: z.object({ utilization: z.array(peakSchema), starts: z.array(peakSchema) }),
   counts: z.object({
     ok: z.number(),
@@ -149,7 +150,7 @@ export const SOURCE_TEXT: Record<MonthPayload['source'], string> = {
 
 export const MARK_TEXT: Record<Mark, string> = {
   '○': 'その月のすべての週で入れる人がいた',
-  '△': '5/8 以上の週で入れる人がいた',
+  '△': '4 週のうち 3 週・5 週のうち 4 週以上で入れる人がいた',
   '×': '入れる週が少ない',
   '－': '数えられる日が足りない',
 };

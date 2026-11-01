@@ -128,8 +128,12 @@ def render_month_html(view: dict[str, Any], *, now: datetime | None = None) -> s
             )
         rows.append(f'<tr><th class="t">{_esc(slot)}</th>{"".join(tds)}</tr>')
 
+    everyone = {r["weekday"]: r for r in view.get("weekday_summary_all") or []}
     wd_rows = "".join(
-        f"<tr><td>{_WD[r['weekday']]}</td><td>{_num(r['visits_per_day'])}</td>"
+        f"<tr><td>{_WD[r['weekday']]}</td>"
+        f"<td>{_num(everyone.get(r['weekday'], {}).get('visits_per_day'))}</td>"
+        f"<td>{_pct(everyone.get(r['weekday'], {}).get('utilization'))}</td>"
+        f"<td>{_num(r['visits_per_day'])}</td>"
         f"<td>{_pct(r['utilization'])}</td><td>{r['days']}/{r['total']}</td></tr>"
         for r in view["weekday_summary"]
     )
@@ -176,7 +180,7 @@ def render_month_html(view: dict[str, Any], *, now: datetime | None = None) -> s
         f"<span>▲▼＝前の月より稼働率が {rules['trend_points']} ポイント以上上がった・下がった</span>"
         "</div>"
         f'<p class="note">○＝その月のすべての週で、新しい訪問 {rules["visit_min"]} 分を入れられる職員がいた。'
-        "△＝5/8 以上の週で入れられた。×＝それより少ない。－＝数えられる日が足りない。"
+        "△＝4 週のうち 3 週・5 週のうち 4 週以上で入れられた。×＝それより少ない。－＝数えられる日が足りない。"
         f"決まり：1 日 {rules['cap']} 件まで・前後 {rules['buffer_min'] + rules['travel_guess_min']} 分の間・"
         f"{_esc(lunch_text)}。祝日は平日として数え、訪問が {rules['open_day_min_visits']} 件に満たない日は数えていません。</p>"
         "</section>\n"
@@ -188,8 +192,14 @@ def render_month_html(view: dict[str, Any], *, now: datetime | None = None) -> s
         f'<div class="stat"><div class="l">混みのマス</div><div class="v">{counts["crowded"]}</div></div>'
         "</div>"
         "<h2>曜日ごとの合計</h2>"
-        "<table><thead><tr><th>曜日</th><th>件数/日</th><th>稼働率</th><th>数えた日</th></tr></thead>"
+        '<table><thead><tr><th rowspan="2">曜日</th><th colspan="2">事業所全体</th>'
+        '<th colspan="2">担い手</th><th rowspan="2">数えた日</th></tr>'
+        "<tr><th>件数/日</th><th>稼働率</th><th>件数/日</th><th>稼働率</th></tr></thead>"
         f"<tbody>{wd_rows}</tbody></table>"
+        '<p class="note">件数は主担当の件数（事業所全体＝マネージャー・新人を含む全員の主担当の件数、'
+        "担い手＝担い手の主担当の件数）。数えた日は担い手の日。空き（○△×）は担い手だけで数えています。"
+        "勤務の型は今のものを使っているため、過去の月は空きが多めに出ることがあります。"
+        "入職より前の日は数えていません。</p>"
         "<h2>ピークの時間帯</h2>"
         f'<p class="note">稼働率：{_peak(view["peaks"]["utilization"], _pct)}</p>'
         f'<p class="note">始まる訪問（1 日あたり）：{_peak(view["peaks"]["starts"], _num)}</p>'

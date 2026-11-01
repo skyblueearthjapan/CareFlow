@@ -258,6 +258,26 @@ async def test_future_days_are_not_counted_as_no_arrival(db) -> None:
     assert next(s for s in done.staff if s.staff_id == staff["a"].id).no_arrival_count == 1
 
 
+@pytest.mark.asyncio
+async def test_today_counts_only_visits_whose_planned_end_has_passed(db) -> None:
+    """今日の訪問は予定の終わりが過ぎたものだけ到着なしに数える。月末も月の途中として扱う。"""
+    staff = await _seed(db)
+    day = date(2026, 10, 6)  # 10/6 の訪問は 9:00〜10:00・到着なし
+
+    async def no_arrival(hm: str) -> int:
+        report = await build_month_staff_report(db, MONTH, now=_jst(day, hm))
+        assert report.counted_until == day
+        return next(s for s in report.staff if s.staff_id == staff["a"].id).no_arrival_count
+
+    assert await no_arrival("09:30") == 0  # まだ終わっていない
+    assert await no_arrival("10:00") == 1  # 予定の終わりが来た
+
+    last = await build_month_staff_report(db, MONTH, now=_jst(date(2026, 10, 31), "08:00"))
+    assert last.counted_until == date(2026, 10, 31)
+    before = await build_month_staff_report(db, MONTH, today=date(2026, 9, 20))
+    assert before.counted_until is None  # 月がまだ始まっていない
+
+
 def _report_of(name: str, lines: list[VisitLine]) -> MonthStaffReport:
     sid = uuid.uuid4()
     month = StaffMonth(

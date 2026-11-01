@@ -153,8 +153,8 @@ def _until_note(report: MonthStaffReport) -> str | None:
         return None
     d = report.counted_until
     return (
-        f"月の途中です。到着の記録なしの数と要確認は、今日（{d.month}/{d.day}）までの訪問です。"
-        "これより後の日の訪問は数えていません。"
+        f"月の途中です。到着の記録なしの数と要確認は、今日（{d.month}/{d.day}）までの訪問です"
+        "（今日の分は予定の終わりの時刻が過ぎたものだけ）。これより後の訪問は数えていません。"
     )
 
 

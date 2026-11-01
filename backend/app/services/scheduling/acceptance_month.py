@@ -125,6 +125,44 @@ def _ratio(num: float, den: float) -> float | None:
     return num / den if den > 0 else None
 
 
+def weekday_summary(
+    month_days: Sequence[date],
+    open_days: Iterable[date],
+    staff_days: Iterable[MonthStaffDay],
+    staff_ids: set[str],
+    weekdays: Sequence[int],
+    rules: StrictRules,
+    *,
+    use_off: bool,
+) -> list[dict[str, Any]]:
+    """曜日ごとの 1 日あたり件数 (主担当) と稼働率。``staff_ids`` の職員だけを数える。
+
+    数える日は、その曜日のうち ``staff_ids`` の誰かが勤務の型で出ている数える日。
+    """
+    open_set = set(open_days)
+    by_day: dict[date, list[tuple[MonthStaffDay, DaySlots]]] = {}
+    for msd in staff_days:
+        if msd.sd.staff_id in staff_ids and msd.sd.day in open_set:
+            by_day.setdefault(msd.sd.day, []).append((msd, day_slots(msd, rules, use_off=use_off)))
+    rows: list[dict[str, Any]] = []
+    for wd in weekdays:
+        total_dates = [d for d in month_days if d.weekday() == wd]
+        counted = [d for d in total_dates if by_day.get(d)]
+        visits = sum(len(m.primary) for d in counted for m, _ in by_day[d])
+        work = sum(sum(ds.work.values()) for d in counted for _, ds in by_day[d])
+        busy = sum(sum(ds.busy.values()) for d in counted for _, ds in by_day[d])
+        rows.append(
+            {
+                "weekday": wd,
+                "days": len(counted),
+                "total": len(total_dates),
+                "visits_per_day": _ratio(visits, len(counted)),
+                "utilization": _ratio(busy, work),
+            }
+        )
+    return rows
+
+
 def summarize_month(
     month_days: Sequence[date],
     open_days: Iterable[date],
@@ -140,6 +178,8 @@ def summarize_month(
     ``month_days`` はその月の日 (営業曜日)、``open_days`` は数える日 (訪問のある日)。
     担い手 (``selected``) の職員だけを数える。
     """
+    open_days = list(open_days)
+    staff_days = list(staff_days)
     open_set = set(open_days)
     by_day: dict[date, list[MonthStaffDay]] = {}
     for msd in staff_days:
@@ -150,12 +190,9 @@ def summarize_month(
     }
     slots = month_slots()
     cells: dict[str, dict[str, Any]] = {}
-    weekday_rows: list[dict[str, Any]] = []
     for wd in weekdays:
         total_dates = [d for d in month_days if d.weekday() == wd]
         counted = [d for d in total_dates if computed.get(d)]
-        day_visits = sum(len(m.primary) for d in counted for m, _ in computed[d])
-        wd_work = wd_busy = 0
         for slot in slots:
             per_week: list[int] = []
             work = busy = starts = fixed = busy_staff = pairs = tight = 0
@@ -180,8 +217,6 @@ def summarize_month(
                                 tight += int(v.start - prev_end < rules.pad)
                         prev_end = v.end if prev_end is None else max(prev_end, v.end)
                 per_week.append(n_free)
-            wd_work += work
-            wd_busy += busy
             ok = sum(1 for x in per_week if x > 0)
             util = _ratio(busy, work)
             n_days = len(counted)
@@ -205,15 +240,6 @@ def summarize_month(
                 "tight_ratio": _ratio(tight, pairs),
                 "fixed_ratio": _ratio(fixed, starts),
             }
-        weekday_rows.append(
-            {
-                "weekday": wd,
-                "days": len(counted),
-                "total": len(total_dates),
-                "visits_per_day": _ratio(day_visits, len(counted)),
-                "utilization": _ratio(wd_busy, wd_work),
-            }
-        )
     rated = [c for c in cells.values() if c["utilization"] is not None]
     by_util = sorted(rated, key=lambda c: (-c["utilization"], c["weekday"], c["slot"]))
     started = [c for c in cells.values() if c["starts_avg"]]
@@ -222,7 +248,9 @@ def summarize_month(
     all_busy = sum(c["busy_min"] for c in cells.values())
     return {
         "cells": cells,
-        "weekday_summary": weekday_rows,
+        "weekday_summary": weekday_summary(
+            month_days, open_days, staff_days, selected, weekdays, rules, use_off=use_off
+        ),
         "peaks": {
             "utilization": [
                 {"weekday": c["weekday"], "slot": c["slot"], "value": c["utilization"]}
@@ -280,4 +308,5 @@ __all__ = [
     "month_slots",
     "slot_key",
     "summarize_month",
+    "weekday_summary",
 ]

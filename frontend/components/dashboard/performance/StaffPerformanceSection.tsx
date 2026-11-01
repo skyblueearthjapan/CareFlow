@@ -301,8 +301,8 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
             <li data-testid="perf-distance-lines">
               <b>1 日の距離の線は仮の目安です。</b>目安 {data.distance_lines.target_km} km・注意{' '}
               {data.distance_lines.caution_km} km・多い {data.distance_lines.heavy_km} km は、8〜10
-              月の 3 か月分の実績から出しました。カードの移動は、1
-              日の平均が注意の線を超えると橙、多いの線を超えると赤になります。
+              月の 3 か月分の実績から出しました。カードの移動の色は、期間の 1
+              日あたりの平均で決まります（線を超えた日数では変わりません）。平均が注意の線を超えると橙、多いの線を超えると赤になります。
             </li>
           ) : null}
         </ul>

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 
 import pytest
 
@@ -24,6 +24,7 @@ from app.services.scheduling.acceptance_month import (
     day_slots,
     month_rules,
     summarize_month,
+    weekday_summary,
 )
 from app.services.scheduling.acceptance_month_print import render_month_html, util_band
 from app.services.scheduling.acceptance_strict import StaffDay, StrictRules
@@ -138,6 +139,22 @@ def test_utilization_crowded_and_detail() -> None:
     assert only_a["cells"]["0-10:00"]["crowded"] is True
     assert only_a["counts"]["crowded"] >= 1
     assert out["weekday_summary"][0]["visits_per_day"] == 6.0
+
+
+def test_weekday_summary_counts_only_given_staff() -> None:
+    d = NOV_MONDAYS[0]
+    a = _msd(d, sid="a", visits=[("10:00", "11:00")])
+    b = _msd(d, sid="b", visits=[("10:00", "10:30"), ("13:00", "14:00")])
+    rows = weekday_summary([d], [d], [a, b], {"a", "b"}, [0], NO_LUNCH, use_off=True)
+    assert rows[0]["visits_per_day"] == 3.0 and rows[0]["days"] == 1
+    # 勤務 9:30〜18:00 = 510 分ずつ。訪問は 60 + 90 分。
+    assert rows[0]["utilization"] == pytest.approx(150 / 1020)
+    only_a = weekday_summary([d], [d], [a, b], {"a"}, [0], NO_LUNCH, use_off=True)
+    assert only_a[0]["visits_per_day"] == 1.0
+    assert only_a[0]["utilization"] == pytest.approx(60 / 510)
+    # summarize_month の曜日の要約は担い手の分と同じ。
+    out = summarize_month([d], [d], [a, b], {"a"}, [0], NO_LUNCH, use_off=True)
+    assert out["weekday_summary"] == only_a
     assert out["peaks"]["utilization"][0]["slot"] in {"10:00", "13:30", "15:00"}
 
 
@@ -201,8 +218,20 @@ async def _office(db, code: str = "INAGE") -> Office:
     return office
 
 
-async def _staff(db, office: Office, name: str, *, role: str = "staff") -> Staff:
-    s = Staff(name=name, role=role, is_trainee=False, primary_office_id=office.id)
+#: 試験の職員の登録日 (入職より前の日を数えない決まりに掛からないよう、十分前にする)。
+LONG_AGO = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+async def _staff(
+    db, office: Office, name: str, *, role: str = "staff", created_at: datetime = LONG_AGO
+) -> Staff:
+    s = Staff(
+        name=name,
+        role=role,
+        is_trainee=False,
+        primary_office_id=office.id,
+        created_at=created_at,
+    )
     db.add(s)
     await db.flush()
     for wd in range(7):
@@ -283,6 +312,12 @@ async def test_month_view_reads_visits_and_skips_cancelled(db) -> None:
     assert view["cells"]["1-15:00"]["utilization"] == 0.0  # マネージャーは選ばれていない
     assert view["cells"]["1-10:00"]["crowded"] is True
     assert view["cells"]["1-10:00"]["trend"] is None  # 前の月は訪問が無い
+    # 曜日の要約: 事業所全体はマネージャーも含む。担い手は職員 A だけ。
+    tue_all = next(r for r in view["weekday_summary_all"] if r["weekday"] == 1)
+    tue_sel = next(r for r in view["weekday_summary"] if r["weekday"] == 1)
+    assert tue_all["visits_per_day"] == 2.0 and tue_sel["visits_per_day"] == 1.0
+    assert tue_all["utilization"] == pytest.approx(60 / (510 * 2))
+    assert tue_sel["utilization"] == pytest.approx(30 / 510)
 
     both = await month_data.build_month_view(
         db, date(2026, 11, 1), office.id, staff_ids=[a.id, m.id], today=TODAY
@@ -321,6 +356,26 @@ async def test_month_view_leave_mode_and_trend(db) -> None:
     # 前の月 (10/14) は 0% → 今月 50% で ▲。
     assert ignore["cells"]["2-09:30"]["trend"] == "▲"
     assert ignore["cells"]["2-09:30"]["prev_utilization"] == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_one_visit_opens_day")
+async def test_month_view_skips_days_before_joining(db) -> None:
+    """入職の目安 (初めての訪問と登録日の早い方) より前の日は空きにも稼働率にも数えない。"""
+    office = await _office(db)
+    old = await _staff(db, office, "職員A")
+    await _staff(db, office, "職員B", created_at=datetime(2026, 11, 10, 3, tzinfo=UTC))
+    early = await _staff(db, office, "職員C", created_at=datetime(2026, 11, 20, tzinfo=UTC))
+    p = await _patient(db, office)
+    for d in NOV_MONDAYS:
+        db.add(_visit(p, old, d, "09:30", "10:00"))
+    db.add(_visit(p, early, date(2026, 11, 9), "15:00", "15:30"))  # 登録より前に訪問していた
+    await db.commit()
+    view = await month_data.build_month_view(db, date(2026, 11, 1), office.id, today=TODAY)
+    # 11/2 は A だけ (B は 11/10 から・C は 11/9 から)。11/16 からは 3 人。
+    assert view["cells"]["0-11:00"]["per_week"] == [1, 2, 3, 3, 3]
+    mon = next(r for r in view["weekday_summary_all"] if r["weekday"] == 0)
+    assert mon["days"] == 5
 
 
 # --- API ----------------------------------------------------------------------
@@ -382,7 +437,10 @@ def test_print_escapes_names() -> None:
         "selected_staff_ids": ["s1"],
         "prev_utilization": None,
         **out,
+        "weekday_summary_all": out["weekday_summary"],
     }
     page = render_month_html(view)
     assert "&lt;b&gt;職員&lt;/b&gt;" in page and "<b>職員</b>" not in page
+    assert "事業所全体" in page and "主担当の件数" in page
+    assert "4 週のうち 3 週・5 週のうち 4 週以上" in page and "5/8" not in page
     assert "全て" in page and "@page{size:A4 landscape" in page

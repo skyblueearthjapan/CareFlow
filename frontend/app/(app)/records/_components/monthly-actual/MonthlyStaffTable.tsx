@@ -190,7 +190,8 @@ export function MonthlyStaffTable({ summary }: MonthlyStaffTableProps) {
     <div className="space-y-2">
       {until && (
         <p className="text-xs text-text-secondary" data-testid="ma-staff-until">
-          月の途中です。到着の記録なしの数と要確認は、{`今日（${until}）までの訪問です。`}
+          月の途中です。到着の記録なしの数と要確認は、
+          {`今日（${until}）までの訪問です（今日の分は予定の終わりの時刻が過ぎたものだけ）。`}
         </p>
       )}
       <div className="overflow-x-auto rounded-lg border border-border-default">

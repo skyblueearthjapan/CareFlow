@@ -57,7 +57,13 @@ describe('MonthAcceptanceBoard', () => {
     );
     const ok = within(grid).getByRole('button', { name: /月曜 09:30 ○/ });
     expect(ok).not.toHaveAttribute('data-crowded');
-    expect(screen.getByLabelText('曜日ごとの合計')).toHaveTextContent('29.8');
+    const summary = screen.getByLabelText('曜日ごとの合計');
+    expect(within(summary).getByRole('row', { name: /担い手 件数/ })).toHaveTextContent('29.8');
+    expect(within(summary).getByRole('row', { name: /事業所全体 件数/ })).toHaveTextContent('41.3');
+    expect(within(summary).getByRole('row', { name: /事業所全体 稼働率/ })).toHaveTextContent(
+      '47%',
+    );
+    expect(screen.getByTestId('month-summary-note')).toHaveTextContent('担い手の主担当の件数');
     expect(screen.getByLabelText('月の要約')).toHaveTextContent('混み 1 マス');
   });
 

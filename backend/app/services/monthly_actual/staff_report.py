@@ -13,8 +13,9 @@
 * 提供時間 = らく助の実績 (``load_actuals``・後から合わせた時刻を含む) の到着〜退出。
   30 分未満と退出の QR が無い訪問は、決まりどおり到着＋35 分にした後の値。到着の
   QR が無い訪問は提供時間に入れない。
-* 到着の記録なし (件数・要確認) は今日 (JST) までの訪問だけを数える。月の途中なら
-  ``counted_until`` に今日が入る (月が終わっていれば None)。
+* 到着の記録なし (件数・要確認) は今日 (JST) までの訪問だけを数える。今日の訪問は
+  予定の終わりの時刻が過ぎたものだけ。月の途中なら ``counted_until`` に今日が入る
+  (月が終わっている・まだ始まっていなければ None)。
 * 移動距離 = 所属拠点 → 1 件目 → … → 最後 → 所属拠点 の直線の合計 (日ごと)。
 """
 
@@ -43,6 +44,8 @@ from app.services.office_labels import office_short
 #: 到着＋35 分にした理由。
 RULE_SHORT_STAY = "short_stay"
 RULE_NO_DEPARTURE = "no_departure"
+#: 1 日の分 (今日の訪問をすべて終わったものとして数えるときの区切り)。
+_DAY_MIN = 24 * 60
 
 
 def month_range(month: str) -> tuple[date, date]:
@@ -101,7 +104,7 @@ class VisitLine:
     provided_min: int | None
     rule: str | None
     no_show: bool
-    #: 今日 (JST) より後の日の訪問 (到着の記録なしに数えない)。
+    #: 今日 (JST) より後の日か、今日でまだ予定の終わりが来ていない訪問 (到着の記録なしに数えない)。
     future: bool = False
 
     def as_dict(self) -> dict[str, Any]:
@@ -238,7 +241,13 @@ class MonthStaffReport:
 
 
 def _line(
-    v: DayVisit, day: date, sid: UUID, name: str, patients: dict[UUID, str], today: date
+    v: DayVisit,
+    day: date,
+    sid: UUID,
+    name: str,
+    patients: dict[UUID, str],
+    today: date,
+    now_min: int,
 ) -> VisitLine:
     provided, rule = provided_minutes(v.arrival_at, v.departure_at)
     stay = (
@@ -259,19 +268,27 @@ def _line(
         provided_min=provided,
         rule=rule,
         no_show=v.no_show,
-        future=day > today,
+        future=day > today or (day == today and v.end > now_min),
     )
 
 
 async def build_month_staff_report(
-    db: AsyncSession, month: str, *, today: date | None = None
+    db: AsyncSession,
+    month: str,
+    *,
+    today: date | None = None,
+    now: datetime | None = None,
 ) -> MonthStaffReport:
     """月の看護師別の実績を組み立てる (DB 読み取りのみ)。
 
-    ``today`` = 今日 (JST・試験用)。省略すると現在の JST の日付。
+    ``today`` / ``now`` = 今日 (JST)・今の時刻 (試験用)。どちらも省略すると現在の時刻。
+    ``today`` だけを渡したときは、今日の訪問をすべて終わったものとして数える。
     """
+    now_min = _DAY_MIN
     if today is None:
-        today = datetime.now(UTC).astimezone(JST).date()
+        jst_now = (now or datetime.now(UTC)).astimezone(JST)
+        today = jst_now.date()
+        now_min = jst_now.hour * 60 + jst_now.minute
     date_from, date_to = month_range(month)
     data = await load_staff_days(db, date_from, date_to)
     weeks = week_ranges(date_from, date_to)
@@ -298,7 +315,7 @@ async def build_month_staff_report(
         days = data.days_of(sid)
         period = with_accompany(metrics_of(days), data.accompany.get(sid, {}), date_from, date_to)
         own = [
-            _line(v, d, sid, staff.name, patients, today)
+            _line(v, d, sid, staff.name, patients, today, now_min)
             for d, vs in sorted(data.by_staff_day.get(sid, {}).items())
             for v in sorted(vs, key=lambda x: (x.start, x.end))
         ]
@@ -356,7 +373,7 @@ async def build_month_staff_report(
         weeks=weeks,
         staff=staff_rows,
         visits=lines,
-        counted_until=today if today < date_to else None,
+        counted_until=today if date_from <= today <= date_to else None,
     )
 
 

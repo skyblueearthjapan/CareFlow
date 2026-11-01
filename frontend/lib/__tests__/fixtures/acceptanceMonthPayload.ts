@@ -79,6 +79,10 @@ export function monthPayload(over: Partial<MonthPayload> = {}): MonthPayload {
       { weekday: 0, days: 4, total: 5, visits_per_day: 29.8, utilization: 0.5 },
       { weekday: 1, days: 4, total: 4, visits_per_day: 28.5, utilization: 0.42 },
     ],
+    weekday_summary_all: [
+      { weekday: 0, days: 4, total: 5, visits_per_day: 41.3, utilization: 0.47 },
+      { weekday: 1, days: 4, total: 4, visits_per_day: 39.0, utilization: 0.4 },
+    ],
     peaks: {
       utilization: [{ weekday: 0, slot: '10:00', value: 0.82 }],
       starts: [{ weekday: 0, slot: '10:00', value: 3 }],
