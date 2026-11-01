@@ -87,6 +87,8 @@ const FLAG_CHIPS: Record<string, { label: string; tone: ChipTone }> = {
   kp_end_before_start: { label: 'カイポケの時刻', tone: 'amber' },
   count_diff: { label: '訪問の数が違う', tone: 'red' },
   kp_longer: { label: 'カイポケの方が長い', tone: 'red' },
+  order_swap: { label: '順番が入れ替わっている', tone: 'red' },
+  code_variant: { label: '同じ名前の別の方かも', tone: 'red' },
 };
 
 export interface FlagChip {
