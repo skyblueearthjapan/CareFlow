@@ -349,11 +349,21 @@ async def test_list_done_from_filters_by_done_day(client, db) -> None:
     for tid in (old, new):
         res = await client.post(f"/api/v1/tasks/{tid}/complete", headers=_h(admin))
         assert res.status_code == 200, res.text
-    row = await db.get(PatientTask, UUID(old))
-    row.done_at = datetime.now(UTC) - timedelta(days=40)
+    # 完了の時刻はサーバーの今に任せず、JST の日の昼に固定する (日付の境で揺れないように)。
+    from datetime import time as _time
+    from zoneinfo import ZoneInfo
+
+    from app.api.v1.tasks import jst_today
+
+    jst = ZoneInfo("Asia/Tokyo")
+    today = jst_today()
+    for tid, day in ((old, today - timedelta(days=40)), (new, today)):
+        row = await db.get(PatientTask, UUID(tid))
+        await db.refresh(row)
+        row.done_at = datetime.combine(day, _time(12), tzinfo=jst).astimezone(UTC)
     await db.commit()
 
-    since = (T - timedelta(days=30)).isoformat()
+    since = (today - timedelta(days=30)).isoformat()
     rows = (
         await client.get(f"/api/v1/tasks?status=done&done_from={since}", headers=_h(admin))
     ).json()
@@ -362,7 +372,9 @@ async def test_list_done_from_filters_by_done_day(client, db) -> None:
     assert {r["id"] for r in rows} == {old, new}
     # 今日の 0 時 (JST) からなら今日の完了は入る
     rows = (
-        await client.get(f"/api/v1/tasks?status=done&done_from={T.isoformat()}", headers=_h(admin))
+        await client.get(
+            f"/api/v1/tasks?status=done&done_from={today.isoformat()}", headers=_h(admin)
+        )
     ).json()
     assert [r["id"] for r in rows] == [new]
 
