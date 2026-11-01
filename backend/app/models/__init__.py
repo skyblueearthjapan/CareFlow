@@ -29,6 +29,7 @@ from app.models.leave import (
     OfficeClosedDay,
     StaffLeaveKaipoke,
 )
+from app.models.monthly_actual import MonthlyActualRow, MonthlyActualRun
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
 from app.models.office_area_prompt_dismissal import OfficeAreaPromptDismissal
@@ -94,6 +95,8 @@ __all__ = [
     "LeaveMonth",
     "OfficeClosedDay",
     "StaffLeaveKaipoke",
+    "MonthlyActualRow",
+    "MonthlyActualRun",
     "Notification",
     "Office",
     "OfficeAreaPromptDismissal",

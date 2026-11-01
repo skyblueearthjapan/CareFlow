@@ -138,6 +138,25 @@ class KaipokeClient:
     async def apply(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/api/apply", json=payload)
 
+    async def actual_time_apply(
+        self, payload: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """実績側の時刻をその場で書き換える (月の実績・PlaywrightTest1 ACTUAL_TIME_EDIT_SPEC.md)。
+
+        payload: ``{month, dry_run, job_id, headed, items[], credentials}``。常に非同期で
+        202 (``{success, async, job_id, total, dry_run}``) を返す。不正な項目は 400
+        (``KaipokeApiError``)、別のタスクが実行中なら 409 (``KaipokeBusyError``)。
+        結果は ``actual_time_result()`` でポーリングする。
+        """
+        return await self._request("POST", "/api/actual-time/apply", json=payload, timeout=timeout)
+
+    async def actual_time_result(self) -> dict[str, Any]:
+        """Poll the (single-slot) actual-time result.
+
+        Returns {status: running|completed|error|no_result, job_id?, progress?, result?, error?}.
+        """
+        return await self._request("GET", "/api/actual-time/result")
+
     async def export_result(self) -> dict[str, Any]:
         """Poll the (single-slot) export result.
 

@@ -55,13 +55,24 @@ OP_ACCEPTANCE_REFRESH: Final = "acceptance-refresh"
 OP_LEAVE_COMPARE: Final = "leave-compare"
 #: 休みをカイポケへ送る (休みの段階 L が使う)。
 OP_LEAVE_OUTBOUND: Final = "leave-outbound"
-SOURCE_OPS: Final = (OP_ACCEPTANCE_REFRESH, OP_LEAVE_COMPARE, OP_LEAVE_OUTBOUND)
+#: 月の実績: カイポケの実績を取り直して判定し直す／実績の時刻を書き換える (monthly_actual)。
+OP_MONTHLY_ACTUAL_REFRESH: Final = "monthly-actual-refresh"
+OP_MONTHLY_ACTUAL_APPLY: Final = "monthly-actual-apply"
+SOURCE_OPS: Final = (
+    OP_ACCEPTANCE_REFRESH,
+    OP_LEAVE_COMPARE,
+    OP_LEAVE_OUTBOUND,
+    OP_MONTHLY_ACTUAL_REFRESH,
+    OP_MONTHLY_ACTUAL_APPLY,
+)
 #: op → ``KaipokeJob.job_type``。取り直しは "fetch"、送信は今のイベント送信
 #: (op="events-outbound") と同じ "push"。op の名前は job_type に入れない。
 _JOB_TYPES: Final = {
     OP_ACCEPTANCE_REFRESH: "fetch",
     OP_LEAVE_COMPARE: "fetch",
     OP_LEAVE_OUTBOUND: "push",
+    OP_MONTHLY_ACTUAL_REFRESH: "fetch",
+    OP_MONTHLY_ACTUAL_APPLY: "push",
 }
 
 #: ``kaipoke_source_snapshots.kind``。

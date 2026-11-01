@@ -584,18 +584,24 @@ async def _reconcile_latest_job(
     # (休みの送信) も 1 本と 1 本の合間に RPA が idle に見えるので除外する。待ちと再試行で
     # 30 分を超えうるので 120 分まで閉じない (共通の土台 §0-3)。
     _long_ops = ("acceptance-refresh", "leave-compare", "leave-outbound")
+    # 月の実績 (monthly_actual) の取り直し・実績の書き換えも自前のジョブが決着させる。
+    # 書き換えは 1 件 20〜30 秒 × 数百件で 2 時間を超えうるので 360 分まで閉じない。
+    _monthly_ops = ("monthly-actual-refresh", "monthly-actual-apply")
     if _op in (
         "events-preview",
         "events-outbound",
         "plan-actual-compare",
         "smart-preview",
         *_long_ops,
+        *_monthly_ops,
     ):
         _created = job.created_at
         if _created is not None and _created.tzinfo is None:
             _created = _created.replace(tzinfo=UTC)
         if _op == "smart-preview":
             _hold = _SMART_PREVIEW_STALE_MINUTES
+        elif _op in _monthly_ops:
+            _hold = 360
         elif _op in _long_ops:
             _hold = 120
         else:

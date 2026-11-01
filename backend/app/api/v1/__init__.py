@@ -32,6 +32,7 @@ from app.api.v1 import (
     integrations,
     leave,
     leave_kaipoke,
+    monthly_actual,
     notifications,
     office_feature_flags,
     offices,
@@ -170,6 +171,9 @@ api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 api_router.include_router(visit_recordings.router)
 # サインの画像の取り出し (prefix "/visit-signatures" を持つ)。
 api_router.include_router(visit_signatures.router)
+# 月の実績 (訪問記録の「月の実績」タブ・admin・kaipoke-actual-write-design-2026-11-01 §5-3)。
+# router 自身が prefix "/monthly-actual" を持つ。
+api_router.include_router(monthly_actual.router)
 # 打刻履歴 (visit-history-design-2026-09-30 §3・read-only)。router 自身が prefix
 # "/visit-history" を持つ (visit_recordings と同じ作法)。
 api_router.include_router(visit_history.router)
