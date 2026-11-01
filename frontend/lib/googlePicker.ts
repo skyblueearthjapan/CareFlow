@@ -5,7 +5,12 @@
  *   <script src="https://apis.google.com/js/api.js"> → gapi.load('client:picker', …)
  *   https://developers.google.com/workspace/drive/picker/guides/web-picker-sample
  * 権限は drive.file だけなので、フォルダの一覧はらく助からは読めない。Picker で選ばれた
- * フォルダだけにらく助が触れられる。共有ドライブも出す (setEnableDrives)。
+ * フォルダだけにらく助が触れられる。
+ *
+ * 出す場所は 3 つ (タブ):「共有アイテム」(人から共有されたフォルダ。共有ドライブの中の
+ * フォルダだけを共有されている場合もここに出る)・「マイドライブ」・「共有ドライブ」
+ * (メンバーになっている共有ドライブ)。setEnableDrives の付いた view は共有ドライブしか
+ * 出さないため、view を分けている。
  */
 
 const GAPI_SRC = 'https://apis.google.com/js/api.js';
@@ -24,6 +29,8 @@ interface PickerDocsView {
   setSelectFolderEnabled(v: boolean): PickerDocsView;
   setIncludeFolders(v: boolean): PickerDocsView;
   setEnableDrives(v: boolean): PickerDocsView;
+  setOwnedByMe(v: boolean): PickerDocsView;
+  setLabel(v: string): PickerDocsView;
   setMimeTypes(v: string): PickerDocsView;
 }
 interface PickerBuilder {
@@ -33,6 +40,7 @@ interface PickerBuilder {
   setAppId(id: string): PickerBuilder;
   setTitle(t: string): PickerBuilder;
   setLocale(l: string): PickerBuilder;
+  enableFeature(f: string): PickerBuilder;
   setCallback(cb: (data: PickerResponse) => void): PickerBuilder;
   build(): { setVisible(v: boolean): void };
 }
@@ -40,6 +48,7 @@ interface PickerNamespace {
   PickerBuilder: new () => PickerBuilder;
   DocsView: new (viewId?: string) => PickerDocsView;
   ViewId: { FOLDERS: string };
+  Feature: { SUPPORT_DRIVES: string };
   Action: { PICKED: string; CANCEL: string };
 }
 interface GoogleWindow {
@@ -105,13 +114,16 @@ export async function pickDriveFolder(opts: {
 }): Promise<PickedFolder | null> {
   const picker = await loadGooglePicker();
   return new Promise<PickedFolder | null>((resolve) => {
-    const view = new picker.DocsView(picker.ViewId.FOLDERS)
-      .setSelectFolderEnabled(true)
-      .setIncludeFolders(true)
-      .setEnableDrives(true)
-      .setMimeTypes(FOLDER_MIME);
+    const folderView = () =>
+      new picker.DocsView(picker.ViewId.FOLDERS)
+        .setSelectFolderEnabled(true)
+        .setIncludeFolders(true)
+        .setMimeTypes(FOLDER_MIME);
     new picker.PickerBuilder()
-      .addView(view)
+      .addView(folderView().setOwnedByMe(false).setLabel('共有アイテム'))
+      .addView(folderView().setOwnedByMe(true).setLabel('マイドライブ'))
+      .addView(folderView().setEnableDrives(true).setLabel('共有ドライブ'))
+      .enableFeature(picker.Feature.SUPPORT_DRIVES)
       .setOAuthToken(opts.accessToken)
       .setDeveloperKey(opts.apiKey)
       .setAppId(opts.appId)
