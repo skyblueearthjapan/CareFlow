@@ -7,12 +7,10 @@
  * 権限は drive.file だけなので、フォルダの一覧はらく助からは読めない。Picker で選ばれた
  * フォルダだけにらく助が触れられる。
  *
- * 出す場所は 2 つ (タブ):「共有アイテム」(人から共有されたフォルダ。共有ドライブの中の
- * フォルダだけを共有されている場合もここに出る)・「共有ドライブ」(メンバーになっている
- * 共有ドライブ)。setEnableDrives の付いた view は共有ドライブしか出さないため view を分ける。
- * Picker は同じ ViewId の view を 1 つのタブにまとめてしまう (FOLDERS を 3 つ足したら最後の
- * 1 つしか出なかった、2026-11-01 本番で確認) ので、共有アイテムは DOCS、共有ドライブは
- * FOLDERS と ViewId を分ける。
+ * 出す場所は 3 つ (タブ):「共有アイテム」(人から共有されたフォルダ。共有ドライブの中の
+ * フォルダだけを共有されている場合もここに出る)・「マイドライブ」・「共有ドライブ」
+ * (メンバーになっている共有ドライブ)。setEnableDrives の付いた view は共有ドライブしか
+ * 出さないため、view を分けている。
  */
 
 const GAPI_SRC = 'https://apis.google.com/js/api.js';
@@ -49,7 +47,7 @@ interface PickerBuilder {
 interface PickerNamespace {
   PickerBuilder: new () => PickerBuilder;
   DocsView: new (viewId?: string) => PickerDocsView;
-  ViewId: { FOLDERS: string; DOCS: string };
+  ViewId: { FOLDERS: string };
   Feature: { SUPPORT_DRIVES: string };
   Action: { PICKED: string; CANCEL: string };
 }
@@ -116,14 +114,15 @@ export async function pickDriveFolder(opts: {
 }): Promise<PickedFolder | null> {
   const picker = await loadGooglePicker();
   return new Promise<PickedFolder | null>((resolve) => {
-    const folderView = (viewId: string) =>
-      new picker.DocsView(viewId)
+    const folderView = () =>
+      new picker.DocsView(picker.ViewId.FOLDERS)
         .setSelectFolderEnabled(true)
         .setIncludeFolders(true)
         .setMimeTypes(FOLDER_MIME);
     new picker.PickerBuilder()
-      .addView(folderView(picker.ViewId.DOCS).setOwnedByMe(false).setLabel('共有アイテム'))
-      .addView(folderView(picker.ViewId.FOLDERS).setEnableDrives(true).setLabel('共有ドライブ'))
+      .addView(folderView().setOwnedByMe(false).setLabel('共有アイテム'))
+      .addView(folderView().setOwnedByMe(true).setLabel('マイドライブ'))
+      .addView(folderView().setEnableDrives(true).setLabel('共有ドライブ'))
       .enableFeature(picker.Feature.SUPPORT_DRIVES)
       .setOAuthToken(opts.accessToken)
       .setDeveloperKey(opts.apiKey)
