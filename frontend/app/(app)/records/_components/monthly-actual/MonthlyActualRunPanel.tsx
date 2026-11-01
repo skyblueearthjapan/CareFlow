@@ -38,6 +38,8 @@ export interface MonthlyActualRunPanelProps {
   /** 送信中（二度押しを防ぐ）。 */
   busy: boolean;
   exporting?: boolean;
+  /** 看護師別の月の実績の A4 を開いている。 */
+  reportOpening?: boolean;
   onRefresh: () => void;
   onDryRun: () => void;
   onApply: () => void;
@@ -45,6 +47,8 @@ export interface MonthlyActualRunPanelProps {
   onCancelSchedule: () => void;
   onRetryFailed: () => void;
   onExport: () => void;
+  /** 看護師別の月の実績を A4 で開く（ブラウザの印刷で PDF）。 */
+  onOpenReport?: () => void;
 }
 
 function formatAt(iso: string | null | undefined): string {
@@ -251,11 +255,25 @@ export function MonthlyActualRunPanel(props: MonthlyActualRunPanelProps) {
           <h3 className="text-base font-bold">月の一覧を出す</h3>
           <p className="text-sm leading-relaxed">
             反映した後のカイポケの実績をもとに、月の一覧を Excel
-            で書き出します。反映しなかった行は、突き合わせの表に残ります。
+            で書き出します。反映しなかった行は、突き合わせの表に残ります。看護師別の月の実績は、下の表と
+            A4（印刷で PDF にできます）でも見られます。
           </p>
-          <Button type="button" disabled={exporting} onClick={props.onExport}>
-            {exporting ? '書き出しています…' : 'Excel を書き出す'}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" disabled={exporting} onClick={props.onExport}>
+              {exporting ? '書き出しています…' : 'Excel を書き出す'}
+            </Button>
+            {props.onOpenReport && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={props.reportOpening}
+                onClick={props.onOpenReport}
+                data-testid="ma-open-report"
+              >
+                {props.reportOpening ? '開いています…' : 'A4 で開く（印刷で PDF）'}
+              </Button>
+            )}
+          </div>
         </>
       )}
 

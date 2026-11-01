@@ -8,6 +8,7 @@
  *   4. 段の決め方（試しが全部進んだら「反映する」）
  *   5. 二度押しで 2 回送らない
  *   6. カイポケで確かめる行は流し直さない・反映済み（already_applied）は送る行に入れない
+ *   7. 最後の段の看護師別の表（並べ替え）と「A4 で開く」（新しいタブに HTML を開く）
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
@@ -16,6 +17,8 @@ import type {
   MonthlyActualCounts,
   MonthlyActualList,
   MonthlyActualRow,
+  MonthlyStaffRow,
+  MonthlyStaffSummary,
 } from '@/lib/schemas/monthly-actual';
 
 const { hooks } = vi.hoisted(() => ({
@@ -25,6 +28,9 @@ const { hooks } = vi.hoisted(() => ({
     refreshMutateAsync: vi.fn(),
     updateMutate: vi.fn(),
     statusEnabled: [] as boolean[],
+    staffEnabled: [] as boolean[],
+    staffSummary: undefined as unknown,
+    reportMutateAsync: vi.fn(),
   },
 }));
 
@@ -44,11 +50,17 @@ vi.mock('@/lib/queries/monthly-actual', () => ({
   useScheduleMonthlyActual: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useCancelMonthlyActualSchedule: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useMonthlyActualExport: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useMonthlyStaffSummary: (_m: string, o: { enabled?: boolean }) => {
+    hooks.staffEnabled.push(!!o.enabled);
+    return { data: hooks.staffSummary, isLoading: false, isError: false, error: null };
+  },
+  useMonthlyStaffReport: () => ({ mutateAsync: hooks.reportMutateAsync, isPending: false }),
 }));
 
 import { MonthlyActualRunPanel } from '../_components/monthly-actual/MonthlyActualRunPanel';
 import { MonthlyActualTab } from '../_components/monthly-actual/MonthlyActualTab';
 import { MonthlyActualTable } from '../_components/monthly-actual/MonthlyActualTable';
+import { MonthlyStaffTable } from '../_components/monthly-actual/MonthlyStaffTable';
 import {
   currentStep,
   dryRunAllOk,
@@ -430,5 +442,146 @@ describe('MonthlyActualTab', () => {
     hooks.statusEnabled = [];
     render(<MonthlyActualTab />);
     expect(hooks.statusEnabled).toContain(true);
+  });
+});
+
+function staffRow(over: Partial<MonthlyStaffRow> = {}): MonthlyStaffRow {
+  return {
+    staff_id: 's1',
+    name: '看護師A',
+    office_short: '本',
+    visits: 40,
+    days: 18,
+    per_day: 2.22,
+    patients: 20,
+    weekly_patients_avg: 12.5,
+    accompany_visits: 3,
+    provided_min_total: 1800,
+    provided_samples: 40,
+    avg_stay_min: 45,
+    short_stay_count: 2,
+    no_departure_count: 1,
+    no_arrival_count: 0,
+    km_total: 120.4,
+    km_per_day: 6.69,
+    km_per_visit: 3.01,
+    skipped_legs: 0,
+    weeks: [],
+    ...over,
+  };
+}
+
+function staffSummary(staff: MonthlyStaffRow[]): MonthlyStaffSummary {
+  return {
+    month: '2026-10',
+    date_from: '2026-10-01',
+    date_to: '2026-10-31',
+    short_stay_minutes: 30,
+    short_stay_end_minutes: 35,
+    weeks: [],
+    totals: {
+      staff_count: staff.length,
+      visits: 0,
+      accompany_visits: 0,
+      provided_min_total: 0,
+      short_stay_count: 0,
+      no_departure_count: 0,
+      no_arrival_count: 0,
+      km_total: 0,
+      skipped_legs: 0,
+    },
+    staff,
+  };
+}
+
+describe('MonthlyStaffTable', () => {
+  const rows = [
+    staffRow({ staff_id: 'a', name: '看護師A', visits: 40, km_total: 120.4 }),
+    staffRow({
+      staff_id: 'b',
+      name: '看護師B',
+      visits: 55,
+      km_total: 80,
+      weekly_patients_avg: null,
+    }),
+    staffRow({ staff_id: 'c', name: '看護師C', visits: 10, km_total: 200 }),
+  ];
+  const names = () =>
+    screen.getAllByTestId('ma-staff-row').map((tr) => tr.querySelector('td')?.textContent);
+
+  it('最初は BE の並び。見出しを押すと大きい順、もう一度で小さい順', () => {
+    render(<MonthlyStaffTable summary={staffSummary(rows)} />);
+    expect(names()).toEqual(['看護師A本', '看護師B本', '看護師C本']);
+    fireEvent.click(screen.getByTestId('ma-staff-sort-visits'));
+    expect(names()).toEqual(['看護師B本', '看護師A本', '看護師C本']);
+    fireEvent.click(screen.getByTestId('ma-staff-sort-visits'));
+    expect(names()).toEqual(['看護師C本', '看護師A本', '看護師B本']);
+    fireEvent.click(screen.getByTestId('ma-staff-sort-km_total'));
+    expect(names()).toEqual(['看護師C本', '看護師A本', '看護師B本']);
+  });
+
+  it('空の値は並べ替えても下・「—」で出す。到着＋35 は退出なしを添える', () => {
+    render(<MonthlyStaffTable summary={staffSummary(rows)} />);
+    fireEvent.click(screen.getByTestId('ma-staff-sort-weekly_patients_avg'));
+    expect(names()[2]).toBe('看護師B本');
+    fireEvent.click(screen.getByTestId('ma-staff-sort-weekly_patients_avg'));
+    expect(names()[2]).toBe('看護師B本');
+    const row = screen.getAllByTestId('ma-staff-row')[2]!;
+    expect(row.textContent).toContain('—');
+    expect(row.textContent).toContain('2（退出なし 1）');
+  });
+
+  it('訪問が無い月は表を出さない', () => {
+    render(<MonthlyStaffTable summary={staffSummary([])} />);
+    expect(screen.getByTestId('ma-staff-empty')).toBeTruthy();
+  });
+});
+
+describe('MonthlyActualTab 一覧を出す', () => {
+  beforeEach(() => {
+    hooks.staffEnabled = [];
+    hooks.reportMutateAsync.mockReset();
+    hooks.staffSummary = staffSummary([staffRow()]);
+    hooks.list = {
+      data: makeList({ job: job({ dry_run: false, state: 'verified' }) }),
+      isLoading: false,
+      isError: false,
+      error: null,
+    };
+  });
+
+  it('最後の段で看護師別の表を読み、出す。前の段では読まない', () => {
+    render(<MonthlyActualTab />);
+    expect(hooks.staffEnabled).toContain(true);
+    expect(screen.getByTestId('ma-staff-table')).toBeTruthy();
+    hooks.list = { data: makeList(), isLoading: false, isError: false, error: null };
+    hooks.staffEnabled = [];
+    render(<MonthlyActualTab />);
+    expect(hooks.staffEnabled.every((e) => e === false)).toBe(true);
+  });
+
+  it('「A4 で開く」は click の中で新しいタブを開き、届いた HTML をそのタブに出す', async () => {
+    const win = { location: { href: '' }, opener: {}, close: vi.fn() };
+    const open = vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window);
+    const createUrl = vi.fn(() => 'blob:report');
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = createUrl;
+    URL.revokeObjectURL = vi.fn();
+    hooks.reportMutateAsync.mockResolvedValue('<!doctype html><title>x</title>');
+    try {
+      render(<MonthlyActualTab />);
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('ma-open-report'));
+      });
+      expect(open).toHaveBeenCalledWith('', '_blank');
+      expect(hooks.reportMutateAsync).toHaveBeenCalledWith(expect.any(String));
+      expect(win.location.href).toBe('blob:report');
+      expect(win.opener).toBeNull();
+    } finally {
+      open.mockRestore();
+      URL.createObjectURL = origCreate;
+      URL.revokeObjectURL = origRevoke;
+    }
   });
 });

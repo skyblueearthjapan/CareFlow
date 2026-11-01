@@ -436,3 +436,65 @@ export function parseMonthlyActualApplyStatus(raw: unknown): MonthlyActualApplyS
     rows: r.rows.map(toMonthlyActualRow),
   };
 }
+
+// --- 看護師別の月の実績 (`GET /{month}/staff-summary`・`services/monthly_actual/staff_report.py`) ---
+
+const num = z.number().nullable();
+
+/** 1 人 × 1 週 (`StaffWeek.as_dict`)。 */
+export const staffWeekSchema = z.object({
+  start: isoDate,
+  end: isoDate,
+  days: z.number(),
+  visits: z.number(),
+  patients: z.number(),
+  provided_min: z.number(),
+  km: z.number(),
+});
+
+/** 1 人の月の実績 (`StaffMonth.as_dict`)。 */
+export const staffMonthSchema = z.object({
+  staff_id: z.string(),
+  name: z.string(),
+  office_short: z.string().nullable(),
+  visits: z.number(),
+  days: z.number(),
+  per_day: num,
+  patients: z.number(),
+  weekly_patients_avg: num,
+  accompany_visits: z.number(),
+  provided_min_total: z.number(),
+  provided_samples: z.number(),
+  avg_stay_min: num,
+  short_stay_count: z.number(),
+  no_departure_count: z.number(),
+  no_arrival_count: z.number(),
+  km_total: z.number(),
+  km_per_day: num,
+  km_per_visit: num,
+  skipped_legs: z.number(),
+  weeks: z.array(staffWeekSchema),
+});
+export type MonthlyStaffRow = z.infer<typeof staffMonthSchema>;
+
+export const staffSummarySchema = z.object({
+  month: z.string(),
+  date_from: isoDate,
+  date_to: isoDate,
+  short_stay_minutes: z.number(),
+  short_stay_end_minutes: z.number(),
+  weeks: z.array(z.object({ start: isoDate, end: isoDate })),
+  totals: z.object({
+    staff_count: z.number(),
+    visits: z.number(),
+    accompany_visits: z.number(),
+    provided_min_total: z.number(),
+    short_stay_count: z.number(),
+    no_departure_count: z.number(),
+    no_arrival_count: z.number(),
+    km_total: z.number(),
+    skipped_legs: z.number(),
+  }),
+  staff: z.array(staffMonthSchema),
+});
+export type MonthlyStaffSummary = z.infer<typeof staffSummarySchema>;

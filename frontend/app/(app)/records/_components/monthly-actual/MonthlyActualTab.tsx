@@ -8,6 +8,9 @@
  *
  * ロボットはサーバーで動くので、押した後に PC を閉じてよい。進み具合は、反映が
  * 動いている間だけ status を数秒おきに読む（終われば止まる・hooks 側の refetchInterval）。
+ *
+ * 最後の段「一覧を出す」では、看護師別の月の実績（表・A4・Excel の看護師別シート）も出す。
+ * A4 は BE が返す HTML を新しいタブで開く（打刻履歴の A4 `VisitHistoryPrintDialog` と同じ開き方）。
  */
 
 import { useMemo, useRef, useState } from 'react';
@@ -25,6 +28,8 @@ import {
   useMonthlyActual,
   useMonthlyActualApplyStatus,
   useMonthlyActualExport,
+  useMonthlyStaffReport,
+  useMonthlyStaffSummary,
   useRefreshMonthlyActual,
   useScheduleMonthlyActual,
   useUpdateMonthlyActualRow,
@@ -33,6 +38,7 @@ import {
 import { MonthlyActualRunPanel, type MonthlyActualProgress } from './MonthlyActualRunPanel';
 import { MonthlyActualSteps } from './MonthlyActualSteps';
 import { MonthlyActualTable } from './MonthlyActualTable';
+import { MonthlyStaffTable } from './MonthlyStaffTable';
 import {
   currentStep,
   failedRows,
@@ -66,6 +72,7 @@ export function MonthlyActualTab() {
   const schedule = useScheduleMonthlyActual();
   const cancelSchedule = useCancelMonthlyActualSchedule();
   const exportFile = useMonthlyActualExport();
+  const staffReport = useMonthlyStaffReport();
 
   // 二度押しの止め。state は描き直しまで古いので、同じ瞬間の 2 回目は ref で止める。
   const sendingRef = useRef(false);
@@ -105,6 +112,7 @@ export function MonthlyActualTab() {
   const step = currentStep(merged);
   const pending = pendingRows(rows);
   const failed = failedRows(rows);
+  const staffSummary = useMonthlyStaffSummary(month, { enabled: step === 6 });
 
   const progress: MonthlyActualProgress | null = (() => {
     const s = status.data;
@@ -127,6 +135,29 @@ export function MonthlyActualTab() {
       toast.success('Excel を書き出しました');
     } catch (e) {
       toast.error(`Excel の書き出しに失敗しました: ${apiErrorMessage(e)}`);
+    }
+  };
+
+  const onOpenReport = async () => {
+    // window.open は click の中で同期的に呼ぶ（ポップアップの止めを避ける）。
+    const win = typeof window !== 'undefined' ? window.open('', '_blank') : null;
+    if (!win) {
+      toast.warning('ポップアップがブロックされました。ブロックを解除してもう一度お試しください。');
+      return;
+    }
+    try {
+      const html = await staffReport.mutateAsync(month);
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+      win.location.href = url;
+      try {
+        win.opener = null;
+      } catch {
+        /* 一部ブラウザで読み取り専用 */
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      win.close();
+      toast.error(`A4 の出力に失敗しました: ${apiErrorMessage(e)}`);
     }
   };
 
@@ -229,7 +260,28 @@ export function MonthlyActualTab() {
               )
             }
             onExport={onExport}
+            onOpenReport={onOpenReport}
+            reportOpening={staffReport.isPending}
           />
+          {step === 6 && (
+            <section className="space-y-2" data-testid="ma-staff-section">
+              <h3 className="text-base font-bold">看護師別の月の実績</h3>
+              <p className="text-xs text-text-secondary">
+                らく助の実績から数えています。提供時間は到着〜退出で、30
+                分未満と退出の記録が無い訪問は到着＋35
+                分にした後の値です。移動は拠点と訪問先を直線でつないだ目安です。見出しを押すと並べ替えます。
+              </p>
+              {staffSummary.isLoading ? (
+                <Skeleton className="h-[160px] w-full" />
+              ) : staffSummary.isError || !staffSummary.data ? (
+                <p className="rounded-md bg-error-bg px-3 py-2 text-sm text-error">
+                  看護師別の月の実績を読み込めませんでした：{apiErrorMessage(staffSummary.error)}
+                </p>
+              ) : (
+                <MonthlyStaffTable summary={staffSummary.data} />
+              )}
+            </section>
+          )}
           {merged.kp_fetched_at && (
             <MonthlyActualTable
               counts={merged.counts}

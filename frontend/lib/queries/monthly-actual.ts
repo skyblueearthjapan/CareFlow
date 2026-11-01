@@ -9,6 +9,8 @@
  *   GET    /{month}/apply/status  → 反映の進み具合と行ごとの結果
  *   POST   /{month}/schedule      → 夜に流す予約 (既定は今夜 22:00 JST)
  *   GET    /{month}/export.xlsx   → 月の一覧 (4 シート)
+ *   GET    /{month}/staff-summary → 看護師別の月の実績 (JSON)
+ *   GET    /{month}/report        → 看護師別の月の実績 (A4 縦の HTML)
  *
  * ジョブは応答の後に動くので、画面は状態を数秒おきに読む (Cloudflare の 100 秒の制限を避ける)。
  * 409 (ほかのカイポケの処理が動いている・反映の途中) と 422 (過去の月だけ・送る行が無い) は
@@ -26,11 +28,13 @@ import {
   parseMonthlyActualApplyStatus,
   parseMonthlyActualList,
   rawRowSchema,
+  staffSummarySchema,
   toMonthlyActualRow,
   type MonthlyActualApplyStatus,
   type MonthlyActualJobAccepted,
   type MonthlyActualList,
   type MonthlyActualRow,
+  type MonthlyStaffSummary,
 } from '@/lib/schemas/monthly-actual';
 
 export const MONTHLY_ACTUAL_PATH = '/api/v1/monthly-actual';
@@ -40,6 +44,8 @@ export const MONTHLY_ACTUAL_POLL_MS = 5_000;
 export const monthlyActualKey = (month: string) => ['monthly-actual', 'month', month] as const;
 export const monthlyActualApplyStatusKey = (month: string) =>
   ['monthly-actual', 'apply-status', month] as const;
+export const monthlyActualStaffSummaryKey = (month: string) =>
+  ['monthly-actual', 'staff-summary', month] as const;
 
 /** 月の一覧の Excel の道 (Bearer が要るので、取るときは `useMonthlyActualExport` を使う)。 */
 export function monthlyActualExportUrl(month: string): string {
@@ -272,6 +278,41 @@ export function useMonthlyActualExport() {
         blob: await res.blob(),
         filename: `${Number(year)}年${Number(mon)}月 訪問の実績.xlsx`,
       };
+    },
+  });
+}
+
+/** GET /{month}/staff-summary — 看護師別の月の実績 (らく助の実績だけから数える)。 */
+export function useMonthlyStaffSummary(month: string, options: { enabled?: boolean } = {}) {
+  const { accessToken, refreshToken, ready } = useTokens();
+  return useQuery<MonthlyStaffSummary>({
+    queryKey: monthlyActualStaffSummaryKey(month),
+    queryFn: async () => {
+      const raw = await fetcher<unknown>(`${MONTHLY_ACTUAL_PATH}/${month}/staff-summary`, {
+        accessToken,
+        refreshToken,
+      });
+      return staffSummarySchema.parse(raw);
+    },
+    enabled: ready && !!month && (options.enabled ?? true),
+  });
+}
+
+/**
+ * GET /{month}/report — 看護師別の月の実績の A4 縦の HTML を文字列で受ける
+ * (打刻履歴の `useVisitHistoryReport` と同じ: `fetcher` は JSON にできない本文を文字列で返す)。
+ */
+export function useMonthlyStaffReport() {
+  const { accessToken, refreshToken } = useTokens();
+  return useMutation<string, Error, string>({
+    mutationFn: async (month) => {
+      const raw = await fetcher<unknown>(`${MONTHLY_ACTUAL_PATH}/${month}/report`, {
+        accessToken,
+        refreshToken,
+      });
+      const html = typeof raw === 'string' ? raw : '';
+      if (html.trim() === '') throw new Error('レポートの本文が空でした');
+      return html;
     },
   });
 }
