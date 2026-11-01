@@ -53,6 +53,17 @@ vi.mock('@/lib/queries/staff-events', () => ({
   buildStaffEventsMap: () => new Map(),
 }));
 
+// 事務所からのやること (カードの印・詳細の枠)。ここでは 0 件に固定する。
+vi.mock('@/lib/queries/tasks', () => ({
+  useVisitTaskCounts: () => ({ data: { date: '2026-01-01', counts: {} } }),
+  useVisitTasks: () => ({ data: [], isLoading: false, isError: false }),
+  useTaskItemTypes: () => ({ data: [] }),
+  useCompleteTask: () => ({ mutate: vi.fn(), isPending: false }),
+  useReopenTask: () => ({ mutate: vi.fn(), isPending: false }),
+  useCancelTask: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreateTasks: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 import { makeRow, makeVisit } from '@/components/monitor/__tests__/fixtures';
 import type { MonitorResponse, MonitorStaffRow } from '@/lib/schemas/monitor';
 

@@ -35,6 +35,8 @@ interface MonitorRowPanelProps {
   canAdjust?: boolean;
   /** その職員の 1 日の訪問ぜんぶ (絞り込み前・経路用)。 */
   routeVisits?: MonitorVisit[];
+  /** 表示中の日 (YYYY-MM-DD)。渡すと詳細に「事務所からのやること」を出す (管理者だけ)。 */
+  tasksDate?: string | null;
 }
 
 export function MonitorRowPanel({
@@ -51,6 +53,7 @@ export function MonitorRowPanel({
   reviewPending,
   canAdjust = false,
   routeVisits,
+  tasksDate = null,
 }: MonitorRowPanelProps) {
   const override = row.day_override ?? null;
   return (
@@ -126,6 +129,7 @@ export function MonitorRowPanel({
               officeIds={officeIds}
               canAdjust={canAdjust}
               routeVisits={routeVisits}
+              tasksDate={tasksDate}
             />
           </div>
         )}

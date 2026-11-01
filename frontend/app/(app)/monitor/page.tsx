@@ -53,6 +53,7 @@ import { useStaffList } from '@/lib/queries/staff';
 import { buildStaffEventsMap, useWeekStaffEvents } from '@/lib/queries/staff-events';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { isAdminRole } from '@/lib/rbac';
+import { useVisitTaskCounts } from '@/lib/queries/tasks';
 
 type OnlyFilter = null | 'anomaly' | 'missing';
 
@@ -294,6 +295,13 @@ export default function MonitorPage() {
 
   const isToday = date === todayJst();
 
+  // 事務所からのやること (管理者だけ・patient-tasks-design §3)。カードの 📋N / ✓ の印。
+  const taskCountsQuery = useVisitTaskCounts(date, {
+    enabled: canReview,
+    refetchInterval: isToday ? 60_000 : false,
+  });
+  const taskCounts = canReview ? taskCountsQuery.data?.counts : undefined;
+
   if (status === 'loading') {
     return null;
   }
@@ -455,6 +463,14 @@ export default function MonitorPage() {
             </span>
             予定に無い訪問（QR打刻）
           </span>
+          {canReview && (
+            <span className="inline-flex items-center gap-1.5" data-testid="monitor-legend-tasks">
+              <span className="rounded-full bg-brand-primary-light px-1 text-[10px] font-bold text-brand-primary-hover">
+                📋2
+              </span>
+              未完了のやること（赤＝期日を過ぎたものあり・✓＝全部完了）
+            </span>
+          )}
           <span className="text-text-muted">→1.2km 次までの距離</span>
         </div>
 
@@ -492,6 +508,7 @@ export default function MonitorPage() {
                 dateIso={date}
                 officeIds={officeIds}
                 visitById={visitById}
+                taskCounts={taskCounts}
                 renderRowPanel={(row) => (
                   <MonitorRowPanel
                     row={row}
@@ -517,6 +534,8 @@ export default function MonitorPage() {
                         ? data?.staff.find((r) => r.staff_id === row.staff_id)?.visits
                         : undefined
                     }
+                    // 事務所からのやること (管理者だけ)。
+                    tasksDate={canReview ? date : null}
                   />
                 )}
               />

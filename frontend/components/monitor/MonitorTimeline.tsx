@@ -32,10 +32,12 @@ import {
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 import type { EventRead } from '@/lib/schemas/staff-events';
+import type { VisitTaskCount } from '@/lib/schemas/patient-task';
 import { actualTimeParts, minutesToHm } from '@/lib/format/actualTime';
 import { LEAVE_LABEL_OF_TYPE, LEAVE_TYPES, leaveWindow } from '@/lib/leave';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { TaskCountBadge } from '@/components/tasks/TaskCountBadge';
 import { classifyVisitDisplay, type VisitDisplayKind } from '@/lib/schedule/visitVisibility';
 
 import {
@@ -103,6 +105,11 @@ interface MonitorTimelineProps {
   visitById?: ReadonlyMap<string, MonitorVisit>;
   /** 選んだ行のすぐ下に開くパネルの中身 (地図・順路・訪問の詳細)。 */
   renderRowPanel?: (row: MonitorStaffRow) => ReactNode;
+  /**
+   * 訪問 id → 事務所からのやることの件数 (管理者だけ・patient-tasks-design §3)。
+   * カードに 📋N / ✓ の印を出す。無い訪問には出さない。
+   */
+  taskCounts?: Readonly<Record<string, VisitTaskCount>>;
 }
 
 const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i) => 8 + i);
@@ -227,6 +234,7 @@ export function MonitorTimeline({
   officeIds = [],
   visitById,
   renderRowPanel,
+  taskCounts,
 }: MonitorTimelineProps) {
   const hasSelection = selectedRowKey !== null;
   // M-4c: 初回表示時に「今」を画面中央へ (横スクロール化に伴う迷子防止・当日のみ)。
@@ -681,6 +689,7 @@ export function MonitorTimeline({
                       meta={patientMetaById?.get(v.patient_id)}
                       dateIso={dateIso}
                       hopToOfficeName={hopTo}
+                      taskCount={taskCounts?.[v.visit_id]}
                     />
                   );
                 })}
@@ -866,6 +875,7 @@ function VisitBars({
   meta,
   dateIso,
   hopToOfficeName,
+  taskCount,
 }: {
   visit: MonitorVisit;
   lane: number;
@@ -878,6 +888,8 @@ function VisitBars({
   dateIso: string | null;
   /** 次の訪問で拠点が変わるなら、その拠点名 (「→ 都賀へ」)。 */
   hopToOfficeName: string | null;
+  /** 事務所からのやることの件数 (無ければ印を出さない)。 */
+  taskCount?: VisitTaskCount;
 }) {
   const pos = lanePos(lane);
   const ps = hmToMinutes(visit.start_time);
@@ -1074,6 +1086,8 @@ function VisitBars({
               2名
             </span>
           )}
+          {/* 事務所からのやること (📋N・期日を過ぎたものがあれば赤・全部完了なら ✓)。 */}
+          <TaskCountBadge count={taskCount} testId={`monitor-bar-tasks-${visit.visit_id}`} />
         </span>
         <span className="flex min-w-0 items-center gap-1 text-[9px] leading-tight opacity-80">
           {/* 実績の時刻を合わせた訪問の印。2 行目の**先頭**に置く: 35 分枠のカードは

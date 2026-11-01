@@ -86,7 +86,10 @@ function useAuthTokens() {
 // ---------------------------------------------------------------------------
 
 /** 管理者の一覧 (やることのページ)。 */
-export function useTasks(params: TasksParams = {}, options: { enabled?: boolean } = {}) {
+export function useTasks(
+  params: TasksParams = {},
+  options: { enabled?: boolean; refetchInterval?: number | false } = {},
+) {
   const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
   const search = new URLSearchParams();
   search.set('status', params.status ?? 'open');
@@ -100,6 +103,7 @@ export function useTasks(params: TasksParams = {}, options: { enabled?: boolean 
     queryFn: () =>
       fetcher<PatientTaskRead[]>(`${TASKS}?${search.toString()}`, { accessToken, refreshToken }),
     enabled: isAuthenticated && (options.enabled ?? true),
+    refetchInterval: options.refetchInterval,
   });
 }
 
@@ -220,6 +224,11 @@ export function useCompleteTask(options: CompleteOptions = {}) {
       invalidate();
       options.onSuccess?.(data, variables, onMutateResult, context);
     },
+    // 409 (ほかの人が先に完了) / 422 (この訪問には出ていない) のときも、いまの状態を読み直す。
+    onError: (error, variables, onMutateResult, context) => {
+      invalidate();
+      options.onError?.(error, variables, onMutateResult, context);
+    },
   });
 }
 
@@ -239,6 +248,10 @@ function useTaskAction(action: 'reopen' | 'cancel', options: TaskIdOptions) {
     onSuccess: (data, variables, onMutateResult, context) => {
       invalidate();
       options.onSuccess?.(data, variables, onMutateResult, context);
+    }, // 409 (すでに戻した・取り消した) などのときも、いまの状態を読み直す。
+    onError: (error, variables, onMutateResult, context) => {
+      invalidate();
+      options.onError?.(error, variables, onMutateResult, context);
     },
   });
 }

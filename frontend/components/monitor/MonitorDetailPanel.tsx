@@ -35,6 +35,7 @@ import { ActualTimeAdjustBox } from '@/components/records/ActualTimeAdjustBox';
 import { SignatureViewer } from '@/components/records/SignatureViewer';
 import { targetFromMonitorVisit } from '@/components/records/actualTimeAdjust';
 import { VisitRecordingLink } from '@/components/records/VisitRecordingLink';
+import { VisitTasksBox } from '@/components/tasks/VisitTasksBox';
 import { cn } from '@/lib/utils';
 import { lateDeliveryLabel } from '@/lib/format/actualTime';
 import {
@@ -101,6 +102,11 @@ interface MonitorDetailPanelProps {
    * 絞られていても、経路の前後は本当の 1 日の順番で出す。省略時は ``row.visits``。
    */
   routeVisits?: MonitorVisit[];
+  /**
+   * 表示中の日 (YYYY-MM-DD)。渡したときだけ「事務所からのやること」の枠を出す
+   * (管理者だけ・patient-tasks-design-2026-11-01 §3)。日付は付けるときの既定。
+   */
+  tasksDate?: string | null;
 }
 
 export function MonitorDetailPanel({
@@ -114,6 +120,7 @@ export function MonitorDetailPanel({
   officeIds = [],
   canAdjust = false,
   routeVisits,
+  tasksDate = null,
 }: MonitorDetailPanelProps) {
   if (visit) {
     return (
@@ -128,6 +135,7 @@ export function MonitorDetailPanel({
         reviewPending={reviewPending}
         canAdjust={canAdjust}
         routeVisits={routeVisits}
+        tasksDate={tasksDate}
       />
     );
   }
@@ -293,6 +301,7 @@ function VisitDetail({
   reviewPending,
   canAdjust,
   routeVisits,
+  tasksDate,
 }: {
   visit: MonitorVisit;
   row: MonitorStaffRow | null;
@@ -302,6 +311,7 @@ function VisitDetail({
   reviewPending?: boolean;
   canAdjust?: boolean;
   routeVisits?: MonitorVisit[];
+  tasksDate?: string | null;
 }) {
   const st = displayStatus(visit);
   const txt = STATUS_JUDGE[st];
@@ -466,6 +476,16 @@ function VisitDetail({
       <div className="mb-3">
         <VisitRecordingLink visitId={visit.visit_id} />
       </div>
+
+      {/* 事務所からのやること (管理者だけ・patient-tasks-design §3)。 */}
+      {tasksDate && (
+        <VisitTasksBox
+          visitId={visit.visit_id}
+          visitDate={tasksDate}
+          patientId={visit.patient_id}
+          patientName={visit.patient_name ?? null}
+        />
+      )}
 
       {/* 同行 (§7.3): 担当乖離とは別枠の情報表示 (複数名対応・確定#5)。 */}
       {(visit.accompaniment_staff_names?.length ?? 0) > 0 || visit.accompaniment_staff_name ? (
