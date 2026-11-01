@@ -50,7 +50,7 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
 
 let kinmuSheets: unknown[] = [];
 
-// カイポケとの差分 (右の一覧のタブ) — 中身は LeaveComparePanel の試験で見る
+// カイポケとの差分 (表の上の帯) — 中身は LeaveComparePanel の試験で見る
 vi.mock('@/lib/queries/leaveKaipoke', () => ({
   useCompareLatest: () => ({ data: undefined, isLoading: true }),
   useCompareJob: () => ({ data: undefined }),
@@ -146,11 +146,23 @@ function stamp(name: string) {
   );
 }
 
+/** 表の上の帯の「申請中」を開く (ふだんは閉じている)。 */
+function openPending() {
+  fireEvent.click(
+    within(screen.getByRole('group', { name: '表の上の一覧' })).getByRole('button', {
+      name: /^申請中（/,
+    }),
+  );
+}
+
 async function popover() {
   return screen.findByRole('dialog');
 }
 
 beforeEach(() => {
+  // 開いたときの月は「今日の翌月」。材料の今日 (10/21) に合わせ、試験を流す日で揺れないようにする
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-21T12:00:00+09:00'));
   role = 'admin';
   search = new URLSearchParams();
   view = makeView();
@@ -642,6 +654,7 @@ describe('マスの小窓', () => {
 describe('申請中の一覧', () => {
   it('日付順: 日ごとに「休む人 今 N → 全部承認すると N」とまとめて承認', async () => {
     render(<AdminLeavePage />);
+    openPending();
     const panel = screen.getByRole('complementary', { name: '申請中の休み' });
     const day12 = within(panel).getByRole('region', { name: '11/12（木）' });
     expect(day12).toHaveTextContent(
@@ -660,6 +673,7 @@ describe('申請中の一覧', () => {
 
   it('職員順: 人ごとに休日数とまとめて承認', async () => {
     render(<AdminLeavePage />);
+    openPending();
     const panel = screen.getByRole('complementary', { name: '申請中の休み' });
     fireEvent.click(within(panel).getByRole('button', { name: '職員順' }));
     const a = within(panel).getByRole('region', { name: '職員A' });
@@ -673,6 +687,7 @@ describe('申請中の一覧', () => {
 
   it('1 件ずつ承認・「…」で表のマスの小窓を開く', async () => {
     render(<AdminLeavePage />);
+    openPending();
     const panel = screen.getByRole('complementary', { name: '申請中の休み' });
     fireEvent.click(within(panel).getByRole('button', { name: '職員C 有給 を承認' }));
     expect(m.approveOne.mutateAsync).toHaveBeenCalledWith({ id: P3, override_type: null });
@@ -687,6 +702,7 @@ describe('申請中の一覧', () => {
 
   it('行に指を置くと表のマスと列が光る・目立たせるとほかが薄くなる', () => {
     render(<AdminLeavePage />);
+    openPending();
     const row = document.querySelector<HTMLElement>(`[data-request="${P1}"]`)!;
     fireEvent.mouseEnter(row);
     expect(cellEl(S1, '2026-11-12').className).toContain('ring-brand-primary-hover');
@@ -722,6 +738,7 @@ describe('申請中の一覧', () => {
       }),
     );
     render(<AdminLeavePage />);
+    openPending();
     const panel = screen.getByRole('complementary', { name: '申請中の休み' });
     fireEvent.click(within(panel).getByRole('button', { name: 'この日をまとめて承認' }));
     // どの申請で止まったかを職員名と日付で出す
@@ -736,6 +753,7 @@ describe('申請中の一覧', () => {
   it('申請中が無ければ確定へ進めると出す', () => {
     view = makeView({ pending: [], cells: makeView().cells.filter((c) => !c.pending) });
     render(<AdminLeavePage />);
+    openPending();
     expect(
       screen.getByText('申請中の休みはありません。「この月を確定して通知」へ進めます。'),
     ).toBeInTheDocument();
@@ -1001,6 +1019,7 @@ describe('キーボードと光り', () => {
     const scroll = vi.fn();
     Element.prototype.scrollIntoView = scroll;
     render(<AdminLeavePage />);
+    openPending();
     fireEvent.mouseEnter(document.querySelector<HTMLElement>(`[data-request="${P1}"]`)!);
     expect(cellEl(S3, '2026-11-12').className).toContain('ring-brand-primary');
     expect(cellEl(S3, '2026-11-11').className).not.toContain('ring-1');
@@ -1009,6 +1028,7 @@ describe('キーボードと光り', () => {
 
   it('承認したら光りを消す', async () => {
     render(<AdminLeavePage />);
+    openPending();
     const row = document.querySelector<HTMLElement>(`[data-request="${P1}"]`)!;
     fireEvent.mouseEnter(row);
     fireEvent.click(within(row).getByRole('button', { name: /を承認$/ }));
@@ -1018,20 +1038,62 @@ describe('キーボードと光り', () => {
   });
 });
 
-describe('右の一覧のタブ', () => {
+describe('表の上の帯', () => {
+  it('ふだんは閉じていて、申請中の件数を目立たせる・押すと開き、もう一度押すと閉じる', () => {
+    render(<AdminLeavePage />);
+    const band = screen.getByRole('group', { name: '表の上の一覧' });
+    const pending = within(band).getByRole('button', { name: '申請中（4 件）' });
+    expect(pending).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('band-pending-count')).toHaveTextContent('4');
+    expect(screen.getByTestId('band-pending-count').className).toContain('bg-brand-primary');
+    expect(screen.queryByRole('complementary', { name: '申請中の休み' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('complementary', { name: 'カイポケとの差分' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(pending);
+    expect(pending).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('complementary', { name: '申請中の休み' })).toBeInTheDocument();
+
+    fireEvent.click(pending);
+    expect(pending).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('complementary', { name: '申請中の休み' })).not.toBeInTheDocument();
+  });
+
+  it('申請中が無いときは件数を目立たせない', () => {
+    view = makeView({ pending: [], cells: makeView().cells.filter((c) => !c.pending) });
+    render(<AdminLeavePage />);
+    expect(screen.getByTestId('band-pending-count')).toHaveTextContent('0');
+    expect(screen.getByTestId('band-pending-count').className).not.toContain('bg-brand-primary');
+  });
+
   it('申請中とカイポケとの差分を切り替える', () => {
     render(<AdminLeavePage />);
-    const tabs = screen.getByRole('tablist', { name: '右の一覧' });
-    expect(within(tabs).getByRole('tab', { name: '申請中（4）' })).toHaveAttribute(
-      'aria-selected',
+    const band = screen.getByRole('group', { name: '表の上の一覧' });
+    openPending();
+    fireEvent.click(within(band).getByRole('button', { name: 'カイポケとの差分' }));
+    expect(within(band).getByRole('button', { name: 'カイポケとの差分' })).toHaveAttribute(
+      'aria-expanded',
       'true',
     );
-    fireEvent.click(within(tabs).getByRole('tab', { name: 'カイポケとの差分' }));
+    expect(within(band).getByRole('button', { name: '申請中（4 件）' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
     expect(screen.getByRole('complementary', { name: 'カイポケとの差分' })).toBeInTheDocument();
     expect(screen.queryByRole('complementary', { name: '申請中の休み' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'カイポケと比べる' })).toBeInTheDocument();
     // 押せるかはサーバーの判定 (月の表の record_actuals) で決める。無ければ読み込み中で押せない
     expect(screen.getByRole('button', { name: '実績を記録する' })).toBeDisabled();
+  });
+
+  it('閉じたら「目立たせる」もやめる', () => {
+    render(<AdminLeavePage />);
+    openPending();
+    fireEvent.click(screen.getByLabelText('表で申請中を目立たせる（ほかを薄く）'));
+    expect(cellEl(S1, '2026-11-10').className).toContain('opacity-30');
+    openPending();
+    expect(cellEl(S1, '2026-11-10').className).not.toContain('opacity-30');
   });
 });
 
@@ -1238,6 +1300,8 @@ describe('ほかの入口から開く', () => {
     const pop = await popover();
     expect(pop).toHaveTextContent('職員Aさん ・ 11/12（木）');
     expect(pop).toHaveTextContent('本人からの申請');
+    // 申請中のマスへ飛んできたら、帯の「申請中」も開く
+    expect(screen.getByRole('complementary', { name: '申請中の休み' })).toBeInTheDocument();
   });
 
   it('?staff=&date= が変わったら、月と小窓もそれに合わせる', async () => {

@@ -9,8 +9,9 @@
  *   - 上: 月の切り替え・確定の状態・照合の状態・「休みの時間帯に担当が付いている訪問 N 件」・
  *         押すと入るもの (選んで操作／公休／午前休／午後休／有給／取り消す)・事業所の休み・
  *         申請をまとめて承認・この月を確定して通知
- *   - 中央: 職員×日付の表 (名前の列を固定・表の中だけ横にスクロール)
- *   - 右: 申請中 (日付順／職員順・日ごと／人ごとにまとめて承認)
+ *   - 表の上の帯: 申請中 (日付順／職員順・日ごと／人ごとにまとめて承認)／カイポケとの差分。
+ *     ふだんは閉じ、押すと帯の下に開く (もう一度押すと閉じる)
+ *   - 中央: 職員×日付の表 (全幅・名前の列を固定・表の中だけ横にスクロール)
  *   - 下: 勤務表 (Google スプレッドシート) の接続の状態
  * 取り消しはマスの小窓の「取り消す」だけ (「元に戻す」は出さない・§5-3)。
  * ?staff=&date= で開くとそのマスの小窓を開く (申請履歴の「表で開く」)。?staff= だけならその人の行を光らせる。
@@ -20,7 +21,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ExternalLink } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -139,8 +140,8 @@ function LeaveSheetPage() {
   const [stamp, setStamp] = useState<Stamp>('pointer');
   const [pop, setPop] = useState<PopTarget | null>(null);
   const [groupMode, setGroupMode] = useState<'date' | 'staff'>('date');
-  /** 右の一覧: 申請中／カイポケとの差分。 */
-  const [sideTab, setSideTab] = useState<'pending' | 'kaipoke'>('pending');
+  /** 表の上の帯: 開いている一覧 (申請中／カイポケとの差分)。ふだんは閉じる (null)。 */
+  const [bandTab, setBandTab] = useState<'pending' | 'kaipoke' | null>(null);
   const [focusPending, setFocusPending] = useState(false);
   const [highlight, setHighlight] = useState<{ staffId: string; date: string } | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -452,6 +453,10 @@ function LeaveSheetPage() {
       const el = document.querySelector<HTMLElement>(
         `[data-cell="${cellKey(linkStaff, linkDate)}"]`,
       );
+      // 申請中のマスへ飛んできたら、帯の「申請中」も開く
+      if (view.cells.some((c) => c.staff_id === linkStaff && c.date === linkDate && c.pending)) {
+        setBandTab('pending');
+      }
       if (el) {
         el.scrollIntoView?.({ block: 'nearest', inline: 'center' });
         setPop({ staffId: linkStaff, date: linkDate, anchor: el });
@@ -598,7 +603,7 @@ function LeaveSheetPage() {
         </div>
         <p className="text-sm text-text-secondary" data-testid="stamp-hint">
           {stamp === 'pointer'
-            ? '申請は右の「申請中」に並び、表の日付の上に「申N」と件数が出ます。マスを押すとその日の内容と操作が出ます。上の「押すと入るもの」を選ぶと、押したマスにそのまま入ります（続けて何マスでも）。'
+            ? '申請は表の上の「申請中」に並び、表の日付の上に「申N」と件数が出ます。マスを押すとその日の内容と操作が出ます。上の「押すと入るもの」を選ぶと、押したマスにそのまま入ります（続けて何マスでも）。'
             : `「${stamp === 'clear' ? '取り消す' : LEAVE_LABEL[stamp]}」を選んでいます。押したマスにそのまま入ります。申請中のマスは上書きせず、承認・却下の小窓を出します。終わったら「選んで操作」に戻してください。`}
         </p>
       </Card>
@@ -615,66 +620,98 @@ function LeaveSheetPage() {
       ) : (
         <>
           <DayNotes view={view} onOpenClosedDays={() => setClosedOpen(true)} />
-          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-            <Card className="min-w-0 overflow-hidden p-0">
-              <LeaveSheetGrid
-                view={view}
-                focusPending={focusPending}
-                highlight={highlight}
-                highlightStaffId={linkStaff}
-                busyCells={busyCells}
-                expandedCell={pop ? cellKey(pop.staffId, pop.date) : null}
-                onCellClick={onCellClick}
-              />
-              <Legend />
-            </Card>
-            <div className="flex min-w-0 flex-col gap-2">
-              <div
-                className="flex rounded-md border border-border-default bg-bg-base p-0.5"
-                role="tablist"
-                aria-label="右の一覧"
-              >
-                {(
-                  [
-                    ['pending', `申請中（${view.pending.length}）`],
-                    ['kaipoke', 'カイポケとの差分'],
-                  ] as const
-                ).map(([k, label]) => (
+          <div className="min-w-0 space-y-2" data-testid="leave-band">
+            <div
+              className="flex flex-wrap items-center gap-2"
+              role="group"
+              aria-label="表の上の一覧"
+            >
+              {(['pending', 'kaipoke'] as const).map((k) => {
+                const open = bandTab === k;
+                const n = view.pending.length;
+                return (
                   <button
                     key={k}
                     type="button"
-                    role="tab"
-                    aria-selected={sideTab === k}
-                    onClick={() => setSideTab(k)}
+                    aria-expanded={open}
+                    aria-controls="leave-band-panel"
+                    aria-label={k === 'pending' ? `申請中（${n} 件）` : 'カイポケとの差分'}
+                    onClick={() => {
+                      setHighlight(null);
+                      // 閉じたら「目立たせる」もやめる (切り替えの場所が見えなくなるため)
+                      if (open || k !== 'pending') setFocusPending(false);
+                      setBandTab(open ? null : k);
+                    }}
                     className={cn(
-                      'flex-1 rounded px-2 py-1.5 text-sm',
-                      sideTab === k
-                        ? 'bg-brand-primary font-bold text-white'
-                        : 'text-text-secondary',
+                      'inline-flex min-h-[38px] items-center gap-2 rounded-md border px-3 text-sm',
+                      open
+                        ? 'border-brand-primary bg-brand-primary font-bold text-white'
+                        : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted',
                     )}
                   >
-                    {label}
+                    {k === 'pending' ? '申請中' : 'カイポケとの差分'}
+                    {k === 'pending' && (
+                      <span
+                        data-testid="band-pending-count"
+                        className={cn(
+                          'rounded-full px-2 text-sm font-bold tnum',
+                          n === 0
+                            ? 'bg-bg-muted text-text-muted'
+                            : open
+                              ? 'bg-white text-brand-primary'
+                              : 'bg-brand-primary text-white',
+                        )}
+                      >
+                        {n}
+                      </span>
+                    )}
+                    {open ? (
+                      <ChevronUp aria-hidden className="h-4 w-4" />
+                    ) : (
+                      <ChevronDown aria-hidden className="h-4 w-4" />
+                    )}
                   </button>
-                ))}
-              </div>
-              {sideTab === 'pending' ? (
-                <LeavePendingPanel
-                  view={view}
-                  mode={groupMode}
-                  onModeChange={setGroupMode}
-                  focusPending={focusPending}
-                  onFocusPendingChange={setFocusPending}
-                  busyCells={busyCells}
-                  onHighlight={onHighlight}
-                  onApprove={(it) => doApprove(it)}
-                  onApproveMany={(items) => doApproveMany(items.map((i) => i.id))}
-                  onOpenCell={openCellFor}
-                />
-              ) : (
-                <LeaveComparePanel key={month} month={month} recordActuals={view.record_actuals} />
-              )}
+                );
+              })}
+              {bandTab === null && <span className="text-xs text-text-muted">押すと開きます</span>}
             </div>
+            {bandTab && (
+              <div id="leave-band-panel" className="min-w-0">
+                {bandTab === 'pending' ? (
+                  <LeavePendingPanel
+                    view={view}
+                    mode={groupMode}
+                    onModeChange={setGroupMode}
+                    focusPending={focusPending}
+                    onFocusPendingChange={setFocusPending}
+                    busyCells={busyCells}
+                    onHighlight={onHighlight}
+                    onApprove={(it) => doApprove(it)}
+                    onApproveMany={(items) => doApproveMany(items.map((i) => i.id))}
+                    onOpenCell={openCellFor}
+                  />
+                ) : (
+                  <LeaveComparePanel
+                    key={month}
+                    month={month}
+                    recordActuals={view.record_actuals}
+                  />
+                )}
+              </div>
+            )}
           </div>
+          <Card className="min-w-0 overflow-hidden p-0">
+            <LeaveSheetGrid
+              view={view}
+              focusPending={focusPending}
+              highlight={highlight}
+              highlightStaffId={linkStaff}
+              busyCells={busyCells}
+              expandedCell={pop ? cellKey(pop.staffId, pop.date) : null}
+              onCellClick={onCellClick}
+            />
+            <Legend />
+          </Card>
           <DriveCard
             month={month}
             recordedAt={view.record_actuals?.actual_recorded_at ?? null}

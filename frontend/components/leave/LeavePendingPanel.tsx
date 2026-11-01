@@ -56,7 +56,7 @@ export function LeavePendingPanel({
   return (
     <aside
       aria-label="申請中の休み"
-      className="flex min-w-0 flex-col gap-3 rounded-lg border border-border-default bg-brand-primary-50 p-3 lg:max-h-[640px] lg:overflow-y-auto"
+      className="flex min-w-0 flex-col gap-3 rounded-lg border border-border-default bg-brand-primary-50 p-3 max-h-[min(50vh,520px)] overflow-y-auto"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-base font-bold text-text-primary">

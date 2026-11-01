@@ -242,7 +242,7 @@ export function LeaveComparePanel({ month, recordActuals }: LeaveComparePanelPro
   return (
     <aside
       aria-label="カイポケとの差分"
-      className="flex min-w-0 flex-col gap-3 rounded-lg border border-border-default bg-bg-base p-3 lg:max-h-[640px] lg:overflow-y-auto"
+      className="flex min-w-0 flex-col gap-3 rounded-lg border border-border-default bg-bg-base p-3 max-h-[min(50vh,520px)] overflow-y-auto"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" size="sm" disabled={busy} onClick={doStart}>

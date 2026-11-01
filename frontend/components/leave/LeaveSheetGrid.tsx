@@ -200,7 +200,7 @@ function DayHeader({ day, highlighted }: { day: LeaveMonthDay; highlighted: bool
       data-col={day.date}
       title={title || undefined}
       className={cn(
-        'min-w-[44px] border-b border-r border-border-default bg-bg-base px-0 py-1 text-center align-top text-xs font-medium text-text-secondary',
+        'min-w-[52px] border-b border-r border-border-default bg-bg-base px-0 py-1 text-center align-top text-xs font-medium text-text-secondary',
         day.closed_label && 'border-t-4 border-t-border-strong bg-bg-muted',
         highlighted && 'bg-brand-primary-50',
       )}
@@ -307,7 +307,7 @@ const SheetCell = memo(function SheetCell({
       onClick={(e) => onCellClick(staff.id, day.date, e.currentTarget)}
       style={cell?.cancelled_after_approval && !leave ? STRIPES : undefined}
       className={cn(
-        'relative block h-12 w-11 bg-bg-base p-0 text-xs font-bold text-brand-primary-hover transition-opacity',
+        'relative block h-14 w-[52px] bg-bg-base p-0 text-sm font-bold text-brand-primary-hover transition-opacity',
         'hover:shadow-[inset_0_0_0_2px_var(--border-strong)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-primary',
         leave === 'off' && 'bg-brand-primary-light',
         leave === 'paid_off' && 'bg-emerald-100 text-emerald-800',
@@ -334,7 +334,10 @@ const SheetCell = memo(function SheetCell({
       )}
       {cell?.send_status && cell.send_status !== 'sent' && <SendMark status={cell.send_status} />}
       {(cell?.source === 'admin' || cell?.source === 'kaipoke') && (
-        <span aria-hidden className="absolute right-0.5 top-0 text-xs font-normal text-text-muted">
+        <span
+          aria-hidden
+          className="absolute right-1 top-0.5 text-xs font-normal leading-none text-text-muted"
+        >
           {cell.source === 'admin' ? '足' : 'カ'}
         </span>
       )}
@@ -344,7 +347,7 @@ const SheetCell = memo(function SheetCell({
       {showVisits && (
         <span
           aria-hidden
-          className="absolute inset-x-0 bottom-0 text-xs font-normal text-text-muted"
+          className="absolute inset-x-0 bottom-1 text-xs font-normal leading-none text-text-muted"
         >
           {visits}件
         </span>
@@ -357,7 +360,10 @@ const SheetCell = memo(function SheetCell({
 function SendMark({ status }: { status: LeaveSendStatus }) {
   if (status === 'kaipoke_action') {
     return (
-      <span aria-hidden className="absolute left-0.5 top-0 text-xs font-bold text-error">
+      <span
+        aria-hidden
+        className="absolute left-1 top-0.5 text-xs font-bold leading-none text-error"
+      >
         !
       </span>
     );
