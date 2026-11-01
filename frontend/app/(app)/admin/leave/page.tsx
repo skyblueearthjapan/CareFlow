@@ -458,7 +458,8 @@ function LeaveSheetPage() {
         setBandTab('pending');
       }
       if (el) {
-        el.scrollIntoView?.({ block: 'nearest', inline: 'center' });
+        // 帯が開いて表が下へずれた後に送る (同じ描画の中で送ると、マスが画面の外へ出る)
+        requestAnimationFrame(() => el.scrollIntoView?.({ block: 'nearest', inline: 'center' }));
         setPop({ staffId: linkStaff, date: linkDate, anchor: el });
       }
       return;
