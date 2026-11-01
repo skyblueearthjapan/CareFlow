@@ -530,3 +530,54 @@ async def test_smart_apply_dry_run_failure_writes_nothing(client, db, stub_kaipo
     res = await _apply(client, admin, sheet_id=None, dry_run=True)
     assert res.status_code == 422, res.text
     assert (await db.scalars(select(KaipokeJob))).all() == []
+
+
+# --- 取り込み後の実現性の確認 (設計 schedule-feasibility-alerts-design-2026-11-01) ---
+
+
+@pytest.mark.asyncio
+async def test_smart_apply_reports_new_feasibility_alerts(client, db, stub_kaipoke) -> None:
+    """取り込みで新しく出た重なりを結果と取り込みの記録に残し、ベルを 1 行出す。dry_run は判定しない。"""
+    from app.models.kaipoke_job import KaipokeJob
+    from app.models.notification import Notification
+
+    seeded = await _seed_week(db)
+    await _seed_course(db, office=seeded["office"], staff=seeded["staff"], weekday=2, code="A")
+    admin = await _make_admin(db)
+    # 火曜に同じ職員の 2 件が重なる (カイポケで時刻を詰めた想定)
+    stub_kaipoke.by_month[MONTH] = _csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35)),
+        _kp_row(date(2026, 7, 7), time(10, 20), time(10, 55)),
+    )
+    res = await _preview(client, admin)
+    assert res.status_code == 200, res.text
+
+    dry = await _apply(client, admin, sheet_id=None, dry_run=True)
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["feasibility"] is None
+
+    res2 = await _apply(client, admin, sheet_id=None, dry_run=False)
+    assert res2.status_code == 200, res2.text
+    feas = res2.json()["feasibility"]
+    assert feas["ok"] is True
+    assert feas["hardCount"] == 1
+    assert feas["items"][0]["kind"] == "重なり"
+    assert feas["items"][0]["day"] == "2026-07-07"
+    assert feas["items"][0]["visitIds"]
+
+    job = (
+        await db.scalars(
+            select(KaipokeJob).where(
+                KaipokeJob.status == "completed", KaipokeJob.job_type == "fetch"
+            )
+        )
+    ).all()
+    smart = [j for j in job if (j.params or {}).get("op") == "smart-apply"]
+    assert len(smart) == 1
+    assert smart[0].result_summary["feasibility"]["hard_count"] == 1
+    bells = (
+        await db.scalars(
+            select(Notification).where(Notification.type == "feasibility_after_import")
+        )
+    ).all()
+    assert len(bells) == 1 and bells[0].reference_id == smart[0].id

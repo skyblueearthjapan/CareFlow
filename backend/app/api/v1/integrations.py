@@ -102,6 +102,7 @@ from app.schemas.integrations import (
     WeekScheduleRead,
     WeekScheduleRow,
 )
+from app.schemas.v2.feasibility import ImportFeasibilityRead
 from app.services.diff.engine import service_grade
 from app.services.kaipoke_client import (
     KaipokeApiError,
@@ -5641,7 +5642,15 @@ async def smart_inbound_apply(
     protected_days, replace_days = await _smart_classify(db, week_start)
     now = datetime.now(UTC)
 
+    feasibility_before: set[str] | None = None
     if not payload.dry_run:
+        # 取り込み前の実現性の指摘 (赤・黄の指紋) を覚えておく。取り込み後と比べて
+        # 新しく出たものだけを知らせる (設計 schedule-feasibility-alerts-design-2026-11-01
+        # §3-1)。失敗しても取り込みは止めない (None になり、結果に「確認できませんでした」)。
+        from app.services.scheduling.feasibility_alerts import collect_import_baseline
+
+        feasibility_before = await collect_import_baseline(db, week_start)
+
         # 取り込み前スナップショット (PO 決定 2026-08-09: 「取り込み前に戻す」用)。
         # 差分・置換のどちらの変異よりも前 = 取り込み前の盤面が丸ごと残る。
         from app.services.kaipoke.inbound_snapshot import snapshot_week
@@ -5817,6 +5826,7 @@ async def smart_inbound_apply(
         replace_read = _replace_result_read(plan, None)
 
     job_id: UUID | None = None
+    feasibility_read: ImportFeasibilityRead | None = None
     if payload.dry_run:
         await db.rollback()
     else:
@@ -5907,6 +5917,15 @@ async def smart_inbound_apply(
                     "連携画面で内訳を確認してください。" + _held_note
                 ),
             )
+        # 取り込み後の実現性の確認: 新しく出た赤・黄を記録し、ベルで 1 行知らせる。
+        # 例外は中で握る (取り込みを止めない)。job.flush 済みなので取り込みの書込は判定に見える。
+        from app.services.scheduling.feasibility_alerts import record_import_alerts
+
+        feasibility_read = ImportFeasibilityRead.model_validate(
+            await record_import_alerts(
+                db, week_start=week_start, job=job, before=feasibility_before
+            )
+        )
         await _commit_or_409(db)
         job_id = job.id
         if replace_read is not None:
@@ -5919,4 +5938,5 @@ async def smart_inbound_apply(
         dry_run=payload.dry_run,
         diff=diff_result,
         replace=replace_read,
+        feasibility=feasibility_read,
     )

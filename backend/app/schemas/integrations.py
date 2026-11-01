@@ -15,6 +15,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.v2.feasibility import ImportFeasibilityRead
+
 # --- Kaipoke jobs ----------------------------------------------------------
 
 KaipokeJobType = Literal["fetch", "push"]
@@ -840,6 +842,9 @@ class SmartInboundApplyResult(BaseModel):
     dry_run: bool = Field(alias="dryRun")
     diff: InboundApplyResult | None = None
     replace: ReplaceInboundResult | None = None
+    # 取り込みで新しく出た無理・注意 (設計 schedule-feasibility-alerts-design-2026-11-01)。
+    # dry_run では判定しないので None。
+    feasibility: ImportFeasibilityRead | None = None
 
 
 # --- 週空間「今週の運転席」Phase E (week-cockpit-design.md §2-4 / §2-5) --------
