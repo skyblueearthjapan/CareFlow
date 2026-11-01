@@ -14,6 +14,11 @@ GET    /api/v1/monthly-actual/{month}/apply/status — 反映の進み具合と�
 POST   /api/v1/monthly-actual/{month}/schedule   — 夜に流す予約 (既定は今夜 22:00 JST)
 DELETE /api/v1/monthly-actual/{month}/schedule   — 予約の取り消し
 GET    /api/v1/monthly-actual/{month}/export.xlsx — 月の一覧 (4 シート)
+GET    /api/v1/monthly-actual/{month}/staff-summary — 看護師別の月の実績 (JSON)
+GET    /api/v1/monthly-actual/{month}/report     — 看護師別の月の実績 (A4 縦の印刷 HTML)
+
+看護師別はらく助の実績だけから数える (カイポケの実績・作業が無い月でも出せる)。数え方は
+``app.services.monthly_actual.staff_report`` (ダッシュボードのスタッフ別の実績と同じ入口)。
 
 ジョブは段階 0 の ``KaipokeJob`` (他の RPA のジョブが動いていれば 409)。実体は応答の後に
 自前のセッションで走る (``BackgroundTasks``)。画面は状態を数秒おきに読む。
@@ -27,6 +32,7 @@ from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Response, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -38,6 +44,8 @@ from app.services.kaipoke.sources import RpaJobConflictError, evening_warning
 from app.services.kaipoke_client import KaipokeApiError, KaipokeClient, get_kaipoke_client
 from app.services.monthly_actual import service as svc
 from app.services.monthly_actual.export_xlsx import build_monthly_actual_xlsx
+from app.services.monthly_actual.staff_report import build_month_staff_report
+from app.services.monthly_actual.staff_report_html import render_month_staff_report_html
 
 router = APIRouter(prefix="/monthly-actual", tags=["monthly-actual"])
 
@@ -119,6 +127,11 @@ async def _month_view(db: DbDep, month: str) -> dict[str, Any]:
         "rows": [svc.row_view(r) for r in rows],
         "evening_warning": evening_warning(),
     }
+
+
+async def _station_name(db: DbDep) -> str | None:
+    profile = await db.scalar(select(BusinessProfile).where(BusinessProfile.is_singleton.is_(True)))
+    return profile.station_name if profile is not None else None
 
 
 # ⚠ 登録の順: ``/scheduled/run``・``/rows/{row_id}`` は ``/{month}/...`` より先。
@@ -344,14 +357,13 @@ async def export_month(month: MonthPath, db: DbDep, _admin: AdminDep) -> Respons
     if run is None:
         raise HTTPException(status_code=404, detail="この月の作業がありません")
     rows = await svc.load_rows(db, run.id)
-    profile = await db.scalar(select(BusinessProfile).where(BusinessProfile.is_singleton.is_(True)))
-    station = profile.station_name if profile is not None else None
     body = build_monthly_actual_xlsx(
         rows,
         month=month,
-        station_name=station,
+        station_name=await _station_name(db),
         kaipoke_fetched_at=run.kaipoke_fetched_at,
         generated_on=datetime.now(UTC).astimezone(svc.JST).date(),
+        staff_report=await build_month_staff_report(db, month),
     )
     filename = f"monthly-actual_{month}.xlsx"
     label = quote(f"{int(month[:4])}年{int(month[5:])}月 訪問の実績.xlsx")
@@ -363,3 +375,22 @@ async def export_month(month: MonthPath, db: DbDep, _admin: AdminDep) -> Respons
             **_NO_STORE,
         },
     )
+
+
+@router.get("/{month}/staff-summary", summary="月の実績: 看護師別の月の実績 (JSON・admin)")
+async def staff_summary(month: MonthPath, db: DbDep, _admin: AdminDep) -> Response:
+    report = await build_month_staff_report(db, month)
+    return JSONResponse(report.as_summary(), headers=_NO_STORE)
+
+
+@router.get(
+    "/{month}/report",
+    response_class=HTMLResponse,
+    summary="月の実績: 看護師別の月の実績 (A4 縦の印刷 HTML・admin)",
+)
+async def staff_report(month: MonthPath, db: DbDep, _admin: AdminDep) -> HTMLResponse:
+    report = await build_month_staff_report(db, month)
+    html_doc = render_month_staff_report_html(
+        report, station_name=await _station_name(db), generated_at=datetime.now(UTC)
+    )
+    return HTMLResponse(html_doc, headers=_NO_STORE)

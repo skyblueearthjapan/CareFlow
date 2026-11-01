@@ -129,6 +129,11 @@ class DayVisit:
     arrival_only: bool = False
     #: 未訪問 (no_show) の記録がある。件数には数えたまま、数だけ返す。
     no_show: bool = False
+    #: 訪問の ID と実績の到着・退出 (``load_actuals`` の調整後・UTC aware)。月の実績の
+    #: 看護師別 (``services/monthly_actual/staff_report.py``) が提供時間と一覧に使う。
+    visit_id: UUID | None = None
+    arrival_at: datetime | None = None
+    departure_at: datetime | None = None
 
 
 @dataclass
@@ -299,14 +304,71 @@ def _wall_clock(value: datetime) -> datetime:
     return value.replace(tzinfo=None)
 
 
-async def build_staff_performance(
+@dataclass
+class StaffDays:
+    """期間の 職員 × 日 の訪問と、集計に要る材料 (``load_staff_days`` の結果)。"""
+
+    speed_kmh: float
+    offices: list[Office]
+    office_by_id: dict[UUID, Office]
+    staff_by_id: dict[UUID, Staff]
+    #: 持ち主 → 日 → 訪問 (取消・削除を除く)。
+    by_staff_day: dict[UUID, dict[date, list[DayVisit]]]
+    #: (職員, 日) → 休み以外のイベント [(開始分, 終了分)]。
+    events_by_day: dict[tuple[UUID, date], list[tuple[int, int]]]
+    #: 職員 → 同行した日 → 件数 (副担当・メンター・同行リンク。持ち主本人は除く)。
+    accompany: dict[UUID, dict[date, int]]
+
+    def staff_ids(self) -> set[UUID]:
+        """訪問か同行が 1 件以上ある職員。"""
+        return set(self.by_staff_day) | set(self.accompany)
+
+    def office_of(self, sid: UUID) -> Office | None:
+        staff = self.staff_by_id[sid]
+        return self.office_by_id.get(staff.primary_office_id) if staff.primary_office_id else None
+
+    def days_of(self, sid: UUID) -> list[DaySummary]:
+        """1 人の日ごとの集計 (件数・距離・1 日の内訳)。日付順。"""
+        office = self.office_of(sid)
+        office_point = _point(office.lat, office.lng) if office is not None else None
+        return [
+            summarize_day(d, vs, office_point, self.events_by_day.get((sid, d), []), self.speed_kmh)
+            for d, vs in sorted(self.by_staff_day.get(sid, {}).items())
+        ]
+
+    def sort_key(self, sid: UUID) -> tuple:
+        """拠点の並び → 職員コード順。"""
+        staff = self.staff_by_id[sid]
+        office = self.office_of(sid)
+        return (
+            office is None,
+            office.sort_order if office is not None and office.sort_order is not None else 0,
+            office.name if office is not None else "",
+            staff_code_sort_key(staff.code, staff.name),
+        )
+
+
+def with_accompany(
+    m: PerformanceMetrics, accompany: dict[date, int], ws: date, we: date
+) -> PerformanceMetrics:
+    """期間 [ws, we] の同行の日数・件数を足す。"""
+    acc = {d: n for d, n in accompany.items() if ws <= d <= we}
+    return m.model_copy(update={"accompany_days": len(acc), "accompany_visits": sum(acc.values())})
+
+
+async def load_staff_days(
     db: AsyncSession,
     date_from: date,
     date_to: date,
     *,
     office_id: UUID | None = None,
-) -> StaffPerformanceResponse:
-    """期間 [date_from, date_to] のスタッフ別の実績を組み立てる (DB 読み取りのみ)。"""
+) -> StaffDays:
+    """期間 [date_from, date_to] の訪問・実績・座標・イベントを読み、職員 × 日 に分ける。
+
+    ダッシュボード (``build_staff_performance``) と月の実績の看護師別
+    (``services/monthly_actual/staff_report.py``) が同じ数え方をするための共通の入口
+    (DB 読み取りのみ)。
+    """
     speed = (await load_scheduling_config(db)).travel_speed_kmh
 
     visit_rows = (
@@ -491,39 +553,47 @@ async def build_staff_performance(
                 actual_min=actual_min,
                 arrival_only=arrival_only,
                 no_show=no_show,
+                visit_id=r.id,
+                arrival_at=a.arrival.at if a is not None and a.arrival is not None else None,
+                departure_at=a.departure.at if a is not None and a.departure is not None else None,
             )
         )
 
+    return StaffDays(
+        speed_kmh=speed,
+        offices=list(offices),
+        office_by_id=office_by_id,
+        staff_by_id=staff_by_id,
+        by_staff_day=by_staff_day,
+        events_by_day=events_by_day,
+        accompany=accompany,
+    )
+
+
+async def build_staff_performance(
+    db: AsyncSession,
+    date_from: date,
+    date_to: date,
+    *,
+    office_id: UUID | None = None,
+) -> StaffPerformanceResponse:
+    """期間 [date_from, date_to] のスタッフ別の実績を組み立てる (DB 読み取りのみ)。"""
+    data = await load_staff_days(db, date_from, date_to, office_id=office_id)
+    speed = data.speed_kmh
+    offices = data.offices
     weeks = week_ranges(date_from, date_to)
     all_days: list[DaySummary] = []
     rows: list[tuple[tuple, StaffPerformanceRow, list[DaySummary]]] = []
 
-    def with_accompany(m: PerformanceMetrics, sid: UUID, ws: date, we: date) -> PerformanceMetrics:
-        acc = {d: n for d, n in accompany.get(sid, {}).items() if ws <= d <= we}
-        return m.model_copy(
-            update={"accompany_days": len(acc), "accompany_visits": sum(acc.values())}
-        )
-
-    for sid in set(by_staff_day) | set(accompany):
-        days_map = by_staff_day.get(sid, {})
-        staff = staff_by_id[sid]
-        office = office_by_id.get(staff.primary_office_id) if staff.primary_office_id else None
-        office_point = _point(office.lat, office.lng) if office is not None else None
-        days = [
-            summarize_day(d, vs, office_point, events_by_day.get((sid, d), []), speed)
-            for d, vs in sorted(days_map.items())
-        ]
+    for sid in data.staff_ids():
+        staff = data.staff_by_id[sid]
+        office = data.office_of(sid)
+        acc = data.accompany.get(sid, {})
+        days = data.days_of(sid)
         all_days.extend(days)
         rows.append(
             (
-                (
-                    office is None,
-                    office.sort_order
-                    if office is not None and office.sort_order is not None
-                    else 0,
-                    office.name if office is not None else "",
-                    staff_code_sort_key(staff.code, staff.name),
-                ),
+                data.sort_key(sid),
                 StaffPerformanceRow(
                     staff_id=sid,
                     name=staff.name,
@@ -532,10 +602,10 @@ async def build_staff_performance(
                     is_manager=staff.role in _MANAGER_ROLES,
                     is_trainee=bool(staff.is_trainee),
                     qualification=staff.qualification,
-                    period=with_accompany(metrics_of(days), sid, date_from, date_to),
+                    period=with_accompany(metrics_of(days), acc, date_from, date_to),
                     weeks=[
                         with_accompany(
-                            metrics_of([d for d in days if ws <= d.day <= we]), sid, ws, we
+                            metrics_of([d for d in days if ws <= d.day <= we]), acc, ws, we
                         )
                         for ws, we in weeks
                     ],
@@ -581,10 +651,13 @@ __all__ = [
     "MIN_ACTUAL_SAMPLES",
     "DayVisit",
     "DaySummary",
+    "StaffDays",
     "build_staff_performance",
     "is_leave_event",
+    "load_staff_days",
     "metrics_of",
     "summarize_day",
     "team_metrics_of",
     "week_ranges",
+    "with_accompany",
 ]

@@ -4,7 +4,9 @@
    終了・提供時間(分)・QR 到着〜退出・QR と同じ・備考)。要確認の行は色を付ける。
 2. 「要確認」: 人が見る・カイポケに無い・カイポケだけの行 (日付・利用者・職員・カイポケの実績・
    QR・確認すること)。
-3. 「看護師別」: カイポケの職員ごとの訪問の件数と提供時間の合計。
+3. 「看護師別」: らく助の看護師ごとの月の実績 (``staff_report``・件数・稼働日数・患者数・
+   週の平均患者数・2 名訪問・同行・提供時間・平均滞在・到着＋35 分・移動距離) と、
+   カイポケの職員ごとの件数・提供時間 (名前の照合キーで突き合わせる)。
 4. 「読み方」: この一覧の説明。
 
 事業所の名前はコードに書かず、事業所の情報 (``business_profile.station_name``) から入れる。
@@ -24,6 +26,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from app.models.monthly_actual import MonthlyActualRow
 from app.services.monthly_actual import judge as rules
+from app.services.monthly_actual.staff_report import MonthStaffReport
 
 _WD: Final = "月火水木金土日"
 _THIN: Final = Side(style="thin", color="D9CFCA")
@@ -45,7 +48,25 @@ MAIN_HEADERS: Final = (
     "備考",
 )
 ASK_HEADERS: Final = ("日付", "利用者", "職員", "カイポケの実績", "QR", "確認すること")
-STAFF_HEADERS: Final = ("看護師", "訪問の件数", "提供時間の合計(分)")
+STAFF_HEADERS: Final = (
+    "看護師",
+    "拠点",
+    "訪問の件数",
+    "稼働日数",
+    "1日あたりの件数",
+    "担当した患者様の数",
+    "週の平均患者数",
+    "2名訪問・同行の件数",
+    "提供時間の合計(分)",
+    "1件あたりの平均滞在(分)",
+    "30分未満→到着＋35分",
+    "退出なし→到着＋35分",
+    "移動距離の合計(km)",
+    "移動距離 1日あたり(km)",
+    "移動距離 1件あたり(km)",
+    "カイポケの件数",
+    "カイポケの提供時間(分)",
+)
 #: 要確認に出す判定。
 ASK_STATUSES: Final = (rules.STATUS_REVIEW, rules.STATUS_MISSING, rules.STATUS_KAIPOKE_ONLY)
 
@@ -104,8 +125,13 @@ def build_monthly_actual_xlsx(
     station_name: str | None,
     kaipoke_fetched_at: datetime | None,
     generated_on: date | None = None,
+    staff_report: MonthStaffReport | None = None,
 ) -> bytes:
-    """判定の行から月の一覧 (4 シート) を作る。"""
+    """判定の行から月の一覧 (4 シート) を作る。
+
+    ``staff_report`` = らく助の看護師別の月の実績 (看護師別のシート)。無ければカイポケの
+    列だけを埋める。
+    """
     names = sheet_names(month)
     year, mon = (int(x) for x in month.split("-"))
     made = generated_on or date.today()
@@ -168,18 +194,48 @@ def build_monthly_actual_xlsx(
         w2.cell(w2.max_row, 1).number_format = "m/d"
 
     w3 = wb.create_sheet(names[2])
-    _head(w3, STAFF_HEADERS, (18, 12, 18))
+    _head(w3, STAFF_HEADERS, (18, 8, 9, 9, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11, 10, 11))
     by_staff: dict[str, Counter[str]] = defaultdict(Counter)
+    kp_names: dict[str, str] = {}
     for r in kp_rows:
         for staff in (r.kp_staff or "").split("・"):
             if not staff:
                 continue
-            by_staff[staff]["件数"] += 1
-            by_staff[staff]["分"] += r.kp_minutes or 0
-    for staff, c in sorted(by_staff.items(), key=lambda kv: (-kv[1]["件数"], kv[0])):
-        w3.append([staff, c["件数"], c["分"]])
+            key = rules.name_key(staff)
+            kp_names.setdefault(key, staff)
+            by_staff[key]["件数"] += 1
+            by_staff[key]["分"] += r.kp_minutes or 0
+    for s in staff_report.staff if staff_report is not None else []:
+        kp = by_staff.pop(rules.name_key(s.name), Counter())
+        w3.append(
+            [
+                s.name,
+                s.office_short or "",
+                s.visits,
+                s.days,
+                s.per_day,
+                s.patients,
+                s.weekly_patients_avg,
+                s.accompany_visits,
+                s.provided_min_total,
+                s.avg_stay_min,
+                s.short_stay_count,
+                s.no_departure_count,
+                s.km_total,
+                s.km_per_day,
+                s.km_per_visit,
+                kp["件数"],
+                kp["分"],
+            ]
+        )
         for cell in w3[w3.max_row]:
             cell.border = _BORDER
+    # らく助に無いカイポケの職員 (名前の字体違いなど) はカイポケの列だけ。
+    for key, c in sorted(by_staff.items(), key=lambda kv: (-kv[1]["件数"], kv[0])):
+        w3.append([kp_names[key], *([None] * (len(STAFF_HEADERS) - 3)), c["件数"], c["分"]])
+        for cell in w3[w3.max_row]:
+            cell.border = _BORDER
+    w3.freeze_panes = "B2"
 
     w4 = wb.create_sheet(names[3])
     station = f"　{station_name}" if station_name else ""
@@ -200,6 +256,11 @@ def build_monthly_actual_xlsx(
         f"要確認（{len(asks)} 件）：らく助の記録どうしが食い違う、担当や人数が違う、"
         "片方にしか無い訪問です。「要確認」のシートをご覧ください。",
         "提供時間（分）はカイポケが開始と終了から計算した値です。",
+        "「看護師別」のシートの数は、らく助の実績（主担当として受け持った訪問・取消と削除を除く）"
+        "から数えています。2 名訪問・同行は 2 人目として入った件数です。提供時間は到着〜退出で、"
+        f"{rules.SHORT_STAY_MINUTES} 分未満と退出の記録が無い訪問は到着＋"
+        f"{rules.SHORT_STAY_END_MINUTES} 分にした後の値です。移動距離は拠点と訪問先を直線で"
+        "つないだ目安です。右の 2 列はカイポケの実績の件数と提供時間です。",
     ):
         w4.append([line])
     w4.column_dimensions["A"].width = 120

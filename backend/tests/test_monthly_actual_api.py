@@ -513,7 +513,17 @@ async def test_export_xlsx_has_the_four_sheets_and_columns(client, db) -> None:
     assert ask.max_row == 1 + 3  # 人が見る・カイポケに無い・カイポケだけ
     staff = wb["看護師別"]
     assert tuple(c.value for c in staff[1]) == STAFF_HEADERS
-    assert staff["A2"].value == "佐藤 花子" and staff["B2"].value == len(KP_BEFORE)
+    # らく助の看護師別の月の実績 + 右の 2 列はカイポケ (名前の字体・空白をそろえて突き合わせる)。
+    row2 = {h: c.value for h, c in zip(STAFF_HEADERS, staff[2], strict=True)}
+    assert row2["看護師"] == "佐藤 花子"
+    assert row2["訪問の件数"] == 5 and row2["稼働日数"] == 4
+    assert row2["担当した患者様の数"] == 5
+    # 40 + 38 + 35 (18 分) + 36 + 35 (退出なし)
+    assert row2["提供時間の合計(分)"] == 184
+    assert row2["30分未満→到着＋35分"] == 1 and row2["退出なし→到着＋35分"] == 1
+    assert row2["カイポケの件数"] == len(KP_BEFORE)
+    assert row2["カイポケの提供時間(分)"] == 180
+    assert staff.max_row == 2
     assert "2026 年 10 月" in wb["読み方"]["A1"].value
 
 
