@@ -17,6 +17,7 @@ import { toast } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
 import { useCompleteTask, useReopenTask, useVisitTasks } from '@/lib/queries/tasks';
 import type { PatientTaskRead } from '@/lib/schemas/patient-task';
+import { RecurringMark } from '@/components/tasks/TaskPill';
 import { taskActionErrorMessage, taskDoneLabel, taskMd } from '@/components/tasks/taskFormat';
 
 export function MobileVisitTasks({
@@ -113,7 +114,8 @@ export function MobileVisitTasks({
                           done && 'text-text-secondary line-through',
                         )}
                       >
-                        {t.item_type_name ?? '（項目なし）'}
+                        {t.item_type_name ?? '（項目なし）'}{' '}
+                        <RecurringMark month={t.recurring_month} />
                       </span>
                       {t.memo && (
                         <span className="mt-0.5 block whitespace-pre-wrap text-sm text-text-primary">
@@ -163,7 +165,8 @@ export function MobileVisitTasks({
             >
               <p className="m-0 whitespace-pre-wrap text-[15px] text-text-primary">{t.memo}</p>
               <p className="m-0 mt-1 text-xs text-text-muted">
-                {[t.created_by_name, taskMd(t.start_date)].filter(Boolean).join('・')}
+                {[t.created_by_name, taskMd(t.start_date)].filter(Boolean).join('・')}{' '}
+                <RecurringMark month={t.recurring_month} />
               </p>
               <div className="mt-2">
                 {t.status === 'done' ? (

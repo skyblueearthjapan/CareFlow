@@ -186,4 +186,25 @@ describe('MobileVisitTasks', () => {
     fireEvent.click(screen.getByTestId('mobile-message-read-m1'));
     expect(completeMutate).toHaveBeenCalledTimes(1);
   });
+
+  it('毎月の設定から作った分には「毎月・N 月分」を出し、手で付けた分には出さない', () => {
+    tasks = [
+      makeTask({
+        id: 'r11',
+        carried_over: true,
+        recurring_rule_id: '00000000-0000-0000-0000-0000000000f1',
+        recurring_month: '2026-11-01',
+      }),
+      makeTask({
+        id: 'r12',
+        recurring_rule_id: '00000000-0000-0000-0000-0000000000f1',
+        recurring_month: '2026-12-01',
+      }),
+      makeTask({ id: 'r0' }),
+    ];
+    render(<MobileVisitTasks visitId="v1" />);
+    expect(screen.getByTestId('mobile-task-r11').textContent).toContain('毎月・11 月分');
+    expect(screen.getByTestId('mobile-task-r12').textContent).toContain('毎月・12 月分');
+    expect(screen.getByTestId('mobile-task-r0').textContent).not.toContain('毎月');
+  });
 });

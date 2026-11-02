@@ -24,7 +24,7 @@ import {
 import type { PatientTaskRead } from '@/lib/schemas/patient-task';
 
 import { TaskItemChips, canSubmitTask, toggleId } from './TaskItemChips';
-import { Pill } from './TaskPill';
+import { Pill, RecurringMark } from './TaskPill';
 import {
   taskActionErrorMessage,
   taskDoneLabel,
@@ -147,6 +147,7 @@ function TaskRow({
             </>
           )}
           {!t.is_message && <b className="text-[13px]">{taskTitle(t)}</b>}
+          <RecurringMark month={t.recurring_month} />
         </div>
         {t.memo && <p className="m-0 mt-0.5 whitespace-pre-wrap">{t.memo}</p>}
         <p className="m-0 mt-0.5 text-[11px] text-text-muted">

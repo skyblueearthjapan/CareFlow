@@ -6,6 +6,9 @@
  * 未完了・期日を過ぎた・完了の件数、絞り込み (状態・看護師)、表 (日付・患者様・
  * やること／伝言・出す訪問・状態・操作)、右上の「＋ やることを付ける」、下に「項目の設定」。
  * 出す訪問は BE が見るたびに決める (患者 + 日付以降の最初の訪問)。
+ *
+ * 上のタブで「やることの一覧」と「毎月のやること」(繰り返しの設定・
+ * patient-tasks-recurring-design-2026-11-02 §3-1) を切り替える。
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -19,8 +22,9 @@ import { FilterChip } from '@/components/ui/filter-chip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { AddTaskDialog } from '@/components/tasks/AddTaskDialog';
+import { RecurringTasksPanel } from '@/components/tasks/RecurringTasksPanel';
 import { TaskItemTypesSettings } from '@/components/tasks/TaskItemTypesSettings';
-import { Pill } from '@/components/tasks/TaskPill';
+import { Pill, RecurringMark } from '@/components/tasks/TaskPill';
 import {
   taskActionErrorMessage,
   taskDoneLabel,
@@ -71,6 +75,7 @@ export default function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<TaskListStatus>('open');
   const [staffId, setStaffId] = useState('');
   const [addOpen, setAddOpen] = useState(false);
+  const [tab, setTab] = useState<'list' | 'recurring'>('list');
 
   // 件数 (未完了はメニューのバッジと同じキーで共有)。
   const openAll = useTasks({ status: 'open' }, { enabled: isAdmin });
@@ -122,123 +127,160 @@ export default function TasksPage() {
         </Button>
       </header>
 
-      <div className="flex flex-wrap gap-3">
-        <Stat label="未完了" value={stats.open} testId="tasks-stat-open" />
-        <Stat label="期日を過ぎた" value={stats.overdue} tone="over" testId="tasks-stat-overdue" />
-        <Stat
-          label={`完了（直近 ${DONE_LOOKBACK_DAYS} 日）`}
-          value={stats.done}
-          tone="ok"
-          testId="tasks-stat-done"
-        />
-      </div>
-
-      <div className="overflow-hidden rounded-lg border border-border-default bg-bg-base shadow-outer-card">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-5 py-2.5">
-          {STATUS_FILTERS.map((f) => (
-            <FilterChip
-              key={f.key}
-              active={statusFilter === f.key}
-              onClick={() => setStatusFilter(f.key)}
-            >
-              {f.label}
-            </FilterChip>
-          ))}
-          <span className="h-5 w-px bg-border-default" />
-          <select
-            value={staffId}
-            onChange={(e) => setStaffId(e.target.value)}
-            aria-label="看護師で絞る"
-            className="h-9 rounded-md border border-border-default bg-bg-base px-2 text-sm"
-            data-testid="tasks-staff-filter"
+      <div className="flex gap-1 border-b border-border-default" role="tablist">
+        {(
+          [
+            ['list', 'やることの一覧'],
+            ['recurring', '毎月のやること'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={cn(
+              '-mb-px border-b-2 px-4 py-2 text-sm font-bold',
+              tab === key
+                ? 'border-brand-primary text-brand-primary'
+                : 'border-transparent text-text-secondary hover:text-text-primary',
+            )}
+            data-testid={`tasks-tab-${key}`}
           >
-            <option value="">看護師：すべて</option>
-            {staffOptions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <span className="text-xs text-text-muted">{rows.length} 件</span>
-        </div>
-
-        {rowsQuery.isLoading ? (
-          <div className="space-y-2 p-5">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        ) : rowsQuery.isError ? (
-          <div className="p-5">
-            <Alert variant="destructive">
-              <AlertTitle>やることを読み込めませんでした</AlertTitle>
-              <AlertDescription>{apiErrorMessage(rowsQuery.error)}</AlertDescription>
-            </Alert>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-sm" data-testid="tasks-table">
-              <thead className="border-b border-border-default bg-bg-muted text-left text-xs text-text-secondary">
-                <tr>
-                  <th className="px-3 py-2 font-medium">日付</th>
-                  <th className="px-3 py-2 font-medium">患者様</th>
-                  <th className="px-3 py-2 font-medium">やること・伝言</th>
-                  <th className="px-3 py-2 font-medium">出す訪問</th>
-                  <th className="px-3 py-2 font-medium">状態</th>
-                  <th className="px-3 py-2 font-medium" />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-text-muted">
-                      該当するやることはありません。
-                    </td>
-                  </tr>
-                ) : (
-                  rows.map((t) => (
-                    <TaskTableRow
-                      key={t.id}
-                      task={t}
-                      busy={busy}
-                      onComplete={() =>
-                        complete.mutate(
-                          { taskId: t.id },
-                          {
-                            onSuccess: () => toast.success('完了にしました'),
-                            onError: onError('完了にできませんでした'),
-                          },
-                        )
-                      }
-                      onReopen={() =>
-                        reopen.mutate(t.id, {
-                          onSuccess: () => toast.success('完了を戻しました'),
-                          onError: onError('完了を戻せませんでした'),
-                        })
-                      }
-                      onCancel={() => {
-                        if (!window.confirm(`「${taskTitle(t)}」を取り消しますか？`)) return;
-                        cancel.mutate(t.id, {
-                          onSuccess: () => toast.success('取り消しました'),
-                          onError: onError('取り消せませんでした'),
-                        });
-                      }}
-                    />
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
+            {label}
+          </button>
+        ))}
       </div>
 
-      <details className="rounded-lg border border-border-default bg-bg-base p-4">
-        <summary className="cursor-pointer text-base font-bold text-text-primary">
-          項目の設定（事務所で足す・名前を変える・使わない・並び順）
-        </summary>
-        <div className="mt-3">
-          <TaskItemTypesSettings />
-        </div>
-      </details>
+      {tab === 'recurring' ? (
+        <RecurringTasksPanel />
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-3">
+            <Stat label="未完了" value={stats.open} testId="tasks-stat-open" />
+            <Stat
+              label="期日を過ぎた"
+              value={stats.overdue}
+              tone="over"
+              testId="tasks-stat-overdue"
+            />
+            <Stat
+              label={`完了（直近 ${DONE_LOOKBACK_DAYS} 日）`}
+              value={stats.done}
+              tone="ok"
+              testId="tasks-stat-done"
+            />
+          </div>
+
+          <div className="overflow-hidden rounded-lg border border-border-default bg-bg-base shadow-outer-card">
+            <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-5 py-2.5">
+              {STATUS_FILTERS.map((f) => (
+                <FilterChip
+                  key={f.key}
+                  active={statusFilter === f.key}
+                  onClick={() => setStatusFilter(f.key)}
+                >
+                  {f.label}
+                </FilterChip>
+              ))}
+              <span className="h-5 w-px bg-border-default" />
+              <select
+                value={staffId}
+                onChange={(e) => setStaffId(e.target.value)}
+                aria-label="看護師で絞る"
+                className="h-9 rounded-md border border-border-default bg-bg-base px-2 text-sm"
+                data-testid="tasks-staff-filter"
+              >
+                <option value="">看護師：すべて</option>
+                {staffOptions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-text-muted">{rows.length} 件</span>
+            </div>
+
+            {rowsQuery.isLoading ? (
+              <div className="space-y-2 p-5">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : rowsQuery.isError ? (
+              <div className="p-5">
+                <Alert variant="destructive">
+                  <AlertTitle>やることを読み込めませんでした</AlertTitle>
+                  <AlertDescription>{apiErrorMessage(rowsQuery.error)}</AlertDescription>
+                </Alert>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-sm" data-testid="tasks-table">
+                  <thead className="border-b border-border-default bg-bg-muted text-left text-xs text-text-secondary">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">日付</th>
+                      <th className="px-3 py-2 font-medium">患者様</th>
+                      <th className="px-3 py-2 font-medium">やること・伝言</th>
+                      <th className="px-3 py-2 font-medium">出す訪問</th>
+                      <th className="px-3 py-2 font-medium">状態</th>
+                      <th className="px-3 py-2 font-medium" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-3 py-8 text-center text-text-muted">
+                          該当するやることはありません。
+                        </td>
+                      </tr>
+                    ) : (
+                      rows.map((t) => (
+                        <TaskTableRow
+                          key={t.id}
+                          task={t}
+                          busy={busy}
+                          onComplete={() =>
+                            complete.mutate(
+                              { taskId: t.id },
+                              {
+                                onSuccess: () => toast.success('完了にしました'),
+                                onError: onError('完了にできませんでした'),
+                              },
+                            )
+                          }
+                          onReopen={() =>
+                            reopen.mutate(t.id, {
+                              onSuccess: () => toast.success('完了を戻しました'),
+                              onError: onError('完了を戻せませんでした'),
+                            })
+                          }
+                          onCancel={() => {
+                            if (!window.confirm(`「${taskTitle(t)}」を取り消しますか？`)) return;
+                            cancel.mutate(t.id, {
+                              onSuccess: () => toast.success('取り消しました'),
+                              onError: onError('取り消せませんでした'),
+                            });
+                          }}
+                        />
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <details className="rounded-lg border border-border-default bg-bg-base p-4">
+            <summary className="cursor-pointer text-base font-bold text-text-primary">
+              項目の設定（事務所で足す・名前を変える・使わない・並び順）
+            </summary>
+            <div className="mt-3">
+              <TaskItemTypesSettings />
+            </div>
+          </details>
+        </>
+      )}
 
       <AddTaskDialog open={addOpen} onOpenChange={setAddOpen} defaultDate={today} />
     </section>
@@ -306,7 +348,8 @@ function TaskTableRow({
       <td className="whitespace-nowrap px-3 py-2">{taskMdWd(t.start_date)}</td>
       <td className="whitespace-nowrap px-3 py-2">{t.patient_name ?? '—'}</td>
       <td className="px-3 py-2">
-        {t.is_message ? <Pill tone="msg">伝言</Pill> : <b>{taskTitle(t)}</b>}
+        {t.is_message ? <Pill tone="msg">伝言</Pill> : <b>{taskTitle(t)}</b>}{' '}
+        <RecurringMark month={t.recurring_month} />
         {t.memo && <div className="mt-0.5 whitespace-pre-wrap text-text-secondary">{t.memo}</div>}
         {t.created_by_name && (
           <div className="mt-0.5 text-xs text-text-muted">付けた人 {t.created_by_name}</div>

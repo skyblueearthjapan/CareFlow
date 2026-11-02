@@ -179,4 +179,22 @@ describe('VisitTasksBox', () => {
     fireEvent.click(submit);
     expect(createMutate).toHaveBeenCalledTimes(2);
   });
+
+  it('毎月の設定から作った分に「毎月・N 月分」を出す', () => {
+    tasks = [
+      makeTask({
+        recurring_rule_id: '00000000-0000-0000-0000-0000000000f1',
+        recurring_month: '2026-12-01',
+      }),
+    ];
+    render(
+      <VisitTasksBox
+        visitId="v1"
+        visitDate="2026-12-02"
+        patientId={PATIENT}
+        patientName="岡本 翔"
+      />,
+    );
+    expect(screen.getByTestId('visit-task-t1').textContent).toContain('毎月・12 月分');
+  });
 });

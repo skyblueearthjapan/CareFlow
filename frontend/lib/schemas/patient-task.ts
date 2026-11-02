@@ -78,6 +78,10 @@ export const patientTaskReadSchema = z.object({
   done_by_name: z.string().nullable(),
   done_visit_id: z.string().uuid().nullable(),
   cancelled_at: z.string().nullable(),
+  /** 毎月の設定から作ったときだけ: どの設定から。手で付けたものは null。 */
+  recurring_rule_id: z.string().uuid().nullish(),
+  /** 毎月の設定から作ったときだけ: 何月分か (その月の 1 日・YYYY-MM-DD)。 */
+  recurring_month: z.string().nullish(),
   /** 一覧・作成だけ: 未完了なら出す訪問 (今日以降・日付以降の最初の訪問)。無ければ null。 */
   next_visit: taskVisitBriefSchema.nullable(),
   /** 一覧だけ: 完了した訪問。 */
