@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>毎月のやること（動くモック）</title>
+<style>
+:root{
+  --pink:#e15a7f;--pink-d:#c4446a;--pink-l:#fde8ee;--pink-ll:#fff5f8;
+  --bg:#f6f2ef;--card:#fff;--ink:#2b2b2b;--mute:#727272;--line:#ece3de;
+  --ok:#2e7d32;--ok-l:#e8f5e9;--warn:#c62828;--warn-l:#fdecea;--amber:#b26a00;--amber-l:#fff4e0;
+  --blue:#1565c0;--blue-l:#e8f0fb;--gray-l:#f1efee;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans JP","Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",sans-serif;font-size:14px}
+button{font:inherit;cursor:pointer;color:inherit}
+.top{display:flex;align-items:center;gap:16px;padding:12px 20px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.top h1{font-size:16px;margin:0}
+.top .note{color:var(--mute);font-size:12px}
+.top .reset{margin-left:auto;border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 12px}
+.decide{margin:12px 20px 0;background:#fff;border:1px solid var(--pink);border-radius:12px;padding:10px 14px}
+.decide h2{font-size:13px;margin:0 0 6px;color:var(--pink-d)}
+.drow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--line)}
+.drow:first-of-type{border-top:none}
+.drow .q{min-width:220px;font-size:12px;font-weight:700}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.seg button{border:none;border-left:1px solid var(--line);background:#fff;padding:6px 10px;font-size:12px}
+.seg button:first-child{border-left:none}
+.seg button.on{background:var(--pink);color:#fff}
+.rec{font-size:10px;color:var(--pink-d);margin-left:2px}
+.seg button.on .rec{color:#fff}
+.stage{display:flex;gap:20px;padding:16px 20px;align-items:flex-start}
+.pc{flex:1;min-width:0;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.pc-shell{display:grid;grid-template-columns:170px 1fr}
+.side{border-right:1px solid var(--line);padding:12px 8px;display:flex;flex-direction:column;gap:2px;background:#fff}
+.side .brand{font-weight:700;color:var(--pink);padding:4px 10px 12px;font-size:16px}
+.side button{display:flex;align-items:center;gap:8px;border:none;background:none;text-align:left;padding:9px 10px;border-radius:8px}
+.side button.off{color:#b3aaa6;cursor:default}
+.side button.on{background:var(--pink-l);color:var(--pink-d);font-weight:700}
+.pc-main{min-width:0}
+.pc-title{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.pc-title h2{margin:0;font-size:17px}
+.pc-title .sub{color:var(--mute);font-size:12px}
+.tabs{display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--line)}
+.tab{border:none;background:none;padding:8px 12px;border-radius:8px 8px 0 0;color:var(--mute);border-bottom:3px solid transparent}
+.tab.on{color:var(--pink-d);font-weight:700;border-bottom-color:var(--pink)}
+.new{font-size:10px;background:var(--pink);color:#fff;border-radius:4px;padding:0 4px;margin-left:4px;font-weight:400}
+.body{padding:14px 16px}
+.bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.bar .act{margin-left:auto}
+.tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line)}
+th{background:#fdf0f3;text-align:left;font-size:12px;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+tr.stop td{color:var(--mute)}
+tr.sel td{background:var(--pink-ll)}
+tr.click{cursor:pointer}
+.pill{display:inline-block;border-radius:6px;padding:1px 6px;font-size:11px;margin-right:4px;white-space:nowrap}
+.pill.over{background:var(--warn-l);color:var(--warn)}
+.pill.carry{background:var(--amber-l);color:var(--amber)}
+.pill.ok{background:var(--ok-l);color:var(--ok)}
+.pill.msg{background:var(--blue-l);color:var(--blue)}
+.pill.mon{background:var(--pink-l);color:var(--pink-d)}
+.pill.gray{background:var(--gray-l);color:var(--mute)}
+.mini{border:1px solid var(--line);background:#fff;border-radius:6px;padding:3px 8px;font-size:12px}
+.mini.pk{border-color:var(--pink);color:var(--pink-d)}
+.primary{background:var(--pink);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700}
+.primary:disabled{opacity:.4;cursor:default}
+.panel{background:var(--pink-ll);border:1px solid var(--pink);border-radius:12px;padding:12px;margin-bottom:14px}
+.panel h3{margin:0 0 8px;font-size:14px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label.f{display:block;font-size:12px;color:var(--mute);margin:8px 0 4px}
+select,textarea,input[type=text]{width:100%;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;background:#fff}
+textarea{min-height:52px;resize:vertical}
+.chk{display:flex;flex-wrap:wrap;gap:6px}
+.chk label{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 10px;font-size:12px;cursor:pointer}
+.chk label.on{border-color:var(--pink);background:var(--pink-l);color:var(--pink-d)}
+.chk input{margin:0;accent-color:var(--pink)}
+.plist{max-height:220px;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px}
+.plist label{display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid var(--line);font-size:13px;cursor:pointer}
+.plist label:first-child{border-top:none}
+.plist label.out{color:var(--mute);text-decoration:line-through}
+.plist small{margin-left:auto;color:var(--mute);font-size:11px;text-decoration:none}
+.count{margin-top:10px;background:#fff;border:1px dashed var(--pink);border-radius:8px;padding:8px 10px;font-size:13px}
+.count b{font-size:18px;color:var(--pink-d)}
+.hint{font-size:11px;color:var(--mute);margin-top:4px}
+.onoff{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.onoff button{border:none;background:#fff;padding:5px 12px;font-size:12px}
+.onoff button.on{background:var(--ok);color:#fff}
+.onoff button.on.stopbtn{background:#888}
+.prev-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:16px 0 8px}
+.prev-head h3{margin:0;font-size:14px}
+.sum{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.stat{flex:1;min-width:90px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
+.stat b{display:block;font-size:20px}
+.stat.pk b{color:var(--pink-d)}
+.stat.am b{color:var(--amber)}
+.stat.gr b{color:var(--mute)}
+.days{display:flex;flex-wrap:wrap;gap:3px}
+.d{display:inline-block;min-width:34px;text-align:center;border:1px solid var(--line);border-radius:5px;font-size:11px;padding:1px 3px;color:var(--mute);background:#fff}
+.d.hit{background:var(--pink);border-color:var(--pink);color:#fff;font-weight:700}
+.d.carry{background:var(--amber-l);border-color:var(--amber);color:var(--amber);font-weight:700}
+.d.hit.carry{background:linear-gradient(135deg,var(--pink) 50%,var(--amber) 50%);color:#fff}
+.why{font-size:12px;margin-top:3px}
+.legend{font-size:11px;color:var(--mute);display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+/* phone */
+.phone{width:390px;flex:none}
+.phone-cap{font-size:12px;color:var(--mute);margin:0 0 6px 4px}
+.device{width:390px;height:780px;border:10px solid #222;border-radius:38px;background:#fff;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 8px 24px rgba(0,0,0,.15)}
+.m-head{padding:14px 16px 10px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.m-head .back{border:none;background:none;font-size:18px;color:var(--pink);padding:0 6px 0 0}
+.m-head b{font-size:16px}
+.m-body{flex:1;overflow:auto;background:var(--bg);padding:12px}
+.m-nav{display:flex;border-top:1px solid var(--line);background:#fff}
+.m-nav span{flex:1;text-align:center;font-size:11px;color:var(--mute);padding:8px 0 12px}
+.m-nav span.on{color:var(--pink);font-weight:700}
+.msec{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+.msec h4{margin:0 0 8px;font-size:14px}
+.mtask{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+.mtask:first-of-type{border-top:none}
+.mtask .box{width:26px;height:26px;border:2px solid var(--pink);border-radius:7px;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;background:#fff}
+.mtask.done .box{background:var(--ok);border-color:var(--ok)}
+.mtask .lbl{flex:1;font-size:15px}
+.mtask.done .lbl .nm{color:var(--mute);text-decoration:line-through}
+.mtask .meta{font-size:11px;color:var(--mute);margin-top:2px}
+.mtask .pill{font-size:10px;vertical-align:2px}
+.empty{color:var(--mute);font-size:12px;padding:6px 0}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#333;color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20}
+.toast.on{opacity:1}
+.ask{margin:0 20px 24px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 18px;line-height:1.8}
+.ask h3{margin:0 0 6px;font-size:14px}
+.ask ul{margin:0;padding-left:20px}
+.switch{display:none}
+:focus-visible{outline:2px solid var(--pink);outline-offset:2px}
+@media (max-width:1100px){
+  .stage{flex-direction:column}
+  .phone{width:100%;display:flex;flex-direction:column;align-items:center}
+}
+@media (max-width:900px){
+  body{padding-left:16px;padding-right:16px}
+  .top{padding:12px 0;gap:8px;background:none;border:none}
+  .top .note{flex-basis:100%}
+  .top .reset{margin-left:0}
+  .decide{margin:0}
+  .drow .q{min-width:0;flex-basis:100%}
+  .switch{display:flex;position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 0}
+  .switch button{flex:1;border:1px solid var(--pink);background:#fff;color:var(--pink-d);padding:10px 0;font-weight:700}
+  .switch button:first-child{border-radius:10px 0 0 10px}
+  .switch button:last-child{border-radius:0 10px 10px 0}
+  .switch button.on{background:var(--pink);color:#fff}
+  .stage{padding:8px 0 16px;gap:12px}
+  body:not(.show-phone) .phone{display:none}
+  body.show-phone .pc{display:none}
+  .phone{align-items:stretch}
+  .device{width:100%;height:auto;min-height:70vh;border:1px solid var(--line);border-radius:14px;box-shadow:none}
+  .m-body{overflow:visible}
+  .pc-shell{grid-template-columns:1fr}
+  .side{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line);padding:6px}
+  .side .brand{padding:9px 8px}
+  .side button{white-space:nowrap}
+  .side button.off{display:none}
+  .grid2{grid-template-columns:1fr}
+  .body{padding:12px 10px}
+  .tabs{padding:8px 10px 0;overflow-x:auto}
+  .tab{white-space:nowrap}
+  .ask{margin:0 0 24px}
+}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>毎月のやること（動くモック）</h1>
+  <span class="note">PC（事務所）の「やること」ページに足す設定と、来月の出方の試し表示です。患者様・職員の名前はすべて架空です。</span>
+  <button class="reset" onclick="resetAll()">最初に戻す</button>
+</div>
+
+<div class="decide">
+  <h2>決めていただくこと（切り替えて見比べられます・★がおすすめ）</h2>
+  <div class="drow"><span class="q">(a) 対象の決め方</span><span class="seg" id="optA"></span></div>
+  <div class="drow"><span class="q">(b) 月の途中で稼働・再開した方</span><span class="seg" id="optB"></span></div>
+  <div class="drow"><span class="q">(c) 先月の分が終わっていないとき</span><span class="seg" id="optC"></span></div>
+</div>
+
+<div class="switch">
+  <button id="swPc" class="on" onclick="showSide('pc')">PC（事務所）</button>
+  <button id="swPhone" onclick="showSide('phone')">スマホ（看護師）</button>
+</div>
+
+<div class="stage">
+  <section class="pc">
+    <div class="pc-shell">
+      <nav class="side" id="side"></nav>
+      <div class="pc-main">
+        <div class="pc-title"><h2>やること</h2><span class="sub">事務所から看護師へのやることです。その方の訪問のときにスマホに出し、済んだら完了になります。</span></div>
+        <div class="tabs" id="tabs"></div>
+        <div class="body" id="pcBody"></div>
+      </div>
+    </div>
+  </section>
+  <section class="phone">
+    <div class="phone-cap" id="phoneCap"></div>
+    <div class="device">
+      <div class="m-head" id="mHead"></div>
+      <div class="m-body" id="mBody"></div>
+      <div class="m-nav"><span>ホーム</span><span class="on">今日</span><span>今週</span><span>マイページ</span></div>
+    </div>
+  </section>
+</div>
+
+<div class="ask">
+  <h3>このモックで見ていただきたいこと</h3>
+  <ul>
+    <li>「毎月のやること」の一覧と、作る・変える欄（項目・対象・毎月何日から・伝言・有効／停止）。</li>
+    <li>対象を選ぶと、稼働中の人数がその場で変わります。</li>
+    <li>「12 月はこう出ます」の表の行を押すと、右のスマホにその訪問の見え方が出ます。</li>
+    <li>上の (a)(b)(c) を切り替えると、外れる方・先月の残りがある方の出方が変わります。</li>
+    <li>スマホの見た目は今の「事務所からのお願い」のままで、「毎月」の印と「12 月分」だけが増えます。</li>
+  </ul>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---- 架空のデータ（今日は 11/2・試し表示は 12 月） ----
+const TODAY = '2026-11-02';
+const PREV = {y:2026, m:11};
+const NEXT = {y:2026, m:12};
+const CAT = {psychiatric:'精神科', general:'通常'};
+const STATUS = {active:'稼働中', admitted:'入院中', suspended:'一時休止', pending:'開始前'};
+const STAFF = ['佐藤 花子','鈴木 一郎','高橋 美咲','伊藤 光','渡辺 舞'];
+// wd: 訪問の曜日（0=日）・from: 12 月の稼働の始まり（月の途中で稼働・再開する方）
+const PATIENTS = [
+  {id:'p1', name:'青木 さくら', cat:'psychiatric', st:'active', wd:[2,5], staff:0},
+  {id:'p2', name:'石田 健', cat:'psychiatric', st:'active', wd:[1,4], staff:1},
+  {id:'p3', name:'上野 ゆり', cat:'psychiatric', st:'active', wd:[3], staff:2},
+  {id:'p4', name:'岡本 翔', cat:'psychiatric', st:'active', wd:[1], staff:0},
+  {id:'p5', name:'加藤 みのり', cat:'general', st:'active', wd:[2,4], staff:3},
+  {id:'p6', name:'木下 誠', cat:'psychiatric', st:'active', wd:[5], staff:4},
+  {id:'p7', name:'森 あおい', cat:'psychiatric', st:'active', wd:[3,6], staff:1},
+  {id:'p8', name:'斉藤 大地', cat:'general', st:'active', wd:[1,3], staff:2},
+  {id:'p9', name:'田中 りん', cat:'psychiatric', st:'active', wd:[2], staff:3},
+  {id:'p10', name:'中村 陽太', cat:'psychiatric', st:'admitted', wd:[], staff:4},
+  {id:'p11', name:'西川 葵', cat:'psychiatric', st:'suspended', wd:[1,4], staff:0, from:'2026-12-14', fromLbl:'12/14 に再開'},
+  {id:'p12', name:'野口 蓮', cat:'psychiatric', st:'pending', wd:[3], staff:2, from:'2026-12-09', fromLbl:'12/9 から開始'},
+];
+const TYPES = ['配布物あり（会社からの案内）','実費集金','GAF 入力','計画書サイン','上限負担額確認'];
+// 先月（11 月）の分で、まだ終わっていないもの：項目 → 患者
+const PREV_OPEN = {'GAF 入力':['p3','p9'], '計画書サイン':['p4']};
+
+const seedRules = () => ([
+  {id:'r1', type:'GAF 入力', cats:['psychiatric'], excl:[], exclAll:['p5','p8'], day:1, memo:'', active:true},
+  {id:'r2', type:'計画書サイン', cats:['psychiatric','general'], excl:['p7'], exclAll:['p7'], day:3, memo:'控えを 1 部お渡しください。', active:true},
+  {id:'r3', type:'実費集金', cats:['psychiatric'], excl:[], exclAll:['p5','p8'], day:10, memo:'', active:false},
+]);
+
+const OPT = {
+  a:[['A1','区分で選ぶ'],['A2','全員から個別に外す'],['A3','両方',1]],
+  b:[['B1','その月の分を作る',1],['B2','翌月から作る']],
+  c:[['C1','並べて出す',1],['C2','先月の分を自動で閉じる'],['C3','先月の分を残し、今月は作らない']],
+};
+
+let state;
+function resetAll(){
+  state = {rules:seedRules(), opt:{a:'A3', b:'B1', c:'C1'}, tab:'rules', edit:null, prevRule:'r1', selPatient:'p3', done:{}, seq:10};
+  render();
+}
+
+// ---- 道具 ----
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad = n => String(n).padStart(2,'0');
+const ymd = (y,m,d) => `${y}-${pad(m)}-${pad(d)}`;
+const md = s => { const [,m,d] = s.split('-'); return `${+m}/${+d}`; };
+const wd = s => '日月火水木金土'[new Date(s+'T00:00:00').getDay()];
+const pById = id => PATIENTS.find(p => p.id === id);
+const rById = id => state.rules.find(r => r.id === id);
+function toast(t){ const el=$('#toast'); el.textContent=t; el.classList.add('on'); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('on'),1800); }
+
+// 12 月の訪問日（日曜は休み・稼働の始まりより前は無し・入院中は無し）
+function visitsInMonth(p, ym){
+  const out = [];
+  if (p.st === 'admitted') return out;
+  const last = new Date(ym.y, ym.m, 0).getDate();
+  for (let d = 1; d <= last; d++){
+    const s = ymd(ym.y, ym.m, d);
+    const w = new Date(s+'T00:00:00').getDay();
+    if (!p.wd.includes(w)) continue;
+    if (p.from && s < p.from) continue;
+    out.push({date:s, start: w % 2 ? '10:00' : '14:00'});
+  }
+  return out;
+}
+const firstOnOrAfter = (vs, s) => vs.find(v => v.date >= s) || null;
+
+// 対象かどうか（(a) の決め方で変わる）
+function targetReason(rule, p, mode){
+  if (mode === 'A1') return rule.cats.includes(p.cat) ? null : `区分が${CAT[p.cat]}`;
+  if (mode === 'A2') return rule.exclAll.includes(p.id) ? '個別に外した方' : null;
+  if (!rule.cats.includes(p.cat)) return `区分が${CAT[p.cat]}`;
+  return rule.excl.includes(p.id) ? '個別に外した方' : null;
+}
+// 設定の画面の「いま稼働中で対象の人数」
+function activeCount(rule, mode){
+  return PATIENTS.filter(p => p.st === 'active' && !targetReason(rule, p, mode)).length;
+}
+function targetLabel(rule, mode){
+  if (mode === 'A2') return rule.exclAll.length ? `全員・${rule.exclAll.length} 名を外す` : '全員';
+  const c = rule.cats.length === 2 ? '精神科・通常' : rule.cats.length ? CAT[rule.cats[0]] : '（区分なし）';
+  if (mode === 'A1' || !rule.excl.length) return `${c}の方`;
+  return `${c}の方・${rule.excl.length} 名を外す`;
+}
+
+// 12 月の出方を 1 人ずつ決める
+function planFor(rule, p){
+  const o = state.opt;
+  const vs = visitsInMonth(p, NEXT);
+  const startS = ymd(NEXT.y, NEXT.m, rule.day);
+  const row = {p, vs, made:false, hit:null, carry:null, carryClosed:false, kind:'', why:''};
+  const out = targetReason(rule, p, o.a);
+  if (out){ row.kind='out'; row.why=`対象外（${out}）`; return row; }
+  if (p.st === 'admitted'){ row.kind='out'; row.why='入院中のため作りません（戻ったら、その月の分を作ります）'; return row; }
+  const mid = p.from && p.from > startS;
+  if (mid && o.b === 'B2'){ row.kind='out'; row.why=`${p.fromLbl}。月の途中のため 1 月分から作ります`; return row; }
+  const prevOpen = (PREV_OPEN[rule.type] || []).includes(p.id);
+  if (prevOpen){
+    if (o.c === 'C2'){ row.carryClosed = true; }
+    else { row.carry = firstOnOrAfter(vs, ymd(NEXT.y, NEXT.m, 1)); }
+  }
+  if (prevOpen && o.c === 'C3'){
+    row.kind='carry'; row.why='11 月分が終わっていないため、12 月分は作りません'; return row;
+  }
+  row.made = true;
+  row.hit = firstOnOrAfter(vs, mid ? p.from : startS);
+  row.kind = row.hit ? 'hit' : 'nov';
+  const parts = [];
+  if (mid) parts.push(`${p.fromLbl}。稼働の後の最初の訪問に出ます`);
+  if (prevOpen && o.c === 'C1') parts.push('11 月分を持ち越しで並べて出します');
+  if (prevOpen && o.c === 'C2') parts.push(`11 月分は ${NEXT.m}/${rule.day} に自動で閉じます`);
+  if (!row.hit) parts.push('12 月の訪問がありません（訪問が入ったら出ます）');
+  row.why = parts.join('。');
+  return row;
+}
+
+// ある訪問に出る、毎月のやること（有効な設定すべて）
+function tasksAtVisit(p, date){
+  const list = [];
+  state.rules.filter(r => r.active).forEach(r => {
+    const pl = planFor(r, p);
+    if (pl.carry && pl.carry.date === date) list.push({key:`${r.id}-${p.id}-11`, rule:r, month:11, carry:true});
+    if (pl.made && pl.hit && pl.hit.date === date) list.push({key:`${r.id}-${p.id}-12`, rule:r, month:12, carry:false});
+  });
+  return list;
+}
+
+// ---- 描きなおし ----
+function render(){ renderOpts(); renderPC(); renderPhone(); }
+function renderOpts(){
+  for (const k of ['a','b','c']){
+    $('#opt'+k.toUpperCase()).innerHTML = OPT[k].map(([v,l,rec]) =>
+      `<button class="${state.opt[k]===v?'on':''}" onclick="setOpt('${k}','${v}')">${l}${rec?'<span class="rec">★</span>':''}</button>`).join('');
+  }
+}
+function setOpt(k, v){ state.opt[k] = v; render(); }
+function showSide(s){
+  document.body.classList.toggle('show-phone', s === 'phone');
+  $('#swPhone').classList.toggle('on', s === 'phone'); $('#swPc').classList.toggle('on', s !== 'phone');
+  window.scrollTo({top:0});
+}
+
+const MENU = ['ダッシュボード','スケジュール','受け入れ枠','訪問モニター','やること','訪問記録','患者','休み・勤務表','スタッフ','連携'];
+function renderPC(){
+  $('#side').innerHTML = '<div class="brand">らく助</div>' + MENU.map(l =>
+    `<button class="${l==='やること'?'on':'off'}" tabindex="${l==='やること'?0:-1}">${l}</button>`).join('');
+  $('#tabs').innerHTML =
+    `<button class="tab ${state.tab==='list'?'on':''}" onclick="state.tab='list';renderPC()">やることの一覧</button>` +
+    `<button class="tab ${state.tab==='rules'?'on':''}" onclick="state.tab='rules';renderPC()">毎月のやること<span class="new">新</span></button>`;
+  $('#pcBody').innerHTML = state.tab === 'rules' ? rulesHTML() : listHTML();
+}
+
+function rulesHTML(){
+  const mode = state.opt.a;
+  const rows = state.rules.map(r => `<tr class="${r.active?'':'stop'}">
+      <td><b>${esc(r.type)}</b>${r.memo?`<div class="hint">伝言：${esc(r.memo)}</div>`:''}</td>
+      <td>${esc(targetLabel(r, mode))}</td>
+      <td style="white-space:nowrap">毎月 ${r.day} 日から</td>
+      <td style="white-space:nowrap">${activeCount(r, mode)} 名</td>
+      <td>${r.active?'<span class="pill ok">有効</span>':'<span class="pill gray">停止</span>'}</td>
+      <td style="white-space:nowrap"><button class="mini pk" onclick="openEdit('${r.id}')">変える</button> <button class="mini" onclick="state.prevRule='${r.id}';renderPC();document.getElementById('prev').scrollIntoView({behavior:'smooth'})">来月の出方</button></td>
+    </tr>`).join('');
+  return `<div class="bar"><span style="font-size:12px;color:var(--mute)">毎月その日に、対象の方へやることを 1 件ずつ作ります。出方・持ち越し・完了は、今のやることと同じです。</span>
+      <span class="act"><button class="primary" onclick="openEdit(null)">＋ 毎月のやることを作る</button></span></div>
+    ${state.edit ? editHTML() : ''}
+    <div class="tbl"><table style="min-width:640px"><thead><tr><th>項目</th><th>対象</th><th>毎月何日から</th><th>対象の人数</th><th>状態</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="hint">対象の人数は、いま稼働中の方で数えています（入院中・一時休止・開始前の方は入りません）。</div>
+    ${previewHTML()}`;
+}
+
+function openEdit(id){
+  const base = id ? rById(id) : {id:null, type:TYPES[0], cats:['psychiatric'], excl:[], exclAll:['p5','p8'], day:1, memo:'', active:true};
+  state.edit = JSON.parse(JSON.stringify(base));
+  state.tab = 'rules';
+  renderPC();
+  const el = document.querySelector('.panel'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+}
+function editHTML(){
+  const e = state.edit, mode = state.opt.a;
+  const cats = Object.entries(CAT).map(([k,l]) => {
+    const n = PATIENTS.filter(p => p.cat === k && p.st === 'active').length;
+    const on = e.cats.includes(k);
+    return `<label class="${on?'on':''}"><input type="checkbox" ${on?'checked':''} onchange="toggleCat('${k}')">${l}（稼働中 ${n} 名）</label>`;
+  }).join('');
+  // 個別に外す：A3 は選んだ区分の方だけ、A2 は全員
+  const pool = PATIENTS.filter(p => mode === 'A2' || e.cats.includes(p.cat));
+  const list = mode === 'A2' ? e.exclAll : e.excl;
+  const plist = pool.map(p => {
+    const out = list.includes(p.id);
+    return `<label class="${out?'out':''}"><input type="checkbox" ${out?'':'checked'} onchange="toggleExcl('${p.id}')">${esc(p.name)} 様<small>${CAT[p.cat]}・${STATUS[p.st]}</small></label>`;
+  }).join('') || '<div class="empty" style="padding:8px 10px">区分を選ぶと、ここに方が並びます。</div>';
+  const catBlock = mode === 'A2' ? '' : `<label class="f">訪問の区分</label><div class="chk">${cats}</div>`;
+  const exclBlock = mode === 'A1' ? '<div class="hint">（a）で「区分で選ぶ」のときは、個別に外す欄はありません。</div>'
+    : `<label class="f">${mode==='A2'?'対象の方（外す方はチェックを外します）':'この中から個別に外す方（チェックを外すと外れます）'}</label><div class="plist">${plist}</div>`;
+  const ok = mode === 'A2' || e.cats.length;
+  return `<div class="panel"><h3>${e.id ? '毎月のやることを変える' : '毎月のやることを作る'}</h3>
+    <div class="grid2">
+      <div>
+        <label class="f">項目</label>
+        <select onchange="state.edit.type=this.value;renderPC()">${TYPES.map(t => `<option ${e.type===t?'selected':''}>${esc(t)}</option>`).join('')}</select>
+        <label class="f">毎月何日から</label>
+        <select onchange="state.edit.day=+this.value;renderPC()">${Array.from({length:28},(_,i)=>i+1).map(d=>`<option value="${d}" ${e.day===d?'selected':''}>毎月 ${d} 日から</option>`).join('')}</select>
+        <div class="hint">その日以降の、その方の最初の訪問に出ます。29〜31 日は月によって無いため選べません。</div>
+        <label class="f">伝言（任意）</label>
+        <textarea placeholder="例：控えを 1 部お渡しください。" oninput="state.edit.memo=this.value">${esc(e.memo)}</textarea>
+        <label class="f">状態</label>
+        <span class="onoff"><button class="${e.active?'on':''}" onclick="state.edit.active=true;renderPC()">有効</button><button class="stopbtn ${e.active?'':'on'}" onclick="state.edit.active=false;renderPC()">停止</button></span>
+        <div class="hint">停止しても、作り済みの分はそのまま残ります。</div>
+      </div>
+      <div>
+        <div style="font-size:12px;font-weight:700;margin-top:8px">対象を選ぶ</div>
+        ${catBlock}
+        ${exclBlock}
+        <div class="count">いま稼働中で対象の方：<b>${activeCount(e, mode)}</b> 名</div>
+      </div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="primary" ${ok?'':'disabled'} onclick="saveEdit()">保存する</button>
+      <button class="mini" onclick="state.edit=null;renderPC()">閉じる</button>
+    </div></div>`;
+}
+function toggleCat(k){ const a = state.edit.cats, i = a.indexOf(k); i < 0 ? a.push(k) : a.splice(i,1); renderPC(); }
+function toggleExcl(id){ const a = state.opt.a === 'A2' ? state.edit.exclAll : state.edit.excl; const i = a.indexOf(id); i < 0 ? a.push(id) : a.splice(i,1); renderPC(); }
+function saveEdit(){
+  const e = state.edit;
+  if (e.id){ const i = state.rules.findIndex(r => r.id === e.id); state.rules[i] = e; }
+  else { e.id = 'r' + (state.seq++); state.rules.push(e); }
+  state.prevRule = e.id; state.edit = null;
+  toast('保存しました（作り済みの分は変わりません）'); render();
+}
+
+function previewHTML(){
+  const rule = rById(state.prevRule) || state.rules[0];
+  const plans = PATIENTS.map(p => planFor(rule, p));
+  const made = plans.filter(x => x.made).length;
+  const carry = plans.filter(x => x.carry).length;
+  const closed = plans.filter(x => x.carryClosed).length;
+  const out = plans.filter(x => x.kind === 'out').length;
+  const rows = plans.map(x => {
+    const p = x.p;
+    const days = x.vs.length ? x.vs.map(v => {
+      const h = x.hit && x.hit.date === v.date, c = x.carry && x.carry.date === v.date;
+      return `<span class="d ${h?'hit':''} ${c?'carry':''}">${md(v.date)}</span>`;
+    }).join('') : '<span class="hint">12 月の訪問なし</span>';
+    let res;
+    if (x.kind === 'out') res = '<span class="pill gray">作りません</span>';
+    else if (x.kind === 'carry') res = `<span class="pill carry">11 月分の持ち越しだけ</span>`;
+    else if (x.hit) res = `<span class="pill mon">12 月分</span><b>${md(x.hit.date)}（${wd(x.hit.date)}）${x.hit.start}</b>`;
+    else res = '<span class="pill over">訪問が入ったら出ます</span>';
+    if (x.carry) res += `<div class="why"><span class="pill carry">11 月分 持ち越し</span>${md(x.carry.date)}（${wd(x.carry.date)}）</div>`;
+    if (x.carryClosed) res += `<div class="why"><span class="pill gray">11 月分は自動で閉じる</span></div>`;
+    const clickable = x.hit || x.carry;
+    return `<tr class="${clickable?'click':''} ${state.selPatient===p.id?'sel':''}" ${clickable?`onclick="selPatient('${p.id}')"`:''}>
+      <td style="white-space:nowrap"><b>${esc(p.name)}</b> 様<div class="hint">${CAT[p.cat]}・${STATUS[p.st]}${p.fromLbl?'（'+esc(p.fromLbl)+'）':''}</div></td>
+      <td>${res}${x.why?`<div class="why" style="color:var(--mute)">${esc(x.why)}</div>`:''}</td>
+      <td><div class="days">${days}</div></td></tr>`;
+  }).join('');
+  const sel = state.rules.map(r => `<option value="${r.id}" ${r.id===rule.id?'selected':''}>${esc(r.type)}（毎月 ${r.day} 日から${r.active?'':'・停止中'}）</option>`).join('');
+  return `<div id="prev"><div class="prev-head"><h3>12 月はこう出ます（試し表示・まだ作りません）</h3>
+      <select style="width:auto" onchange="state.prevRule=this.value;renderPC();renderPhone()">${sel}</select></div>
+    ${rule.active ? '' : '<div class="hint" style="color:var(--warn)">この設定は停止中です。有効にすると、このように作ります。</div>'}
+    <div class="sum"><div class="stat pk"><span>12 月分を作る</span><b>${made}</b></div><div class="stat am"><span>11 月分の持ち越し</span><b>${carry}</b></div>
+      <div class="stat gr"><span>11 月分を閉じる</span><b>${closed}</b></div><div class="stat gr"><span>作らない</span><b>${out}</b></div></div>
+    <div class="legend"><span><span class="d hit">12/1</span> 12 月分が出る訪問</span><span><span class="d carry">12/1</span> 11 月分の持ち越しが出る訪問</span><span>行を押すと、右のスマホに出ます</span></div>
+    <div class="tbl"><table style="min-width:640px"><thead><tr><th>患者様</th><th>出る訪問</th><th>12 月の訪問日</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function selPatient(id){
+  state.selPatient = id; renderPC(); renderPhone();
+  if (window.matchMedia('(max-width:900px)').matches) showSide('phone');
+}
+
+function listHTML(){
+  const items = [];
+  state.rules.filter(r => r.active).forEach(r => PATIENTS.forEach(p => {
+    const x = planFor(r, p);
+    if (x.made) items.push({r, p, month:12, start: ymd(NEXT.y,NEXT.m,r.day), v:x.hit});
+    if (x.carry) items.push({r, p, month:11, start: ymd(PREV.y,PREV.m,r.day), v:x.carry});
+  }));
+  items.sort((a,b) => a.start.localeCompare(b.start) || a.p.name.localeCompare(b.p.name, 'ja'));
+  const rows = items.map(it => {
+    const k = `${it.r.id}-${it.p.id}-${it.month}`, done = state.done[k];
+    const over = it.month === 11;
+    return `<tr><td style="white-space:nowrap">${md(it.start)}（${wd(it.start)}）</td><td>${esc(it.p.name)}</td>
+      <td><span class="pill mon">毎月</span><b>${esc(it.r.type)}</b> <span class="hint">${it.month} 月分</span>${it.r.memo?`<div>${esc(it.r.memo)}</div>`:''}</td>
+      <td style="white-space:nowrap">${it.v?`${md(it.v.date)} ${it.v.start}・${STAFF[it.p.staff]}`:'<span class="pill over">訪問が入ったら出ます</span>'}</td>
+      <td>${done?'<span class="pill ok">完了</span>':over?'<span class="pill over">期日を過ぎた</span>':'<span class="pill carry">未完了</span>'}</td></tr>`;
+  }).join('');
+  return `<div class="bar"><span style="font-size:12px;color:var(--mute)">12 月に作ったときの見え方です。毎月の設定から作った行には「毎月」の印と月が付きます。手で付けた分は今までどおりです。</span></div>
+    <div class="tbl"><table style="min-width:640px"><thead><tr><th>日付</th><th>患者様</th><th>やること・伝言</th><th>出す訪問</th><th>状態</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty">該当するやることはありません。</td></tr>'}</tbody></table></div>`;
+}
+
+// ---- スマホ ----
+function renderPhone(){
+  const p = pById(state.selPatient);
+  const rule = rById(state.prevRule) || state.rules[0];
+  const pl = planFor(rule, p);
+  const v = pl.hit || pl.carry;
+  $('#phoneCap').textContent = `スマホ（看護師 ${STAFF[p.staff]}）：試し表示で選んだ方の訪問詳細`;
+  if (!v){
+    $('#mHead').innerHTML = `<b>${esc(p.name)} 様</b>`;
+    $('#mBody').innerHTML = `<div class="msec"><div class="empty">この方は 12 月に出る訪問がありません。試し表示の表で、ピンクの日がある行を押してください。</div></div>`;
+    return;
+  }
+  const ts = tasksAtVisit(p, v.date);
+  $('#mHead').innerHTML = `<button class="back" aria-label="戻る">‹</button><b>${esc(p.name)} 様</b>`;
+  const rows = ts.map(t => {
+    const done = state.done[t.key];
+    const meta = done ? `完了 ${STAFF[p.staff]} ${done}` : t.carry ? `${PREV.m}/${t.rule.day} からの持ち越し` : `${NEXT.m}/${t.rule.day} から`;
+    return `<div class="mtask ${done?'done':''}" onclick="toggleDone('${t.key}')">
+      <span class="box">${done?'✓':''}</span>
+      <div class="lbl"><span class="nm">${esc(t.rule.type)}</span> <span class="pill mon">毎月・${t.month} 月分</span>
+        ${t.rule.memo?`<div style="font-size:13px">${esc(t.rule.memo)}</div>`:''}
+        <div class="meta">${meta}</div></div></div>`;
+  }).join('');
+  $('#mBody').innerHTML = `<div class="msec"><div style="color:var(--mute);font-size:13px">${md(v.date)}（${wd(v.date)}）${v.start}〜</div><div style="font-size:13px;margin-top:4px">📍 〇〇市〇〇町 1-2-3（架空）</div></div>
+    <div class="msec"><h4>📋 事務所からのお願い</h4>${rows || '<div class="empty">この訪問へのお願いはありません。</div>'}
+      ${rows?'<div style="font-size:11px;color:var(--mute);margin-top:6px">四角を押すと完了。もう一度押すと戻せます。</div>':''}</div>
+    <div class="msec" style="color:var(--mute);font-size:13px">（この下は今の訪問詳細：QR・時刻・訪問記録など）</div>`;
+}
+function toggleDone(k){
+  if (state.done[k]) { delete state.done[k]; toast('完了を戻しました'); }
+  else { const n = new Date(); state.done[k] = `${pad(n.getHours())}:${pad(n.getMinutes())}`; toast('完了にしました'); }
+  render();
+}
+
+resetAll();
+</script>
+</body>
+</html>
