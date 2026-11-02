@@ -96,6 +96,9 @@ class PatientTaskRead(BaseModel):
     done_by_name: str | None
     done_visit_id: UUID | None
     cancelled_at: datetime | None
+    #: 毎月の設定から作ったときだけ: どの設定から・何月分か (その月の 1 日)。手で付けたものは null。
+    recurring_rule_id: UUID | None = None
+    recurring_month: date | None = None
     #: 一覧・作成の読み出しだけ: 未完了なら出す訪問 (今日以降・日付以降の最初の訪問)。
     next_visit: TaskVisitBrief | None = None
     #: 一覧の読み出しだけ: 完了した訪問。

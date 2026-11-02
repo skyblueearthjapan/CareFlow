@@ -432,6 +432,8 @@ def serialize_task(task: PatientTask, names: TaskNames, *, today: date) -> dict:
         "done_by_name": done_by_name,
         "done_visit_id": task.done_visit_id,
         "cancelled_at": task.cancelled_at,
+        "recurring_rule_id": task.recurring_rule_id,
+        "recurring_month": task.recurring_month,
     }
 
 

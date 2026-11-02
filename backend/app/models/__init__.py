@@ -38,7 +38,12 @@ from app.models.patient import Patient, PatientAllowedOffice
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.patient_same_address_link import PatientSameAddressLink
-from app.models.patient_task import PatientTask, TaskItemType
+from app.models.patient_task import (
+    PatientTask,
+    RecurringTaskExclusion,
+    RecurringTaskRule,
+    TaskItemType,
+)
 from app.models.pending_request import PendingRequest
 from app.models.revoked_qr_token import RevokedQrToken
 from app.models.schedule_op_log import ScheduleOpLog
@@ -108,6 +113,8 @@ __all__ = [
     "PatientNgStaff",
     "PatientSameAddressLink",
     "PatientTask",
+    "RecurringTaskExclusion",
+    "RecurringTaskRule",
     "TaskItemType",
     "PendingRequest",
     "RevokedQrToken",

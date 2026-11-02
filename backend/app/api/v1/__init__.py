@@ -46,6 +46,7 @@ from app.api.v1 import (
     patients,
     patients_excel,
     pending_requests,
+    recurring_tasks,
     schedule,
     schedule_v2,
     scheduling_settings,
@@ -164,6 +165,9 @@ api_router.include_router(visit_review.router, prefix="/visits", tags=["visit-re
 # 事務所からのやること (patient-tasks-design-2026-11-01)。/tasks・/task-item-types・
 # /visits/{visit_id}/tasks を持つので prefix は付けない (visits.router の前に登録)。
 api_router.include_router(tasks.router, tags=["tasks"])
+# 毎月のやること (patient-tasks-recurring-design-2026-11-02)。router 自身が prefix
+# "/recurring-task-rules" を持つ (管理者だけ)。
+api_router.include_router(recurring_tasks.router, tags=["tasks"])
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 # 訪問の音声記録 (visit-voice-record-design-2026-09-17 §10-3)。router 自身が
 # prefix "/visit-recordings" を持つのでここでは付けない。/visits/... とは
