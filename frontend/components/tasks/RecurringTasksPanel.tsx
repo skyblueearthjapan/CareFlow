@@ -145,6 +145,7 @@ export function RecurringTasksPanel() {
         <RuleForm
           key={draft.id ?? 'new'}
           initial={draft}
+          excludedRefs={rules.find((r) => r.id === draft.id)?.excluded_patients ?? []}
           today={today}
           onClose={() => setDraft(null)}
           onSaved={(id) => {
@@ -279,11 +280,14 @@ export function RecurringTasksPanel() {
 
 function RuleForm({
   initial,
+  excludedRefs,
   today,
   onClose,
   onSaved,
 }: {
   initial: Draft;
+  /** 保存済みの外す方 (名前つき)。候補に出ない方 (終了・区分の外) もここから並べる。 */
+  excludedRefs: RecurringTaskRuleRead['excluded_patients'];
   today: string;
   onClose: () => void;
   onSaved: (id: string) => void;
@@ -303,6 +307,11 @@ function RuleForm({
   }, [today, initial.start_month]);
 
   const excluded = new Set(d.excluded_patient_ids);
+  const candidateIds = new Set((candidates.data ?? []).map((p) => p.patient_id));
+  // 外している方のうち候補に出ない方 (終了になった・区分を外した)。外す指定を解けるように並べる。
+  const offList = candidates.isLoading
+    ? []
+    : excludedRefs.filter((p) => !candidateIds.has(p.patient_id));
   const activeCount = (candidates.data ?? []).filter(
     (p) => p.status === 'active' && !excluded.has(p.patient_id),
   ).length;
@@ -492,6 +501,35 @@ function RuleForm({
               })
             )}
           </div>
+          {offList.length > 0 && (
+            <div className="mt-2" data-testid="recurring-off-list">
+              <div className="text-xs text-text-muted">
+                外している方のうち、いまは候補に出ない方（終了・対象の区分の外）。チェックを付けると外す指定を解きます。
+              </div>
+              <div className="mt-1 rounded-md border border-border-default">
+                {offList.map((p) => {
+                  const out = excluded.has(p.patient_id);
+                  return (
+                    <label
+                      key={p.patient_id}
+                      className={cn(
+                        'flex items-center gap-2 border-b border-border-default px-3 py-1.5 text-sm last:border-0',
+                        out && 'bg-bg-muted text-text-muted line-through',
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!out}
+                        onChange={() => toggleExcluded(p.patient_id)}
+                        data-testid={`recurring-off-patient-${p.patient_id}`}
+                      />
+                      <span className="flex-1">{p.name ?? '—'} 様</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <p className="m-0 mt-2 text-sm" data-testid="recurring-active-count">
             いま稼働中で対象の方：<b className="tabular-nums">{activeCount}</b> 名
           </p>

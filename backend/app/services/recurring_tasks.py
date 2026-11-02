@@ -84,14 +84,12 @@ def rule_day(rule: RecurringTaskRule, month: date) -> date:
 def task_start_date(rule: RecurringTaskRule, month: date, today: date) -> date:
     """作るやることの ``start_date``.
 
-    その月の設定日。ただし今月の分を設定日より後に作るとき (月の途中で稼働になった方・
-    見回りが止まった日の抜け・設定を後から作った) は今日にする。作ったその日に
-    「期日を過ぎた」と出さないため。出す訪問 (今日以降の最初の訪問) は同じ。
+    その月の設定日。ただし設定日より後に作るとき (今月の途中で稼働になった方・
+    見回りが止まった日の抜け・設定を後から作った・今月より前の月の分を手で作った) は
+    今日にする。作ったその日に「期日を過ぎた」と出さないため。出す訪問
+    (今日以降の最初の訪問) は同じ。
     """
-    d = rule_day(rule, month)
-    if month == month_start(today) and d < today:
-        return today
-    return d
+    return max(rule_day(rule, month), today)
 
 
 # ---------------------------------------------------------------------------

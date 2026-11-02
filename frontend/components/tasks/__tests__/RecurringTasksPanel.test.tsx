@@ -144,6 +144,32 @@ describe('RecurringTasksPanel', () => {
     expect(vars.payload.start_month).toMatch(/^\d{4}-\d{2}-01$/);
   });
 
+  it('変える欄: 候補に出ない外した方も名前つきで並べ、外す指定を解ける', () => {
+    const GONE = '00000000-0000-0000-0000-000000000009';
+    rules = [
+      makeRule({
+        excluded_patients: [
+          { patient_id: P2, name: '石田 健' },
+          { patient_id: GONE, name: '終了 太郎' },
+        ],
+      }),
+    ];
+    render(<RecurringTasksPanel />);
+    fireEvent.click(screen.getByTestId(`recurring-edit-${rules[0]!.id}`));
+    const off = screen.getByTestId('recurring-off-list');
+    expect(off.textContent).toContain('終了 太郎 様');
+    // 候補に出る方 (石田様) は上の一覧だけに出す
+    expect(off.textContent).not.toContain('石田 健');
+    const box = screen.getByTestId(`recurring-off-patient-${GONE}`);
+    expect(box).not.toBeChecked();
+    fireEvent.click(box); // 外す指定を解く
+    expect(screen.getByTestId(`recurring-off-patient-${GONE}`)).toBeChecked();
+    fireEvent.click(screen.getByTestId('recurring-save'));
+    const [vars] = saveMutate.mock.calls[0]!;
+    expect(vars.id).toBe(rules[0]!.id);
+    expect(vars.payload.excluded_patient_ids).toEqual([P2]);
+  });
+
   it('来月の試し表示: 出る訪問・訪問が無い方・外す方・先月の残り', () => {
     rules = [makeRule()];
     preview = {

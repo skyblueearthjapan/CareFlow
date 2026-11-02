@@ -479,6 +479,58 @@ async def test_run_due_endpoint(client, db) -> None:
     assert res.json()["month"] == THIS_MONTH.isoformat()
 
 
+@pytest.mark.asyncio
+async def test_deleted_excluded_patient_is_dropped_on_save(client, db) -> None:
+    """外した後に削除された方の id が送り返されても保存できる (黙って捨てる)."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    admin = await _user(db, "adm", "admin")
+    h = _h(admin)
+    keep = str((await _patient(db, "K")).id)
+    gone_id = (await _patient(db, "G")).id
+    gone = str(gone_id)
+    rule = await _rule(client, admin, memo="x", excluded_patient_ids=[keep, gone])
+    await db.rollback()  # 自分の読み取りの取引を閉じてから書く (SQLite の接続を共有するため)
+    await db.execute(
+        sa.update(Patient).where(Patient.id == gone_id).values(deleted_at=datetime.now(UTC))
+    )
+    await db.commit()
+
+    url = "/api/v1/recurring-task-rules"
+    listed = (await client.get(url, headers=h)).json()[0]
+    assert [e["patient_id"] for e in listed["excluded_patients"]] == [keep]
+
+    res = await client.patch(
+        f"{url}/{rule['id']}",
+        json={"excluded_patient_ids": [keep, gone]},
+        headers=h,
+    )
+    assert res.status_code == 200, res.text
+    assert [e["patient_id"] for e in res.json()["excluded_patients"]] == [keep]
+
+    # 一度もいない id は今までどおり 422
+    res = await client.patch(
+        f"{url}/{rule['id']}",
+        json={"excluded_patient_ids": [keep, str(uuid4())]},
+        headers=h,
+    )
+    assert res.status_code == 422
+
+
+def test_task_start_date_past_month_is_today() -> None:
+    """今月より前の月の分を作るときは今日にそろえる (作った直後に期日切れと出さない)."""
+    from types import SimpleNamespace
+
+    rule = SimpleNamespace(day_of_month=5)
+    today = date(2026, 11, 2)
+    assert svc.task_start_date(rule, date(2026, 10, 1), today) == today
+    assert svc.task_start_date(rule, date(2026, 11, 1), today) == date(2026, 11, 5)
+    assert svc.task_start_date(rule, date(2026, 12, 1), today) == date(2026, 12, 5)
+    rule.day_of_month = 1
+    assert svc.task_start_date(rule, date(2026, 11, 1), today) == today
+
+
 # ---------------------------------------------------------------------------
 # migration 0105
 # ---------------------------------------------------------------------------

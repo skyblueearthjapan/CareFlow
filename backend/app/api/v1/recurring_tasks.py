@@ -82,18 +82,18 @@ async def _ensure_item_usable(db, item_type_id: UUID | None) -> None:
 async def _set_exclusions(db, rule_id: UUID, patient_ids: list[UUID], user_id: UUID) -> None:
     ids = list(dict.fromkeys(patient_ids))
     if ids:
-        found = set(
-            (
-                await db.scalars(
-                    select(Patient.id).where(Patient.id.in_(ids), Patient.deleted_at.is_(None))
-                )
-            ).all()
-        )
-        if len(found) != len(ids):
+        # 外した後に削除された方は黙って捨てる (画面が送り返しても保存できるように)。
+        # 一度もいない id は今までどおり 422。
+        rows = (
+            await db.execute(select(Patient.id, Patient.deleted_at).where(Patient.id.in_(ids)))
+        ).all()
+        if len(rows) != len(ids):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="外す方に見つからない患者様が含まれています",
             )
+        alive = {pid for pid, deleted_at in rows if deleted_at is None}
+        ids = [pid for pid in ids if pid in alive]
     await db.execute(
         delete(RecurringTaskExclusion).where(RecurringTaskExclusion.rule_id == rule_id)
     )
@@ -126,7 +126,7 @@ async def _read_rules(db, rules: list[RecurringTaskRule]) -> list[dict]:
         await db.execute(
             select(RecurringTaskExclusion.rule_id, Patient.id, Patient.name)
             .join(Patient, Patient.id == RecurringTaskExclusion.patient_id)
-            .where(RecurringTaskExclusion.rule_id.in_(rule_ids))
+            .where(RecurringTaskExclusion.rule_id.in_(rule_ids), Patient.deleted_at.is_(None))
             .order_by(Patient.kana, Patient.name)
         )
     ).all():
