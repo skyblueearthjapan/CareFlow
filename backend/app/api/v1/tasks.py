@@ -50,6 +50,8 @@ from app.services.patient_tasks import (
     load_task_names,
     next_visits_for_tasks,
     notify_task_assigned,
+    overdue_clause,
+    overdue_task_ids,
     serialize_task,
     task_sort_key,
     task_status,
@@ -102,8 +104,9 @@ async def _get_task(db, task_id: UUID) -> PatientTask:
 
 async def _read_one(db, task: PatientTask, user: User) -> dict:
     names = await load_task_names(db, [task])
+    overdue = task.id in await overdue_task_ids(db, [task], jst_today())
     return {
-        **serialize_task(task, names, today=jst_today()),
+        **serialize_task(task, names, overdue=overdue),
         "can_reopen": _can_reopen(task, user),
     }
 
@@ -210,7 +213,7 @@ async def list_tasks(
     if status_ == "open":
         stmt = stmt.where(PatientTask.done_at.is_(None))
     elif status_ == "overdue":
-        stmt = stmt.where(PatientTask.done_at.is_(None), PatientTask.start_date < today)
+        stmt = stmt.where(overdue_clause(today))
     elif status_ == "done":
         stmt = stmt.where(PatientTask.done_at.is_not(None))
     if patient_id is not None:
@@ -253,6 +256,7 @@ async def list_tasks(
     staff_by_visit = await visit_staff_map(db, list(all_visits.values()))
 
     names = await load_task_names(db, tasks)
+    overdue_ids = await overdue_task_ids(db, tasks, today)
     out: list[dict] = []
     for t in tasks:
         nv = next_by_task.get(t.id)
@@ -270,7 +274,7 @@ async def list_tasks(
                 continue
         out.append(
             {
-                **serialize_task(t, names, today=today),
+                **serialize_task(t, names, overdue=t.id in overdue_ids),
                 "next_visit": visit_brief(nv, staff_by_visit.get(nv.id, [])) if nv else None,
                 "done_visit": visit_brief(dv, staff_by_visit.get(dv.id, [])) if dv else None,
                 "can_reopen": _can_reopen(t, user),
@@ -346,9 +350,13 @@ async def create_tasks(payload: PatientTaskCreate, db: DbDep, user: AdminUser) -
     await db.commit()
 
     names = await load_task_names(db, tasks)
+    overdue_ids = await overdue_task_ids(db, tasks, today)
     brief = visit_brief(visit, staff) if visit else None
     return {
-        "tasks": [{**serialize_task(t, names, today=today), "next_visit": brief} for t in tasks],
+        "tasks": [
+            {**serialize_task(t, names, overdue=t.id in overdue_ids), "next_visit": brief}
+            for t in tasks
+        ],
         "next_visit": brief,
         "notified_user_count": notified,
     }
@@ -400,11 +408,11 @@ async def list_visit_tasks(visit_id: UUID, db: DbDep, user: CurrentActiveUser) -
     entries = (await tasks_for_visits(db, [visit])).get(visit.id, [])
     tasks = [e.task for e in entries]
     names = await load_task_names(db, tasks)
-    today = jst_today()
+    overdue_ids = await overdue_task_ids(db, tasks, jst_today())
     entries.sort(key=lambda e: task_sort_key(e.task, names))
     return [
         {
-            **serialize_task(e.task, names, today=today),
+            **serialize_task(e.task, names, overdue=e.task.id in overdue_ids),
             "carried_over": e.carried_over,
             "can_reopen": _can_reopen(e.task, user),
         }

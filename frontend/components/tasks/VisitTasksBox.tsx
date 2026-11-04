@@ -143,7 +143,8 @@ function TaskRow({
           ) : (
             <>
               {t.carried_over && <Pill tone="carry">持ち越し</Pill>}
-              {t.overdue && <Pill tone="over">期日 {taskMd(t.start_date)} を過ぎています</Pill>}
+              {/* overdue = 日付以降の出す訪問の日が過ぎても未完了 (日付が過ぎただけでは出ない)。 */}
+              {t.overdue && <Pill tone="over">訪問日を過ぎて未完了</Pill>}
             </>
           )}
           {!t.is_message && <b className="text-[13px]">{taskTitle(t)}</b>}

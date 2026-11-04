@@ -86,7 +86,7 @@ class PatientTaskRead(BaseModel):
     created_by_name: str | None
     created_at: datetime
     status: TaskStatus
-    #: 未完了で、日付 (この日から) が今日より前 = 期日を過ぎた。
+    #: 未完了で、日付以降の出す訪問の日がもう過ぎた (= 持ち越し) = 期日を過ぎた。
     overdue: bool
     #: 訪問ごとの読み出しだけ: この訪問より前に出す訪問があった (= 持ち越し)。
     carried_over: bool = False

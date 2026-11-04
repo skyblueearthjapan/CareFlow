@@ -78,7 +78,7 @@ describe('VisitTasksBox', () => {
     );
     const row = screen.getByTestId('visit-task-t1');
     expect(row.textContent).toContain('持ち越し');
-    expect(row.textContent).toContain('期日 10/29 を過ぎています');
+    expect(row.textContent).toContain('訪問日を過ぎて未完了');
     expect(row.textContent).toContain('付けた人 事務 太郎');
     fireEvent.click(screen.getByRole('button', { name: '完了にする' }));
     expect(completeMutate).toHaveBeenCalledWith(

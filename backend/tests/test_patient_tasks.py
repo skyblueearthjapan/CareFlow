@@ -179,6 +179,84 @@ async def test_overdue_carries_over_to_today_or_later(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_not_overdue_until_the_visit_day_has_passed(client, db) -> None:
+    """日付が過ぎただけでは期日を過ぎたにしない。出す訪問の日が過ぎてから (11/4 小林様)."""
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    p_future = await _patient(db, "P1")  # 日付は過去・訪問は先だけ
+    p_today = await _patient(db, "P2")  # 訪問が今日
+    p_cancel = await _patient(db, "P3")  # 過去の訪問は取消・削除だけ
+    p_none = await _patient(db, "P4")  # 訪問が無い
+    p_before = await _patient(db, "P5")  # 過去の訪問は日付より前だけ
+    await _visit(db, p_future, T + timedelta(days=2), primary=s)
+    await _visit(db, p_today, T, primary=s)
+    await _visit(db, p_cancel, T - timedelta(days=1), primary=s, status="cancelled")
+    await _visit(db, p_cancel, T - timedelta(days=1), hour=11, primary=s, deleted=True)
+    await _visit(db, p_before, T - timedelta(days=4), primary=s)
+    for p in (p_future, p_today, p_cancel, p_none, p_before):
+        body = await _create(client, admin, p, T - timedelta(days=2), memo="伝言")
+        assert body["tasks"][0]["overdue"] is False
+
+    rows = (await client.get("/api/v1/tasks", headers=_h(admin))).json()
+    assert len(rows) == 5
+    assert all(r["overdue"] is False for r in rows)
+    over = (await client.get("/api/v1/tasks?status=overdue", headers=_h(admin))).json()
+    assert over == []
+
+    # 出す訪問の日 (昨日) が過ぎて未完了なら期日を過ぎた。
+    await _visit(db, p_future, T - timedelta(days=1), primary=s)
+    over = (await client.get("/api/v1/tasks?status=overdue", headers=_h(admin))).json()
+    assert [r["patient_id"] for r in over] == [str(p_future.id)]
+    assert over[0]["overdue"] is True
+
+
+@pytest.mark.asyncio
+async def test_overdue_flag_on_visit_tasks_reopen_and_done_or_cancelled(client, db) -> None:
+    """訪問の詳細・戻す (1 件の読み出し) でも同じ判定。完了・取消は期日を過ぎたにしない."""
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    p = await _patient(db, "P1")
+    past = await _visit(db, p, T - timedelta(days=1), primary=s)
+    body = await _create(client, admin, p, T - timedelta(days=3), memo="過ぎた")
+    tid = body["tasks"][0]["id"]
+    assert body["tasks"][0]["overdue"] is True
+
+    (row,) = (await client.get(f"/api/v1/visits/{past.id}/tasks", headers=_h(admin))).json()
+    assert row["overdue"] is True
+
+    res = await client.post(f"/api/v1/tasks/{tid}/complete", json={}, headers=_h(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["overdue"] is False
+    res = await client.post(f"/api/v1/tasks/{tid}/reopen", headers=_h(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["overdue"] is True
+
+    other = await _create(client, admin, p, T - timedelta(days=3), memo="取消")
+    res = await client.post(f"/api/v1/tasks/{other['tasks'][0]['id']}/cancel", headers=_h(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["overdue"] is False
+    over = (await client.get("/api/v1/tasks?status=overdue", headers=_h(admin))).json()
+    assert [r["id"] for r in over] == [tid]
+
+
+@pytest.mark.asyncio
+async def test_same_day_second_visit_carries_over_but_not_overdue_until_day_ends(
+    client, db
+) -> None:
+    """同じ日の 2 回目の訪問では持ち越しだが、期日を過ぎたはその日が終わってから."""
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    p = await _patient(db, "P1")
+    await _visit(db, p, T, hour=9, primary=s)
+    later = await _visit(db, p, T, hour=14, primary=s)
+    await _create(client, admin, p, T, memo="朝の分")
+
+    (row,) = (await client.get(f"/api/v1/visits/{later.id}/tasks", headers=_h(admin))).json()
+    assert row["carried_over"] is True
+    assert row["overdue"] is False
+
+
+@pytest.mark.asyncio
 async def test_visit_tasks_not_on_visits_before_start_or_cancelled(client, db) -> None:
     admin = await _user(db, "adm", "admin")
     s = await _staff(db, "佐藤")

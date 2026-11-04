@@ -82,8 +82,39 @@ def task_status(task: PatientTask) -> str:
     return "open"
 
 
-def is_overdue(task: PatientTask, today: date) -> bool:
-    return task_status(task) == "open" and task.start_date < today
+def overdue_clause(today: date):
+    """期日を過ぎた = 未完了・取消でなく、日付以降の出す訪問の日がもう過ぎた (今日より前).
+
+    日付 (この日から) が過ぎただけでは出さない。その日以降の最初の訪問が終わっても
+    未完了のとき (= 持ち越し) だけ。訪問がまだ無い・先の訪問しか無いものは出さない。
+    日の単位で見る (PO 2026-11-04)。同じ日に訪問が 2 回あり朝の分で未完了のとき、
+    午後の訪問には持ち越し (carried_over) が立つが、ここはその日が終わるまで立てない。
+    """
+    passed_visit = (
+        select(Visit.id)
+        .where(
+            Visit.patient_id == PatientTask.patient_id,
+            Visit.visit_date >= PatientTask.start_date,
+            Visit.visit_date < today,
+            eligible_visit_clause(),
+        )
+        .exists()
+    )
+    return and_(PatientTask.done_at.is_(None), PatientTask.cancelled_at.is_(None), passed_visit)
+
+
+async def overdue_task_ids(db: AsyncSession, tasks: list[PatientTask], today: date) -> set[UUID]:
+    """渡したやることのうち、期日を過ぎたものの id (問い合わせ 1 回)."""
+    ids = [t.id for t in tasks if task_status(t) == "open"]
+    if not ids:
+        return set()
+    return set(
+        (
+            await db.scalars(
+                select(PatientTask.id).where(PatientTask.id.in_(ids), overdue_clause(today))
+            )
+        ).all()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +436,7 @@ def task_sort_key(task: PatientTask, names: TaskNames) -> tuple:
     )
 
 
-def serialize_task(task: PatientTask, names: TaskNames, *, today: date) -> dict:
+def serialize_task(task: PatientTask, names: TaskNames, *, overdue: bool) -> dict:
     item = names.item_types.get(task.item_type_id) if task.item_type_id else None
     done_by_name = None
     if task.done_by_staff_id is not None:
@@ -425,7 +456,7 @@ def serialize_task(task: PatientTask, names: TaskNames, *, today: date) -> dict:
         "created_by_name": names.users.get(task.created_by) if task.created_by else None,
         "created_at": task.created_at,
         "status": task_status(task),
-        "overdue": is_overdue(task, today),
+        "overdue": overdue,
         "done_at": task.done_at,
         "done_by_user_id": task.done_by_user_id,
         "done_by_staff_id": task.done_by_staff_id,
