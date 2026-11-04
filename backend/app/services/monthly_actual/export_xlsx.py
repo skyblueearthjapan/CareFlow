@@ -144,7 +144,7 @@ def build_monthly_actual_xlsx(
         (r for r in rows if r.status in ASK_STATUSES),
         key=lambda r: (r.visit_date, r.new_start or r.kp_start or "", rules.name_key(r.patient)),
     )
-    qr_eq = sum(1 for r in kp_rows if r.status == rules.STATUS_MATCH)
+    qr_eq = sum(1 for r in kp_rows if r.status in (rules.STATUS_MATCH, rules.STATUS_K2_ONLY))
 
     wb = Workbook()
     ws = wb.active
@@ -163,7 +163,7 @@ def build_monthly_actual_xlsx(
                 r.kp_end,
                 r.kp_minutes,
                 _qr(r),
-                "○" if r.status == rules.STATUS_MATCH else "",
+                "○" if r.status in (rules.STATUS_MATCH, rules.STATUS_K2_ONLY) else "",
                 _note(r),
             ]
         )

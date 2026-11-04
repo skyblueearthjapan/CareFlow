@@ -157,6 +157,24 @@ class KaipokeClient:
         """
         return await self._request("GET", "/api/actual-time/result")
 
+    async def care_record_time_apply(
+        self, payload: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """記録書Ⅱの「実際の訪問時間」だけをそろえる (PlaywrightTest1 ACTUAL_TIME_EDIT_SPEC.md)。
+
+        payload: ``{month, dry_run, job_id, headed, items[], credentials}``。items は
+        ``{item_id, date, patient, staff1, actual_start, actual_end, old_start, old_end,
+        new_start, new_end}``。常に非同期で 202。400 / 409 は ``actual_time_apply`` と同じ。
+        結果は ``care_record_time_result()`` でポーリングする。
+        """
+        return await self._request(
+            "POST", "/api/care-record-time/apply", json=payload, timeout=timeout
+        )
+
+    async def care_record_time_result(self) -> dict[str, Any]:
+        """記録書Ⅱだけの結果 (形は ``actual_time_result`` と同じ)。"""
+        return await self._request("GET", "/api/care-record-time/result")
+
     async def export_result(self) -> dict[str, Any]:
         """Poll the (single-slot) export result.
 

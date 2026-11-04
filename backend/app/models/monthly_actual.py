@@ -1,4 +1,4 @@
-"""月の実績の作業 (らく助の QR 実績 × カイポケの実績) — mig 0104.
+"""月の実績の作業 (らく助の QR 実績 × カイポケの実績) — mig 0104・0108 (記録書Ⅱの結果).
 
 正典: ``docs/plans/kaipoke-actual-write-design-2026-11-01.md`` §5-3 (訪問記録の
 「月の実績」タブ)。判定の決まりは ``app.services.monthly_actual.judge``。
@@ -145,6 +145,14 @@ class MonthlyActualRow(Base, TimestampMixin):
     #: 試しで ``dry_run_ok`` になったときの「鍵|新しい開始-新しい終了」。本番はこれが今の行と
     #: 同じ行だけ送る (試しを通った行だけ)。判定し直しても同じ鍵の行へ引き継ぐ。
     dry_run_ok_sig: Mapped[str | None] = mapped_column(String(240), nullable=True)
+
+    # 記録書Ⅱをそろえた結果 (mig 0108・RPA の care_record_status・care_record_reason)。
+    # 実績と続けて送った行は実績の結果と別に、記録書Ⅱだけ送った行はここだけに書く。
+    care_record_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    care_record_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    care_record_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    care_record_dry_run: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    care_record_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (Index("ix_monthly_actual_rows_run_seq", "run_id", "seq"),)
 

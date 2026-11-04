@@ -279,9 +279,11 @@ async def test_get_judges_from_latest_actual_snapshot(client, db) -> None:
         "review": 1,
         "apply": 2,
         "missing": 1,
+        "k2_only": 0,
         "kaipoke_only": 1,
         "match": 1,
         "total": 6,
+        "care_record": 0,
     }
     rows = _by_patient(body["rows"])
     assert rows["青木 さくら"]["status"] == "match"
