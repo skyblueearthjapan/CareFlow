@@ -69,6 +69,7 @@ import {
   failedRows,
   flagChips,
   pendingRows,
+  record2ReasonLabel,
 } from '../_components/monthly-actual/monthlyActualFormat';
 
 function makeRow(over: Partial<MonthlyActualRow> = {}): MonthlyActualRow {
@@ -721,5 +722,27 @@ describe('記録書Ⅱ', () => {
     expect(dryRunAllOk(view([ng]))).toBe(false);
     expect(dryRunAllOk(view([ok, k2only]))).toBe(true);
     expect(currentStep(view([ok, k2only]))).toBe(4);
+  });
+
+  it('記録書Ⅱの理由：保存したかもしれない・ほかの欄も違った・選べない画面は、カイポケで確かめる', () => {
+    expect(record2ReasonLabel('save_maybe_saved')).toBe('保存したかもしれない・カイポケで確かめる');
+    expect(record2ReasonLabel('verify_other_field_changed')).toBe(
+      '保存後に時刻のほかの欄も違った・カイポケで確かめる',
+    );
+    expect(record2ReasonLabel('locked')).toBe('時刻を選べない画面だった・カイポケで確かめる');
+  });
+
+  it('実績が 0 件の回は「0 件を登録しました」を出さず、記録書Ⅱの件数だけを出す', () => {
+    render(
+      <MonthlyActualRunPanel
+        {...panelProps({
+          step: 5,
+          job: job({ dry_run: false, success: 0, record2_success: 2 }),
+        })}
+      />,
+    );
+    const text = screen.getByTestId('ma-applied').textContent ?? '';
+    expect(text).not.toContain('件を登録しました');
+    expect(text).toContain('記録書Ⅱは 2 件をそろえました。');
   });
 });

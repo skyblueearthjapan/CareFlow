@@ -229,7 +229,7 @@ export function MonthlyActualRunPanel(props: MonthlyActualRunPanelProps) {
       {step === 5 && (
         <>
           <p className="rounded-md bg-success-bg px-3 py-2 text-sm" data-testid="ma-applied">
-            {job?.success ?? 0} 件を登録しました。
+            {(job?.success ?? 0) > 0 && `${job?.success ?? 0} 件を登録しました。`}
             {(job?.record2_success ?? 0) > 0 &&
               `記録書Ⅱは ${job?.record2_success ?? 0} 件をそろえました。`}
             {(job?.record2_failed ?? 0) > 0 &&

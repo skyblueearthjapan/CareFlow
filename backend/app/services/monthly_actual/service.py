@@ -104,7 +104,17 @@ REASON_ALREADY_APPLIED: Final = "already_applied"
 CHECK_STATUSES: Final = frozenset({RPA_ERROR, APPLY_UNKNOWN})
 CHECK_REASONS: Final = frozenset({"verify_failed", "dialog_left_open", "no_detail"})
 #: 記録書Ⅱで書き換えたか分からない理由 (保存済みかも・編集画面が開いたまま)。
-CARE_CHECK_REASONS: Final = frozenset({"verify_failed", "edit_screen_left_open", "no_detail"})
+#: RPA の正典 (PlaywrightTest1 ``ACTUAL_TIME_EDIT_SPEC.md`` 「記録書Ⅱの reason」) で
+#: 「保存済みの可能性あり」「保存済み」のもの。
+CARE_CHECK_REASONS: Final = frozenset(
+    {
+        "verify_failed",
+        "save_maybe_saved",
+        "verify_other_field_changed",
+        "edit_screen_left_open",
+        "no_detail",
+    }
+)
 #: RPA の 2 つの口 (同時には走れない・実績 → 記録書Ⅱだけ の順に流す)。
 PHASE_ACTUAL: Final = "actual"
 PHASE_CARE_RECORD: Final = "care_record"
@@ -317,12 +327,30 @@ def needs_actual(row: MonthlyActualRow) -> bool:
     ) != (row.new_start, row.new_end)
 
 
+def _k2_held(row: MonthlyActualRow) -> bool:
+    """記録書Ⅱを送らない印 (60 分以上ずれる・順が逆) が付いている (記録書Ⅱは人が見る)。"""
+    return any(
+        isinstance(f, dict) and f.get("code") in rules.K2_HOLD_FLAGS for f in (row.flags or [])
+    )
+
+
 def needs_care_record(row: MonthlyActualRow) -> bool:
-    """記録書Ⅱがあり、時刻が新しい時刻と違う (記録書Ⅱもそろえる)。記録書Ⅱが無い行は扱わない。"""
-    return bool(row.k2_start and row.k2_end and row.new_start and row.new_end) and (
-        norm_time(row.k2_start or ""),
-        norm_time(row.k2_end or ""),
-    ) != (row.new_start, row.new_end)
+    """記録書Ⅱがあり、時刻が新しい時刻と違う (記録書Ⅱもそろえる)。記録書Ⅱが無い行は扱わない。
+
+    ``judge`` の ``k2_apply`` と同じ基準: 記録書Ⅱの開始 < 終了 (分で比べる) のときだけ扱い、
+    60 分以上ずれる・順が逆の印がある行は送らない。
+    """
+    k2s = rules.to_minutes(row.k2_start)
+    k2e = rules.to_minutes(row.k2_end)
+    return (
+        bool(row.new_start and row.new_end)
+        and k2s is not None
+        and k2e is not None
+        and k2s < k2e
+        and not _k2_held(row)
+        and (norm_time(row.k2_start or ""), norm_time(row.k2_end or ""))
+        != (row.new_start, row.new_end)
+    )
 
 
 def dry_run_sig(row: MonthlyActualRow) -> str:
@@ -391,6 +419,20 @@ def _checked_since(snap_at: datetime | None, done_at: datetime | None, keep_chec
     """結果の後に管理者がカイポケの実績を読み取り直した (読み取り直しが確かめになる)。"""
     at = _aware(done_at)
     return not keep_checks and snap_at is not None and at is not None and snap_at > at
+
+
+def _care_record_still_holds(row: MonthlyActualRow, done: MonthlyActualRow) -> bool:
+    """前の記録書Ⅱの結果を引き継いでよいか。
+
+    いまの記録書Ⅱが新しい時刻と同じとき、または結果がカイポケで確かめる待ちのときだけ。
+    それ以外 (そろえた後に記録書Ⅱが書き換えられた) は引き継がず、また送る対象にする。
+    """
+    if care_record_needs_check(done):
+        return True
+    return bool(row.new_start and row.new_end) and (
+        norm_time(row.k2_start or ""),
+        norm_time(row.k2_end or ""),
+    ) == (row.new_start, row.new_end)
 
 
 async def judge_month(
@@ -471,6 +513,7 @@ async def judge_month(
         if (
             done is not None
             and done.care_record_status not in (None, APPLY_QUEUED)
+            and _care_record_still_holds(row, done)
             and not (
                 care_record_needs_check(done)
                 and _checked_since(snap_at, done.care_record_at, keep_checks)
@@ -1133,7 +1176,11 @@ async def ingest_rpa_result(
             if isinstance(result.get("care_record"), dict):
                 summary["care_record_rpa_counts"] = result["care_record"]
         summary["stopped"] = bool(summary.get("stopped")) or bool(result.get("stopped"))
-        summary["done"] = int(summary.get("done") or 0) + len(rows)
+        # 口ごとの件数を持って合計する (同じ結果を 2 回読んでも数が増えない)。
+        done_by_phase = dict(summary.get("done_by_phase") or {})
+        done_by_phase[phase] = len(rows)
+        summary["done_by_phase"] = done_by_phase
+        summary["done"] = sum(int(n or 0) for n in done_by_phase.values())
         job.result_summary = summary
         job.updated_at = now
     await db.commit()

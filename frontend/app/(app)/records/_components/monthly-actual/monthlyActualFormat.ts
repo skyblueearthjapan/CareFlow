@@ -82,7 +82,8 @@ const FLAG_CHIPS: Record<string, { label: string; tone: ChipTone }> = {
   staff_diff: { label: '担当が違う', tone: 'red' },
   staff_count: { label: '人数', tone: 'red' },
   k2_gap: { label: '記録書Ⅱ', tone: 'amber' },
-  k2_big_gap: { label: '記録書Ⅱと 1 時間以上', tone: 'red' },
+  k2_big_gap: { label: '記録書Ⅱと 60 分以上', tone: 'amber' },
+  k2_order: { label: '記録書Ⅱの順が逆', tone: 'amber' },
   no_arrival: { label: '到着なし', tone: 'red' },
   dup_target: { label: '同じ行を 2 件', tone: 'red' },
   kp_end_before_start: { label: 'カイポケの時刻', tone: 'amber' },
@@ -190,7 +191,9 @@ const RECORD2_REASONS: Record<string, string> = {
   record_time_mismatch: '記録書Ⅱの時刻が一覧と違う',
   edit_screen_left_open: '編集画面が開いたまま（カイポケで確かめる）',
   verify_failed: '保存の後に確かめられない（カイポケで確かめる）',
-  locked: '時刻を変えられない（確定・請求の後）',
+  save_maybe_saved: '保存したかもしれない・カイポケで確かめる',
+  verify_other_field_changed: '保存後に時刻のほかの欄も違った・カイポケで確かめる',
+  locked: '時刻を選べない画面だった・カイポケで確かめる',
 };
 
 export function record2ReasonLabel(reason: string | null | undefined): string | null {

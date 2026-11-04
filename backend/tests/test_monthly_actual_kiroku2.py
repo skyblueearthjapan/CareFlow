@@ -9,7 +9,7 @@ RPA (KaipokeClient) はモックに差し替える (本物のカイポケには�
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -188,8 +188,8 @@ async def _apply(client, db, admin, fake, **payload):
 @pytest.mark.asyncio
 async def test_judge_shows_k2_columns_and_k2_only_rows(client, db) -> None:
     _admin, body = await _setup(client, db, FakeKaipoke())
-    # 人が見る (斉藤様・1 時間以上ずれる) も記録書Ⅱが違う行に数える。
-    assert body["counts"]["k2_only"] == 1 and body["counts"]["care_record"] == 3
+    # 斉藤様は記録書Ⅱとも 1 時間以上ずれるので記録書Ⅱは送らない (数えない)。
+    assert body["counts"]["k2_only"] == 1 and body["counts"]["care_record"] == 2
     rows = _by_patient(body["rows"])
     aoki = rows["青木 さくら"]
     assert aoki["status"] == "k2_only" and aoki["status_label"] == "記録書Ⅱだけ"
@@ -199,6 +199,7 @@ async def test_judge_shows_k2_columns_and_k2_only_rows(client, db) -> None:
     ishida = rows["石田 健"]
     assert ishida["status"] == "apply" and ishida["needs_care_record"] is True
     assert rows["木下 誠"]["needs_care_record"] is False  # 記録書Ⅱが無い行は扱わない
+    assert rows["斉藤 大地"]["needs_care_record"] is False
     assert body["selected_count"] == 3
 
 
@@ -268,7 +269,7 @@ async def test_real_apply_aligns_both_and_verifies(client, db) -> None:
     assert verify["applied"] == 3 and verify["matched"] == 3
     assert verify["actual_applied"] == 2 and verify["actual_matched"] == 2
     assert verify["care_record_applied"] == 2 and verify["care_record_matched"] == 2
-    assert view["counts"]["k2_only"] == 0 and view["counts"]["care_record"] == 1  # 斉藤様
+    assert view["counts"]["k2_only"] == 0 and view["counts"]["care_record"] == 0
     res = await client.post(f"{URL}/apply", json={"dry_run": False}, headers=_bearer(admin))
     assert res.status_code == 422  # もう送る行が無い
 
@@ -395,7 +396,9 @@ def test_judge_k2_same_as_new_time_or_missing_is_left_alone() -> None:
     assert rules.count_k2(rows) == 0
 
 
-def test_judge_k2_gap_of_an_hour_or_more_goes_to_review() -> None:
+def test_judge_k2_gap_of_an_hour_or_more_holds_only_k2() -> None:
+    # PO 決定 案B: 実績は今までどおり反映し、記録書Ⅱだけ送らない。
+    # 実績はもう QR どおりで記録書Ⅱだけが 60 分以上違う行は、送るものが無いので人が見る。
     rows = rules.judge(
         [rk("1", "青木 さくら", "14:53", "15:33"), rk("2", "石田 健", "11:03", "11:41")],
         [
@@ -405,6 +408,128 @@ def test_judge_k2_gap_of_an_hour_or_more_goes_to_review() -> None:
     )
     for name in ("青木 さくら", "石田 健"):
         row = one(rows, name)
-        assert row.status == rules.STATUS_REVIEW and row.k2_apply is True
+        assert row.k2_apply is False
         assert rules.FLAG_K2_BIG_GAP in codes(row) and rules.FLAG_K2_GAP not in codes(row)
-        assert row.default_selected is False
+        flag = next(f for f in row.flags if f.code == rules.FLAG_K2_BIG_GAP)
+        assert flag.review is False
+        assert flag.label == "記録書Ⅱと 60 分以上ずれる・記録書Ⅱは人が見る"
+    ishida = one(rows, "石田 健")
+    assert ishida.status == rules.STATUS_APPLY and ishida.default_selected is True
+    aoki = one(rows, "青木 さくら")
+    assert aoki.status == rules.STATUS_REVIEW and aoki.default_selected is False
+    assert rules.count_k2(rows) == 0
+
+
+@pytest.mark.parametrize("k2", [("11:35", "11:00"), ("11:00", "11:00"), ("11:00", "--")])
+def test_judge_k2_reversed_or_unreadable_holds_only_k2(k2: tuple[str, str]) -> None:
+    rows = rules.judge(
+        [rk("1", "青木 さくら", "14:53", "15:33"), rk("2", "石田 健", "11:03", "11:41")],
+        [
+            kp("青木　さくら", "14:53", "15:33", k2=k2),
+            kp("石田　健", "11:00", "11:35", k2=k2),
+        ],
+    )
+    for name in ("青木 さくら", "石田 健"):
+        row = one(rows, name)
+        assert row.k2_apply is False and rules.FLAG_K2_ORDER in codes(row)
+        flag = next(f for f in row.flags if f.code == rules.FLAG_K2_ORDER)
+        assert flag.review is False and flag.label == "記録書Ⅱの時刻の順が逆・人が見る"
+    assert one(rows, "石田 健").status == rules.STATUS_APPLY  # 実績は送る
+    assert one(rows, "青木 さくら").status == rules.STATUS_REVIEW  # 送るものが無い
+
+
+def _service_row(**kw: Any) -> MonthlyActualRow:
+    base: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "status": rules.STATUS_K2_ONLY,
+        "flags": [],
+        "item_key": "2026-10-01|青木さくら|10:00-10:40|佐藤花子",
+        "kp_start": "10:00",
+        "kp_end": "10:40",
+        "kp_staff1": "佐藤 花子",
+        "new_start": "10:00",
+        "new_end": "10:40",
+        "k2_start": "09:55",
+        "k2_end": "10:40",
+        "selected": True,
+    }
+    return MonthlyActualRow(**{**base, **kw})
+
+
+def test_needs_care_record_uses_the_same_rule_as_judge() -> None:
+    assert svc.needs_care_record(_service_row()) is True
+    assert svc.needs_care_record(_service_row(k2_start="10:40", k2_end="09:55")) is False
+    assert svc.needs_care_record(_service_row(k2_start="xx", k2_end="10:40")) is False
+    held = [{"code": rules.FLAG_K2_BIG_GAP, "label": "", "review": False}]
+    assert svc.needs_care_record(_service_row(flags=held)) is False
+    order = [{"code": rules.FLAG_K2_ORDER, "label": "", "review": False}]
+    assert svc.needs_care_record(_service_row(flags=order)) is False
+
+
+@pytest.mark.parametrize("reason", ["save_maybe_saved", "verify_other_field_changed"])
+def test_care_record_maybe_saved_is_not_sent_again(reason: str) -> None:
+    # 本番で「保存したかもしれない」記録書Ⅱは、本番でも流し直し (only_failed) でも選ばない。
+    row = _service_row(
+        care_record_status="failed", care_record_reason=reason, care_record_dry_run=False
+    )
+    assert svc.care_record_needs_check(row) and svc.needs_kaipoke_check(row)
+    assert svc.choose_rows([row]) == []
+    assert svc.choose_rows([row], only_failed=True) == []
+    plain = _service_row(
+        care_record_status="failed",
+        care_record_reason="record_time_mismatch",
+        care_record_dry_run=False,
+    )
+    assert svc.choose_rows([plain], only_failed=True) == [plain]
+
+
+@pytest.mark.asyncio
+async def test_k2_result_is_not_carried_over_when_k2_was_rewritten(client, db) -> None:
+    # そろえた後に記録書Ⅱが書き換えられた → 結果を引き継がず、また送る対象にする。
+    fake = FakeKaipoke(export_lines=KP_K2_AFTER)
+    admin, _ = await _setup(client, db, fake)
+    await _apply(client, db, admin, fake, dry_run=True)
+    await _apply(client, db, admin, fake, dry_run=False)
+    body = (await client.get(URL, headers=_bearer(admin))).json()
+    aoki = _by_patient(body["rows"])["青木 さくら"]
+    assert aoki["care_record_status"] == "success" and aoki["needs_care_record"] is False
+
+    rewritten = [
+        line
+        if line[2] != "青木　さくら"
+        else ("佐藤　花子", 1, "青木　さくら", "10:00", "10:40", "09:50", "10:40")
+        for line in KP_K2_AFTER
+    ]
+    await _snapshot(db, rewritten, fetched_at=datetime.now(UTC) + timedelta(minutes=5))
+    rows = _by_patient((await client.get(URL, headers=_bearer(admin))).json()["rows"])
+    aoki = rows["青木 さくら"]
+    assert aoki["care_record_status"] is None and aoki["needs_care_record"] is True
+    assert aoki["status"] == "k2_only"
+
+
+@pytest.mark.asyncio
+async def test_k2_check_result_is_carried_over_and_not_sent(client, db) -> None:
+    # 保存したかもしれない (カイポケで確かめる待ち) は、記録書Ⅱが旧のままでも引き継ぎ、送らない。
+    still = [
+        line
+        if line[2] != "青木　さくら"
+        else ("佐藤　花子", 1, "青木　さくら", "10:00", "10:40", "09:55", "10:40")
+        for line in KP_K2_AFTER
+    ]
+    fake = FakeKaipoke(
+        export_lines=still, care_results={"青木 さくら": ("failed", "save_maybe_saved")}
+    )
+    admin, _ = await _setup(client, db, fake)
+    await _apply(client, db, admin, fake, dry_run=True)
+    await _apply(client, db, admin, fake, dry_run=False)
+
+    body = (await client.get(URL, headers=_bearer(admin))).json()
+    aoki_view = _by_patient(body["rows"])["青木 さくら"]
+    assert aoki_view["care_record_reason"] == "save_maybe_saved"
+    rows = list(
+        (await db.scalars(select(MonthlyActualRow).execution_options(populate_existing=True))).all()
+    )
+    aoki = next(r for r in rows if r.patient == "青木 さくら")
+    assert aoki.care_record_reason == "save_maybe_saved" and svc.needs_kaipoke_check(aoki)
+    assert aoki not in svc.choose_rows(rows)
+    assert aoki not in svc.choose_rows(rows, only_failed=True)
