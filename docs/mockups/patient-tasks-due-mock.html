@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>やることの期日と訪問の回数（動くモック）</title>
+<style>
+:root{
+  --pink:#e15a7f;--pink-d:#c4446a;--pink-l:#fde8ee;--pink-ll:#fff5f8;
+  --bg:#f6f2ef;--card:#fff;--ink:#2b2b2b;--mute:#727272;--line:#ece3de;
+  --ok:#2e7d32;--ok-l:#e8f5e9;--warn:#c62828;--warn-l:#fdecea;--amber:#b26a00;--amber-l:#fff4e0;
+  --blue:#1565c0;--blue-l:#e8f0fb;--gray-l:#f1efee;
+  --or2-bg:#fff4e0;--or2-fg:#b26a00;--or3-bg:#ffd9a8;--or3-fg:#8a4b00;--or4-bg:#e07800;--or4-fg:#fff;
+  --slate:#455a64;--slate-l:#eef2f4;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans JP","Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",sans-serif;font-size:14px}
+button{font:inherit;cursor:pointer;color:inherit}
+.top{display:flex;align-items:center;gap:16px;padding:12px 20px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.top h1{font-size:16px;margin:0}
+.top .note{color:var(--mute);font-size:12px}
+.top .reset{margin-left:auto;border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 12px}
+
+/* 上のタブ（画面の切り替え） */
+.mtabs{display:flex;gap:6px;margin:12px 20px 0;flex-wrap:wrap}
+.mtab{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:#fff;border-radius:10px;padding:8px 14px;color:var(--mute)}
+.mtab .k{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:var(--gray-l);color:var(--mute);font-weight:700;font-size:12px}
+.mtab.on{border-color:var(--pink);color:var(--pink-d);font-weight:700;box-shadow:0 2px 0 var(--pink)}
+.mtab.on .k{background:var(--pink);color:#fff}
+
+/* 時計（今日を動かす） */
+.clock{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 20px 0;background:#fff;border:1px solid var(--pink);border-radius:12px;padding:10px 14px}
+.clock .now{display:flex;align-items:baseline;gap:8px}
+.clock .now span{font-size:12px;color:var(--mute)}
+.clock .now b{font-size:20px;color:var(--pink-d);font-variant-numeric:tabular-nums}
+.clock .btns{display:flex;gap:8px;flex-wrap:wrap}
+.clock .hint{flex-basis:100%;margin-top:0}
+
+.stage{display:flex;gap:20px;padding:16px 20px;align-items:flex-start}
+.pc{position:relative;flex:1;min-width:0;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.pc.has-modal{min-height:900px}
+.pc-shell{display:grid;grid-template-columns:170px 1fr}
+.side{border-right:1px solid var(--line);padding:12px 8px;display:flex;flex-direction:column;gap:2px;background:#fff}
+.side .brand{font-weight:700;color:var(--pink);padding:4px 10px 12px;font-size:16px}
+.side button{display:flex;align-items:center;gap:8px;border:none;background:none;text-align:left;padding:9px 10px;border-radius:8px}
+.side button.off{color:#b3aaa6;cursor:default}
+.side button.on{background:var(--pink-l);color:var(--pink-d);font-weight:700}
+.side .cnt{margin-left:auto;min-width:20px;padding:0 6px;border-radius:10px;background:var(--warn);color:#fff;font-size:11px;line-height:20px;text-align:center;font-weight:400}
+.pc-main{min-width:0}
+.pc-title{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.pc-title h2{margin:0;font-size:17px}
+.pc-title .sub{color:var(--mute);font-size:12px}
+.pc-title .act{margin-left:auto}
+.tabs{display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--line)}
+.tab{border:none;background:none;padding:8px 12px;border-radius:8px 8px 0 0;color:var(--mute);border-bottom:3px solid transparent}
+.tab.on{color:var(--pink-d);font-weight:700;border-bottom-color:var(--pink)}
+.new{font-size:10px;background:var(--pink);color:#fff;border-radius:4px;padding:0 4px;margin-left:4px;font-weight:400}
+.body{padding:14px 16px}
+.bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line)}
+th{background:#fdf0f3;text-align:left;font-size:12px;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+tr.isdone td{color:var(--mute)}
+tr.stop td{color:var(--mute)}
+tr.flash td{animation:flash 2.4s ease-out}
+tr.added td{background:var(--pink-ll)}
+@keyframes flash{0%,35%{background:#fff1c9}100%{background:transparent}}
+.nw{white-space:nowrap}
+
+/* 札 */
+.pill{display:inline-block;border-radius:6px;padding:1px 6px;font-size:11px;margin:0 4px 2px 0;white-space:nowrap;line-height:1.6}
+.pill.over{background:var(--warn);color:#fff;font-weight:700}
+.pill.overl{background:var(--warn-l);color:var(--warn)}
+.pill.ok{background:var(--ok-l);color:var(--ok)}
+.pill.msg{background:var(--blue-l);color:var(--blue)}
+.pill.mon{background:var(--pink-l);color:var(--pink-d)}
+.pill.gray{background:var(--gray-l);color:var(--mute)}
+.pill.due{background:#fff;color:var(--slate);box-shadow:inset 0 0 0 1px #b0bec5}
+.pill.due-today{background:#fff;color:var(--warn);box-shadow:inset 0 0 0 1.5px var(--warn);font-weight:700}
+.pill.n1{background:var(--gray-l);color:var(--mute)}
+.pill.n2{background:var(--or2-bg);color:var(--or2-fg);font-weight:700}
+.pill.n3{background:var(--or3-bg);color:var(--or3-fg);font-weight:700}
+.pill.n4{background:var(--or4-bg);color:var(--or4-fg);font-weight:700}
+.pill.carry{background:var(--amber-l);color:var(--amber)}
+
+.mini{border:1px solid var(--line);background:#fff;border-radius:6px;padding:3px 8px;font-size:12px}
+.mini.ok{border-color:var(--ok);color:var(--ok)}
+.mini.pk{border-color:var(--pink);color:var(--pink-d)}
+.primary{background:var(--pink);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700}
+.primary:disabled{opacity:.4;cursor:default}
+.ghost{border:1px solid var(--pink);background:#fff;color:var(--pink-d);border-radius:8px;padding:7px 12px;font-weight:700}
+.hint{font-size:11px;color:var(--mute);margin-top:4px}
+.empty{color:var(--mute);font-size:12px;padding:6px 0}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.seg button{border:none;border-left:1px solid var(--line);background:#fff;padding:6px 12px;font-size:12px}
+.seg button:first-child{border-left:none}
+.seg button.on{background:var(--pink);color:#fff}
+.seg button .c{display:inline-block;min-width:16px;margin-left:4px;font-size:11px;opacity:.8}
+.sum{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.stat{flex:1;min-width:120px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:12px;text-align:left}
+.stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.stat.red b{color:var(--warn)}
+.stat.or b{color:var(--or4-bg)}
+.stat.green b{color:var(--ok)}
+.legend{font-size:11px;color:var(--mute);display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 0;align-items:center}
+.duecell b{font-weight:700}
+.duecell.over b{color:var(--warn)}
+.duecell.today b{color:var(--warn)}
+.duecell .sm{font-size:11px;color:var(--mute)}
+.duecell.over .sm,.duecell.today .sm{color:var(--warn);font-weight:700}
+
+/* モーダル */
+.overlay{position:absolute;inset:0;background:rgba(43,43,43,.38);display:flex;align-items:flex-start;justify-content:center;padding:28px 16px;overflow:auto;z-index:4}
+.modal{background:#fff;border-radius:14px;width:min(660px,100%);box-shadow:0 12px 32px rgba(0,0,0,.22);overflow:hidden}
+.modal-h{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);background:var(--pink-ll)}
+.modal-h h3{margin:0;font-size:16px}
+.modal-h .x{margin-left:auto;border:none;background:none;font-size:20px;color:var(--mute);line-height:1}
+.modal-b{padding:6px 18px 4px}
+.modal-f{display:flex;gap:8px;align-items:center;padding:12px 18px;border-top:1px solid var(--line);flex-wrap:wrap}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label.f{display:block;font-size:13px;color:var(--ink);font-weight:700;margin:12px 0 5px}
+label.f small{font-weight:400;color:var(--mute);margin-left:4px}
+select,textarea,input[type=text],input[type=date]{width:100%;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;background:#fff;color:var(--ink)}
+textarea{min-height:56px;resize:vertical}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 11px;font-size:12px}
+.chip.on{background:var(--pink);border-color:var(--pink);color:#fff}
+.chip.q{border-style:dashed;border-color:var(--pink);color:var(--pink-d)}
+.chip.q.on{border-style:solid;background:var(--pink-l);color:var(--pink-d)}
+.duebox{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fcfbfa}
+.duerow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.duerow input[type=date]{width:180px}
+.duerow input[type=date]:disabled{background:var(--gray-l);color:#b3aaa6}
+.note-warn{margin-top:8px;background:var(--warn-l);color:var(--warn);border-radius:8px;padding:7px 10px;font-size:12px;font-weight:700}
+.note-amber{margin-top:8px;background:var(--amber-l);color:var(--amber);border-radius:8px;padding:7px 10px;font-size:12px}
+.note-info{margin-top:8px;background:#fff;border:1px dashed var(--line);border-radius:8px;padding:7px 10px;font-size:12px}
+
+/* 訪問モニター */
+.pc-body{display:flex;min-height:620px}
+.lane-wrap{flex:1;padding:14px;overflow:auto;min-width:0}
+.date-bar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.date-bar b{font-size:16px}
+.date-bar .legend{margin:0 0 0 auto}
+.lane{display:grid;grid-template-columns:110px 1fr;border-top:1px solid var(--line)}
+.lane .who{padding:10px 8px;font-weight:600;border-right:1px solid var(--line)}
+.lane .cards{display:flex;flex-wrap:wrap;gap:10px;padding:10px 8px}
+.vcard{position:relative;width:150px;border:1px solid var(--line);border-left:4px solid #9e9e9e;border-radius:8px;padding:6px 8px;background:#fff;text-align:left}
+.vcard.done{border-left-color:var(--ok)}
+.vcard.now{border-left-color:var(--blue)}
+.vcard.sel{outline:2px solid var(--pink);outline-offset:1px}
+.vcard .t{font-size:12px;color:var(--mute)}
+.vcard .p{font-weight:600}
+.badge{position:absolute;top:-8px;right:-8px;background:var(--pink);color:#fff;border-radius:10px;font-size:11px;padding:1px 6px;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.15)}
+.badge.all-done{background:var(--ok)}
+.badge.or{background:var(--or4-bg)}
+.badge.over{background:var(--warn)}
+.detail{width:380px;border-left:1px solid var(--line);background:var(--pink-ll);padding:14px;overflow:auto}
+.detail h2{font-size:16px;margin:0 0 2px}
+.detail .sub{color:var(--mute);font-size:12px;margin-bottom:12px}
+.sec{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.sec h3{font-size:13px;margin:0 0 8px}
+.item{display:flex;gap:8px;align-items:flex-start;padding:9px 0;border-top:1px dashed var(--line)}
+.item:first-of-type{border-top:none}
+.item .lbl{flex:1;min-width:0}
+.item .lbl b{font-weight:600}
+.item .meta{font-size:11px;color:var(--mute);margin-top:2px}
+.pills{margin-bottom:3px}
+
+/* スマホ */
+.phone{width:390px;flex:none}
+.phone-cap{font-size:12px;color:var(--mute);margin:0 0 6px 4px}
+.device{width:390px;height:780px;border:10px solid #222;border-radius:38px;background:#fff;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 8px 24px rgba(0,0,0,.15)}
+.m-head{padding:14px 16px 10px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.m-head .back{border:none;background:none;font-size:18px;color:var(--pink);padding:0 6px 0 0}
+.m-head b{font-size:16px}
+.m-body{flex:1;overflow:auto;background:var(--bg);padding:12px}
+.m-nav{display:flex;border-top:1px solid var(--line);background:#fff}
+.m-nav span{flex:1;text-align:center;font-size:11px;color:var(--mute);padding:8px 0 12px}
+.m-nav span.on{color:var(--pink);font-weight:700}
+.msec{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+.msec h4{margin:0 0 8px;font-size:14px}
+.mband{border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:13px}
+.mband.or{background:var(--amber-l);border:1px solid #f0c27a;color:var(--or3-fg)}
+.mband.red{background:var(--warn-l);border:1px solid #f1a9a3;color:var(--warn)}
+.mtask{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+.mtask:first-of-type{border-top:none}
+.mtask .box{width:26px;height:26px;border:2px solid var(--pink);border-radius:7px;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;background:#fff}
+.mtask.done .box{background:var(--ok);border-color:var(--ok)}
+.mtask .lbl{flex:1;font-size:15px;min-width:0}
+.mtask.done .nm{color:var(--mute);text-decoration:line-through}
+.mtask .meta{font-size:11px;color:var(--mute);margin-top:2px}
+.mtask .pill{font-size:10.5px}
+.memo{background:var(--blue-l);border-radius:10px;padding:10px;font-size:14px;margin-top:6px}
+.memo small{display:block;color:var(--mute);font-size:11px;margin-top:4px}
+
+/* 毎月 */
+.panel{background:var(--pink-ll);border:1px solid var(--pink);border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.panel h3{margin:0 0 4px;font-size:14px}
+.newfield{position:relative;border:2px solid var(--pink);border-radius:10px;padding:2px 10px 10px;background:#fff}
+.newfield .tagnew{position:absolute;top:-10px;right:10px;background:var(--pink);color:#fff;font-size:10px;border-radius:4px;padding:1px 6px}
+.inline{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.inline select{width:auto}
+.months{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.mon-card{flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
+.mon-card b{display:block;font-size:13px;margin-bottom:2px}
+
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#333;color:#fff;padding:9px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20;max-width:90vw}
+.toast.on{opacity:1}
+.ask{margin:0 20px 24px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 18px;line-height:1.8}
+.ask h3{margin:0 0 6px;font-size:14px}
+.ask ol,.ask ul{margin:0;padding-left:20px}
+:focus-visible{outline:2px solid var(--pink);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){tr.flash td{animation:none;background:#fff1c9}}
+@media (max-width:1180px){
+  .stage{flex-direction:column}
+  .phone{width:100%;display:flex;flex-direction:column;align-items:center}
+}
+@media (max-width:900px){
+  body{padding-left:16px;padding-right:16px}
+  .top{padding:12px 0;gap:8px;background:none;border:none}
+  .top .note{flex-basis:100%}
+  .top .reset{margin-left:0}
+  .mtabs,.clock{margin-left:0;margin-right:0}
+  .mtab{flex:1 1 45%}
+  .stage{padding:12px 0 16px;gap:12px}
+  .phone{align-items:stretch}
+  .device{width:100%;height:auto;min-height:60vh;border:1px solid var(--line);border-radius:14px;box-shadow:none}
+  .m-body{overflow:visible}
+  .pc-shell{grid-template-columns:1fr}
+  .side{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line);padding:6px}
+  .side .brand{padding:9px 8px}
+  .side button{white-space:nowrap}
+  .side button.off{display:none}
+  .grid2{grid-template-columns:1fr}
+  .body{padding:12px 10px}
+  .tabs{padding:8px 10px 0;overflow-x:auto}
+  .tab{white-space:nowrap}
+  .pc-body{flex-direction:column;min-height:0}
+  .lane{grid-template-columns:1fr}
+  .lane .who{border-right:none;padding-bottom:0}
+  .vcard{width:calc(50% - 5px)}
+  .detail{width:auto;border-left:none;border-top:1px solid var(--line)}
+  .ask{margin:0 0 24px}
+}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>やることの期日と「何回目の訪問待ち」（動くモック）</h1>
+  <span class="note">PO 決定 11/4 の案を、4 つの画面で見られるようにしました。患者様・職員の名前はすべて架空です。</span>
+  <button class="reset" onclick="resetAll()">最初に戻す</button>
+</div>
+
+<div class="mtabs" role="tablist" id="mtabs"></div>
+
+<div class="clock" id="clock"></div>
+
+<div class="stage" id="stage"></div>
+
+<div class="ask">
+  <h3>このモックで見ていただきたいこと</h3>
+  <ol>
+    <li>A：期日は「期日」の列にだけ出し、期日がない行は「なし」です。期日がない行は、何日たっても赤くなりません。</li>
+    <li>A・C：「何回目の訪問待ち」は、予定の終わりの時刻を過ぎた訪問を 1 件ずつ数えます。上の「次の訪問を 1 件終わらせる」で数が増え、変わった行が黄色く光ります。</li>
+    <li>上野 ゆり様は同じ日に 9:00 と 15:00 の訪問があります。朝の訪問が終わると、その日のうちに「2 回目の訪問待ち」になります。</li>
+    <li>B：期日は空欄のままでも付けられます。早押しは「日付（この日から）」をもとに数えます。期日が日付より前のときは、付けられません。</li>
+    <li>C：札の並びは「伝言／期日／何回目／毎月」です。期日を過ぎたときだけ、赤い「期日を過ぎた」をいちばん前に出します。</li>
+    <li>D：毎月のやることに「毎月何日まで」を足します。末日を選ぶと、月ごとに 30 日・31 日・28 日へ合わせます。</li>
+  </ol>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+// ---------------- 架空のデータ ----------------
+const START_NOW = '2026-11-04T08:30';
+const STAFF = {s1:'佐藤 花子', s2:'鈴木 一郎', s3:'高橋 美咲', s4:'伊藤 光'};
+// slots: 曜日（0=日）ごとの訪問の枠
+const PATIENTS = [
+  {id:'p1',  name:'青木 さくら', slots:[{wd:[2,5], start:'10:00', end:'10:35', staff:'s1'}]},
+  {id:'p2',  name:'石田 健',     slots:[{wd:[1,4], start:'14:00', end:'14:35', staff:'s2'}]},
+  {id:'p3',  name:'上野 ゆり',   slots:[{wd:[3], start:'09:00', end:'09:35', staff:'s1'},{wd:[3], start:'15:00', end:'15:35', staff:'s3'},{wd:[6], start:'10:00', end:'10:35', staff:'s2'}]},
+  {id:'p4',  name:'岡本 翔',     slots:[{wd:[1,4], start:'11:00', end:'11:35', staff:'s3'}]},
+  {id:'p5',  name:'加藤 みのり', slots:[{wd:[2,5], start:'13:00', end:'13:35', staff:'s2'}]},
+  {id:'p6',  name:'木下 誠',     slots:[{wd:[3,6], start:'11:00', end:'11:35', staff:'s2'}]},
+  {id:'p7',  name:'森 あおい',   slots:[{wd:[1,4], start:'10:00', end:'10:35', staff:'s4'}]},
+  {id:'p8',  name:'斉藤 大地',   slots:[{wd:[2,6], start:'10:00', end:'10:35', staff:'s3'}]},
+  {id:'p9',  name:'田中 りん',   slots:[{wd:[5], start:'15:00', end:'15:35', staff:'s3'}]},
+  {id:'p10', name:'西川 葵',     slots:[{wd:[1,3], start:'14:00', end:'14:35', staff:'s4'}]},
+  {id:'p11', name:'野口 蓮',     slots:[{wd:[1,3,5], start:'16:00', end:'16:35', staff:'s1'}]},
+  {id:'p12', name:'小川 千夏',   slots:[{wd:[4], start:'09:30', end:'10:05', staff:'s4'}]},
+];
+const TYPES = ['配布物あり（会社からの案内）','実費集金','GAF 入力','計画書サイン','保険証チェック（マイナンバー・アルバム格納）','上限負担額確認','自立支援受給者証の期限切れを伝える'];
+
+// start = 日付（この日から）・due = 期日（null はなし）・monthly = 毎月の分
+const seedTasks = () => ([
+  {id:'t1',  patient:'p1',  start:'2026-11-04', due:null,         type:'上限負担額確認', memo:'', by:'松岡'},
+  {id:'t2',  patient:'p2',  start:'2026-11-02', due:null,         type:'計画書サイン', memo:'控えを 1 部お渡しください。', by:'松岡'},
+  {id:'t3',  patient:'p4',  start:'2026-10-29', due:null,         type:'実費集金', memo:'10 月分 1,100 円', by:'松岡'},
+  {id:'t4',  patient:'p11', start:'2026-10-28', due:null,         type:'保険証チェック（マイナンバー・アルバム格納）', memo:'', by:'事務所'},
+  {id:'t5',  patient:'p3',  start:'2026-11-04', due:null,         type:'配布物あり（会社からの案内）', memo:'デスクの上の封筒（年末年始のお知らせ）を持っていってください。', by:'松岡'},
+  {id:'t6',  patient:'p5',  start:'2026-11-04', due:'2026-11-13', type:'自立支援受給者証の期限切れを伝える', memo:'', by:'松岡'},
+  {id:'t7',  patient:'p6',  start:'2026-11-02', due:'2026-11-04', type:'計画書サイン', memo:'今日が提出の締め切りです。', by:'松岡'},
+  {id:'t8',  patient:'p7',  start:'2026-10-30', due:'2026-11-03', type:'上限負担額確認', memo:'', by:'松岡'},
+  {id:'t9',  patient:'p8',  start:'2026-11-01', due:'2026-11-30', type:'GAF 入力', memo:'', by:'毎月の設定', monthly:{m:11}},
+  {id:'t10', patient:'p12', start:'2026-11-03', due:'2026-11-15', type:'計画書サイン', memo:'', by:'毎月の設定', monthly:{m:11}},
+  {id:'t11', patient:'p9',  start:'2026-11-04', due:null,         type:'', memo:'ご家族から、次回は玄関ではなく裏口から入ってほしいとのことです。', by:'事務所'},
+  {id:'t12', patient:'p10', start:'2026-11-02', due:null,         type:'実費集金', memo:'10 月分 2,200 円', by:'松岡', done:{who:'伊藤 光', dt:'2026-11-02T14:20'}},
+]);
+const seedRules = () => ([
+  {id:'r1', type:'GAF 入力', target:'精神科の方・2 名を外す', from:1, until:'end', active:true},
+  {id:'r2', type:'計画書サイン', target:'精神科・通常の方', from:3, until:15, active:true},
+  {id:'r3', type:'実費集金', target:'精神科の方', from:10, until:null, active:false},
+]);
+
+// ---------------- 日付の道具 ----------------
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad = n => String(n).padStart(2,'0');
+const toD = s => { const [y,m,d] = s.split('-').map(Number); return new Date(Date.UTC(y,m-1,d)); };
+const fromD = d => `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`;
+const addDays = (s,n) => { const d = toD(s); d.setUTCDate(d.getUTCDate()+n); return fromD(d); };
+const diffDays = (a,b) => Math.round((toD(a) - toD(b)) / 86400000);
+const wdOf = s => toD(s).getUTCDay();
+const wd = s => '日月火水木金土'[wdOf(s)];
+const md = s => { const [,m,d] = s.split('-'); return `${+m}/${+d}`; };
+const mdw = s => `${md(s)}（${wd(s)}）`;
+const monthEnd = s => { const d = toD(s); return fromD(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0))); };
+const hm = t => t.replace(/^0/, '');
+const pById = id => PATIENTS.find(p => p.id === id);
+function toast(t){ const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('on'), 2600); }
+
+// ---------------- 訪問（10/19〜12/31 を曜日から作る） ----------------
+const VISITS = [];
+for (let s = '2026-10-19'; s <= '2026-12-31'; s = addDays(s,1)){
+  const w = wdOf(s);
+  PATIENTS.forEach(p => p.slots.forEach(sl => {
+    if (sl.wd.includes(w)) VISITS.push({id:`${p.id}_${s}_${sl.start}`, patient:p.id, date:s, start:sl.start, end:sl.end, staff:sl.staff});
+  }));
+}
+VISITS.sort((a,b) => (a.date+a.start).localeCompare(b.date+b.start));
+const vStart = v => `${v.date}T${v.start}`;
+const vEnd = v => `${v.date}T${v.end}`;
+const visitsOf = pid => VISITS.filter(v => v.patient === pid);
+const vById = id => VISITS.find(v => v.id === id);
+
+// ---------------- 決まりの計算 ----------------
+let state;
+const today = () => state.now.slice(0,10);
+// 何回目の訪問待ち：日付以降の訪問のうち、予定の終わりの時刻を過ぎたものの数 + 1
+const nthAt = (t, at) => visitsOf(t.patient).filter(v => v.date >= t.start && vEnd(v) <= at).length + 1;
+const nthNow = t => nthAt(t, t.done ? t.done.dt : state.now);
+// ある訪問から見て：その訪問より前に終わった訪問の数 + 1
+const nthForVisit = (t, v) => visitsOf(t.patient).filter(x => x.date >= t.start && vEnd(x) <= vStart(v)).length + 1;
+const nextVisitOf = t => visitsOf(t.patient).find(v => v.date >= t.start && vEnd(v) > state.now) || null;
+// 期日の状態（ref の日から見て）
+function dueState(due, ref){
+  if (!due) return null;
+  const d = diffDays(due, ref);
+  return d < 0 ? {kind:'over', days:-d} : d === 0 ? {kind:'today', days:0} : {kind:'left', days:d};
+}
+
+// 札
+const nthPill = n => `<span class="pill ${n >= 4 ? 'n4' : 'n'+n}">${n} 回目の訪問待ち</span>`;
+function duePill(t, ds){
+  if (!ds) return '';
+  if (ds.kind === 'today') return `<span class="pill due-today">今日まで</span>`;
+  if (ds.kind === 'left') return `<span class="pill due">${md(t.due)} まで・あと ${ds.days} 日</span>`;
+  return '';
+}
+const overPill = t => `<span class="pill over">期日を過ぎた（${md(t.due)} まで）</span>`;
+const monPill = t => t.monthly ? `<span class="pill mon">毎月・${t.monthly.m} 月分</span>` : '';
+// 札の並び：［期日を過ぎた］伝言／期日／何回目／毎月
+function pillRow(t, n, ds){
+  const out = [];
+  if (ds && ds.kind === 'over') out.push(overPill(t));
+  if (!t.type) out.push('<span class="pill msg">伝言</span>');
+  out.push(duePill(t, ds));
+  out.push(nthPill(n));
+  out.push(monPill(t));
+  return out.join('');
+}
+
+// ---------------- 状態 ----------------
+function resetAll(){
+  state = {
+    now: START_NOW, tab: state ? state.tab : 'A', tasks: seedTasks(), rules: seedRules(), seq: 100,
+    filter: 'open', flash: new Set(), added: new Set(),
+    form: blankForm(START_NOW.slice(0,10)), sel: 'p3_2026-11-04_09:00',
+    ruleEdit: null,
+  };
+  state.ruleEdit = JSON.parse(JSON.stringify(state.rules[0]));
+  render();
+}
+function blankForm(d){ return {patient:'p1', start:d, types:[], memo:'', dueOn:false, due:''}; }
+
+function snapshot(){
+  const m = {};
+  state.tasks.forEach(t => { if (!t.cancelled) { const ds = dueState(t.due, today()); m[t.id] = t.done ? 'd' : `${nthNow(t)}|${ds ? ds.kind : '-'}`; } });
+  return m;
+}
+function afterMove(before, msg){
+  const after = snapshot();
+  state.flash = new Set(Object.keys(after).filter(k => before[k] !== after[k]));
+  state.added = new Set();
+  // 選んでいた訪問がその日に無ければ、その日の最初の訪問へ
+  const sv = vById(state.sel);
+  if (!sv || sv.date !== today()){
+    const day = VISITS.filter(v => v.date === today());
+    const withTask = day.find(v => tasksAtVisit(v).length);
+    state.sel = (withTask || day[0] || {}).id || null;
+  }
+  render();
+  toast(msg + (state.flash.size ? `　札が変わったやること：${state.flash.size} 件` : '　札の変わったやることはありません'));
+}
+function finishNextVisit(){
+  const openP = new Set(state.tasks.filter(t => !t.done && !t.cancelled).map(t => t.patient));
+  const v = VISITS.find(x => vEnd(x) > state.now && openP.has(x.patient) && state.tasks.some(t => t.patient === x.patient && !t.done && !t.cancelled && t.start <= x.date));
+  if (!v){ toast('この先に、やることのある訪問はありません'); return; }
+  const before = snapshot();
+  state.now = vEnd(v);
+  afterMove(before, `${mdw(v.date)} ${hm(v.start)} ${pById(v.patient).name} 様の訪問が終わりました`);
+}
+function nextDay(){
+  const before = snapshot();
+  state.now = addDays(today(), 1) + 'T08:30';
+  afterMove(before, `${mdw(today())} の朝 8:30 にしました`);
+}
+function setTab(k){ state.tab = k; if (k === 'B') state.form = blankForm(today()); render(); window.scrollTo({top:0}); }
+
+// ---------------- 描きなおし ----------------
+function render(){ renderTabs(); renderClock(); renderStage(); }
+const TABDEF = [['A','やることの一覧（PC）'],['B','やることを付ける（PC）'],['C','訪問の詳細とスマホ'],['D','毎月のやることの設定']];
+function renderTabs(){
+  $('#mtabs').innerHTML = TABDEF.map(([k,l]) =>
+    `<button class="mtab ${state.tab===k?'on':''}" role="tab" aria-selected="${state.tab===k}" onclick="setTab('${k}')"><span class="k">${k}</span>${l}</button>`).join('');
+}
+function renderClock(){
+  const [d, t] = state.now.split('T');
+  const day = VISITS.filter(v => v.date === d);
+  const ended = day.filter(v => vEnd(v) <= state.now).length;
+  $('#clock').innerHTML = `<div class="now"><span>いま</span><b>${mdw(d)} ${hm(t)}</b></div>
+    <div class="btns"><button class="primary" onclick="finishNextVisit()">次の訪問を 1 件終わらせる</button><button class="ghost" onclick="nextDay()">1 日進める</button></div>
+    <span style="font-size:12px;color:var(--mute)">この日の訪問 ${day.length} 件のうち、終わった訪問 ${ended} 件</span>
+    <div class="hint">「次の訪問を 1 件終わらせる」は、やることのある方の次の訪問の、予定の終わりの時刻まで時計を進めます。札が変わった行は黄色く光ります。</div>`;
+}
+const MENU = ['ダッシュボード','スケジュール','受け入れ枠','訪問モニター','やること','訪問記録','患者','休み・勤務表','スタッフ','連携'];
+function sideHTML(on){
+  const over = state.tasks.filter(t => !t.done && !t.cancelled && (dueState(t.due, today())||{}).kind === 'over').length;
+  return '<div class="brand">らく助</div>' + MENU.map(l =>
+    `<button class="${l===on?'on':'off'}" tabindex="${l===on?0:-1}">${l}${l==='やること'&&over?`<span class="cnt" title="期日を過ぎた">${over}</span>`:''}</button>`).join('');
+}
+function renderStage(){
+  const t = state.tab;
+  if (t === 'C'){
+    $('#stage').innerHTML = `<section class="pc"><div class="pc-shell"><nav class="side">${sideHTML('訪問モニター')}</nav>
+      <div class="pc-main"><div class="pc-title"><h2>訪問モニター</h2><span class="sub">訪問を選ぶと、右の詳細と、右のスマホにその訪問のやることが出ます</span></div>
+      <div class="pc-body">${monitorHTML()}</div></div></div></section>
+      <section class="phone"><div class="phone-cap" id="phoneCap"></div><div class="device"><div class="m-head" id="mHead"></div><div class="m-body" id="mBody"></div>
+      <div class="m-nav"><span>ホーム</span><span class="on">今日</span><span>今週</span><span>マイページ</span></div></div></section>`;
+    renderPhone();
+    return;
+  }
+  const sub = t === 'D' ? 'rules' : 'list';
+  $('#stage').innerHTML = `<section class="pc ${t==='B'?'has-modal':''}"><div class="pc-shell"><nav class="side">${sideHTML('やること')}</nav>
+    <div class="pc-main">
+      <div class="pc-title"><h2>やること</h2><span class="sub">事務所から看護師へのやることです。その方の訪問のときにスマホに出し、済んだら完了になります。</span>
+        ${sub==='list'?`<span class="act"><button class="primary" onclick="setTab('B')">＋ やることを付ける</button></span>`:''}</div>
+      <div class="tabs"><button class="tab ${sub==='list'?'on':''}" onclick="setTab('A')">やることの一覧</button><button class="tab ${sub==='rules'?'on':''}" onclick="setTab('D')">毎月のやること</button></div>
+      <div class="body">${sub==='list' ? listHTML() : rulesHTML()}</div>
+    </div></div>${t==='B' ? modalHTML() : ''}</section>`;
+}
+
+// ---------------- A：一覧 ----------------
+function listRows(){
+  const td = today(), from30 = addDays(td, -30);
+  return state.tasks.filter(t => !t.cancelled).map(t => {
+    const ds = t.done ? null : dueState(t.due, td);
+    return {t, ds, n: nthNow(t), nv: t.done ? null : nextVisitOf(t),
+      over: !!(ds && ds.kind === 'over'), done: !!t.done, recent: !!(t.done && t.done.dt.slice(0,10) >= from30)};
+  });
+}
+function listHTML(){
+  const all = listRows();
+  const open = all.filter(x => !x.done);
+  const cnt = {open: open.length, over: open.filter(x => x.over).length, second: open.filter(x => x.n >= 2).length, done: all.filter(x => x.recent).length};
+  const F = state.filter;
+  let rows = F === 'open' ? open : F === 'over' ? open.filter(x => x.over) : F === 'second' ? open.filter(x => x.n >= 2) : F === 'done' ? all.filter(x => x.done) : all;
+  const rank = x => x.done ? 9 : x.over ? 0 : (x.ds && x.ds.kind === 'today') ? 1 : x.n >= 2 ? 2 : 3;
+  rows = rows.slice().sort((a,b) => rank(a) - rank(b) || (b.n - a.n) * (a.done ? 0 : 1) || (a.t.due || '9999').localeCompare(b.t.due || '9999') || a.t.start.localeCompare(b.t.start));
+  const seg = (k,l,c) => `<button class="${F===k?'on':''}" onclick="state.filter='${k}';state.flash=new Set();renderStage()">${l}${c!=null?`<span class="c">${c}</span>`:''}</button>`;
+  const stat = (k,l,c,cls) => `<button class="stat ${cls}" onclick="state.filter='${k}';state.flash=new Set();renderStage()"><span>${l}</span><b>${c}</b></button>`;
+  const body = rows.map(x => rowHTML(x)).join('') || '<tr><td colspan="7" class="empty">該当するやることはありません。</td></tr>';
+  return `<div class="sum">${stat('open','未完了',cnt.open,'')}${stat('over','期日を過ぎた',cnt.over,'red')}${stat('second','2 回目以降の訪問待ち',cnt.second,'or')}${stat('done','完了（直近 30 日）',cnt.done,'green')}</div>
+    <div class="bar"><span class="seg">${seg('open','未完了')}${seg('over','期日を過ぎた')}${seg('second','2 回目以降')}${seg('done','完了')}${seg('all','すべて')}</span>
+      <span style="color:var(--mute);font-size:12px">${rows.length} 件・急ぐ順（期日を過ぎた → 今日まで → 訪問の回数が多い順）</span></div>
+    <div class="tbl"><table style="min-width:980px"><thead><tr><th>日付（この日から）</th><th>患者様</th><th>やること・伝言</th><th>期日</th><th>出す訪問（次の訪問）</th><th>状態</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+    <div class="legend"><span>札：</span>${nthPill(1)}まだ訪問が来ていない ${nthPill(2)}${nthPill(3)}${nthPill(4)}前の訪問で済まなかった（数が多いほど濃い） <span class="pill over">期日を過ぎた</span>期日がある分だけ</div>`;
+}
+function dueCell(t, ds){
+  if (!t.due) return '<span class="hint" style="margin:0">なし</span>';
+  if (!ds) return `<div class="duecell"><b>${mdw(t.due)} まで</b></div>`;
+  const sm = ds.kind === 'over' ? `${ds.days} 日過ぎた` : ds.kind === 'today' ? '今日まで' : `あと ${ds.days} 日`;
+  return `<div class="duecell ${ds.kind}"><b>${mdw(t.due)} まで</b><div class="sm">${sm}</div></div>`;
+}
+function rowHTML(x){
+  const {t, ds, n, nv} = x;
+  const p = pById(t.patient);
+  const what = `${monPill(t)}${t.type ? `<b>${esc(t.type)}</b>` : '<span class="pill msg">伝言</span>'}${t.memo ? `<div>${esc(t.memo)}</div>` : ''}`;
+  const visit = nv ? `<span class="nw">${mdw(nv.date)} ${hm(nv.start)}</span><div class="hint" style="margin:0">${STAFF[nv.staff]}</div>`
+    : t.done ? '—' : '<span class="pill overl">次の訪問がありません</span>';
+  const status = t.done
+    ? `<span class="pill ok">完了</span><div class="hint" style="margin:0">${md(t.done.dt.slice(0,10))} ${hm(t.done.dt.slice(11))} ${esc(t.done.who)}・${n} 回目の訪問で</div>`
+    : `${x.over ? overPill(t) : ''}${nthPill(n)}`;
+  const act = t.done
+    ? `<button class="mini" onclick="undo('${t.id}')">戻す</button>`
+    : `<button class="mini ok" onclick="complete('${t.id}','事務所（松岡）')">完了</button> <button class="mini" onclick="cancelTask('${t.id}')">取り消す</button>`;
+  const cls = [t.done?'isdone':'', state.flash.has(t.id)?'flash':'', state.added.has(t.id)?'added':''].join(' ');
+  return `<tr class="${cls}"><td class="nw">${mdw(t.start)}</td><td class="nw">${esc(p.name)} 様</td><td>${what}</td>
+    <td class="nw">${dueCell(t, ds)}</td><td>${visit}</td><td>${status}</td><td class="nw">${act}</td></tr>`;
+}
+function complete(id, who){ const t = state.tasks.find(x => x.id === id); t.done = {who, dt: state.now}; state.flash = new Set(); toast('完了にしました'); render(); }
+function undo(id){ state.tasks.find(x => x.id === id).done = null; state.flash = new Set(); toast('完了を戻しました'); render(); }
+function cancelTask(id){ state.tasks.find(x => x.id === id).cancelled = true; state.flash = new Set(); toast('取り消しました'); render(); }
+
+// ---------------- B：付ける画面 ----------------
+function quickDues(start){
+  const w = wdOf(start);
+  const sat = addDays(start, (6 - w + 7) % 7);
+  return [['今週中', sat], ['1 週間', addDays(start, 7)], ['2 週間', addDays(start, 14)], ['月末', monthEnd(start)]];
+}
+function modalHTML(){
+  const f = state.form;
+  const pv = visitsOf(f.patient).filter(v => v.date >= f.start && vEnd(v) > state.now);
+  const first = pv[0];
+  const badDue = f.dueOn && f.due && f.due < f.start;
+  const noDate = f.dueOn && !f.due;
+  let dueNote = '';
+  if (badDue) dueNote = `<div class="note-warn">期日（${mdw(f.due)}）が、日付（${mdw(f.start)}）より前です。日付と同じ日か、後の日を選んでください。</div>`;
+  else if (noDate) dueNote = `<div class="note-amber">期日の日を選んでください。期日を付けないときは「なし」を押します。</div>`;
+  else if (f.dueOn){
+    const until = pv.filter(v => v.date <= f.due);
+    dueNote = until.length
+      ? `<div class="note-info">期日までの訪問：<b>${until.length} 回</b>（${until.slice(0,4).map(v => `${mdw(v.date)} ${hm(v.start)}`).join('・')}${until.length>4?' ほか':''}）</div>`
+      : `<div class="note-amber">期日までに、この方の訪問がありません。期日を過ぎてからの最初の訪問に出ます（出したときから「期日を過ぎた」になります）。</div>`;
+  } else dueNote = `<div class="hint">期日なしのときは「期日を過ぎた」になりません。済むまで、次の訪問へ持ち越して「何回目の訪問待ち」を出します。</div>`;
+  const qd = quickDues(f.start).map(([l,d]) => `<button class="chip q ${f.dueOn&&f.due===d?'on':''}" onclick="setDue('${d}')">${l}（${mdw(d)}）</button>`).join('');
+  const ok = (f.types.length || f.memo.trim()) && !badDue && !noDate;
+  return `<div class="overlay" onclick="if(event.target===this)setTab('A')"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="mdlT">
+    <div class="modal-h"><h3 id="mdlT">やることを付ける</h3><button class="x" aria-label="閉じる" onclick="setTab('A')">×</button></div>
+    <div class="modal-b">
+      <div class="grid2">
+        <div><label class="f" for="fPat">患者様</label><select id="fPat" onchange="state.form.patient=this.value;renderStage()">${PATIENTS.map(p => `<option value="${p.id}" ${f.patient===p.id?'selected':''}>${esc(p.name)} 様</option>`).join('')}</select></div>
+        <div><label class="f" for="fStart">日付（この日から）</label><input id="fStart" type="date" value="${f.start}" onchange="state.form.start=this.value||today();renderStage()"></div>
+      </div>
+      <div class="note-info">出す訪問：${first ? `<b>${mdw(first.date)} ${hm(first.start)}</b>・${STAFF[first.staff]}（この日から、最初の訪問）` : '<span class="pill overl">この日からの訪問がありません（訪問が入ったら出ます）</span>'}</div>
+      <label class="f">項目<small>いくつでも選べます</small></label>
+      <div class="chips">${TYPES.map((x,i) => `<button class="chip ${f.types.includes(x)?'on':''}" aria-pressed="${f.types.includes(x)}" onclick="toggleType(${i})">${esc(x)}</button>`).join('')}</div>
+      <label class="f" for="fMemo">伝言<small>任意</small></label>
+      <textarea id="fMemo" placeholder="例：デスクの上に資料を置いています。持っていってください。" oninput="state.form.memo=this.value;syncAdd()">${esc(f.memo)}</textarea>
+      <label class="f">期日<small>いつまでに・空欄でも付けられます</small><span class="new">新</span></label>
+      <div class="duebox">
+        <div class="duerow">
+          <span class="seg"><button class="${f.dueOn?'':'on'}" onclick="state.form.dueOn=false;renderStage()">なし</button><button class="${f.dueOn?'on':''}" onclick="state.form.dueOn=true;renderStage()">日付を決める</button></span>
+          <input type="date" aria-label="期日" value="${f.due}" ${f.dueOn?'':'disabled'} min="${f.start}" onchange="state.form.due=this.value;state.form.dueOn=true;renderStage()">
+        </div>
+        <div class="chips" style="margin-top:8px">${qd}</div>
+        ${dueNote}
+      </div>
+      ${f.dueOn && f.due && !badDue ? `<div class="hint">スマホではこう出ます：${pillRow({type:f.types[0]||'', due:f.due}, 1, dueState(f.due, f.start))}</div>` : ''}
+    </div>
+    <div class="modal-f"><button class="primary" id="addBtn" ${ok?'':'disabled'} onclick="addTasks()">付ける</button><button class="mini" onclick="setTab('A')">閉じる</button>
+      <span class="hint" style="margin:0">付けると、出す訪問の担当のスマホとベルに出ます</span></div>
+  </div></div>`;
+}
+function setDue(d){ state.form.due = d; state.form.dueOn = true; renderStage(); }
+function toggleType(i){ const x = TYPES[i], a = state.form.types, k = a.indexOf(x); k < 0 ? a.push(x) : a.splice(k,1); renderStage(); }
+function syncAdd(){
+  const f = state.form, b = $('#addBtn');
+  if (b) b.disabled = !((f.types.length || f.memo.trim()) && !(f.dueOn && (!f.due || f.due < f.start)));
+}
+function addTasks(){
+  const f = state.form, memo = f.memo.trim();
+  const list = f.types.length ? f.types.map((x,i) => ({type:x, memo:i===0?memo:''})) : [{type:'', memo}];
+  const ids = [];
+  list.forEach(x => { const id = 't' + (state.seq++); ids.push(id); state.tasks.push({id, patient:f.patient, start:f.start, due: f.dueOn ? f.due : null, type:x.type, memo:x.memo, by:'松岡'}); });
+  state.added = new Set(ids); state.flash = new Set(); state.filter = 'all'; state.tab = 'A';
+  toast(`${pById(f.patient).name} 様に ${list.length} 件を付けました（${f.dueOn ? md(f.due)+' まで' : '期日なし'}）`);
+  render();
+}
+
+// ---------------- C：訪問の詳細とスマホ ----------------
+function tasksAtVisit(v){
+  return state.tasks.filter(t => t.patient === v.patient && !t.cancelled && t.start <= v.date && (!t.done || t.done.dt.slice(0,10) === v.date));
+}
+function monitorHTML(){
+  const d = today();
+  const day = VISITS.filter(v => v.date === d);
+  const lanes = Object.entries(STAFF).map(([sid, nm]) => {
+    const vs = day.filter(v => v.staff === sid);
+    const cards = vs.map(v => {
+      const ts = tasksAtVisit(v), open = ts.filter(t => !t.done);
+      const over = open.some(t => (dueState(t.due, v.date)||{}).kind === 'over');
+      const second = open.some(t => nthForVisit(t, v) >= 2);
+      const b = ts.length ? `<span class="badge ${!open.length?'all-done':over?'over':second?'or':''}">${open.length ? '📋 '+open.length : '✓'}</span>` : '';
+      const st = vEnd(v) <= state.now ? 'done' : vStart(v) <= state.now ? 'now' : '';
+      return `<button class="vcard ${st} ${state.sel===v.id?'sel':''}" onclick="state.sel='${v.id}';renderStage()">${b}<div class="t">${hm(v.start)}〜${hm(v.end)}${st==='done'?'・終了':st==='now'?'・訪問中':''}</div><div class="p">${esc(pById(v.patient).name)}</div></button>`;
+    }).join('') || '<span class="empty">この日の訪問はありません</span>';
+    return `<div class="lane"><div class="who">${nm}</div><div class="cards">${cards}</div></div>`;
+  }).join('');
+  return `<div class="lane-wrap"><div class="date-bar"><b>${mdw(d)}</b><span class="legend">📋 = 未完了のやること　✓ = 全部完了　橙 = 2 回目以降あり　赤 = 期日を過ぎたものあり</span></div>
+    ${day.length ? lanes : '<div class="empty">この日は訪問がありません。上の「1 日進める」で次の日へ進めてください。</div>'}</div>
+    <aside class="detail">${detailHTML()}</aside>`;
+}
+function detailHTML(){
+  const v = vById(state.sel);
+  if (!v) return '<div class="empty">訪問を選んでください。</div>';
+  const ts = sortAtVisit(tasksAtVisit(v), v);
+  const items = ts.length ? ts.map(t => {
+    const n = t.done ? nthNow(t) : nthForVisit(t, v), ds = dueState(t.due, v.date);
+    const pills = t.done ? `<span class="pill ok">完了 ${esc(t.done.who)} ${hm(t.done.dt.slice(11))}</span>${monPill(t)}` : pillRow(t, n, ds);
+    return `<div class="item"><div class="lbl"><div class="pills">${pills}</div>${t.type?`<b>${esc(t.type)}</b>`:''}${t.memo?`<div style="margin-top:2px">${esc(t.memo)}</div>`:''}
+      <div class="meta">${md(t.start)} から${t.due?`・期日 ${md(t.due)}`:'・期日なし'}・付けた人 ${esc(t.by)}</div></div>
+      <div style="display:flex;flex-direction:column;gap:4px">${t.done ? `<button class="mini" onclick="undo('${t.id}')">完了を戻す</button>`
+        : `<button class="mini ok" onclick="complete('${t.id}','事務所（松岡）')">完了にする</button><button class="mini" onclick="cancelTask('${t.id}')">取り消す</button>`}</div></div>`;
+  }).join('') : '<div class="empty">この訪問へのやることはありません。</div>';
+  return `<h2>${esc(pById(v.patient).name)} 様</h2>
+    <div class="sub">${mdw(v.date)} ${hm(v.start)}〜${hm(v.end)}・${STAFF[v.staff]}</div>
+    <div class="sec"><h3>📋 事務所からのやること</h3>${items}</div>
+    <div class="hint">「何回目」は、この訪問から見た回数です。この訪問より前に、予定の終わりの時刻を過ぎた訪問を数えます。</div>`;
+}
+function sortAtVisit(ts, v){
+  const r = t => { if (t.done) return 9; const ds = dueState(t.due, v.date); return ds && ds.kind === 'over' ? 0 : ds && ds.kind === 'today' ? 1 : 2; };
+  return ts.slice().sort((a,b) => r(a) - r(b) || nthForVisit(b, v) - nthForVisit(a, v));
+}
+function renderPhone(){
+  const v = vById(state.sel);
+  if (!v){ $('#phoneCap').textContent = 'スマホ（看護師）'; $('#mHead').innerHTML = '<b>今日</b>'; $('#mBody').innerHTML = '<div class="msec"><div class="empty">左で訪問を選んでください。</div></div>'; return; }
+  const who = STAFF[v.staff];
+  $('#phoneCap').textContent = `スマホ（看護師 ${who}）：左で選んだ訪問を開いたところ`;
+  $('#mHead').innerHTML = `<button class="back" aria-label="戻る">‹</button><b>${esc(pById(v.patient).name)} 様</b>`;
+  const ts = sortAtVisit(tasksAtVisit(v), v);
+  const tasks = ts.filter(t => t.type), memos = ts.filter(t => !t.type);
+  const open = ts.filter(t => !t.done);
+  const anyOver = open.some(t => (dueState(t.due, v.date)||{}).kind === 'over');
+  const anyCarry = open.some(t => nthForVisit(t, v) >= 2);
+  const band = anyOver ? `<div class="mband red"><b>期日を過ぎたお願いがあります。</b>今日の訪問でお願いします。</div>`
+    : anyCarry ? `<div class="mband or"><b>前の訪問で済まなかったお願いがあります。</b></div>` : '';
+  const row = t => {
+    const n = t.done ? nthNow(t) : nthForVisit(t, v), ds = dueState(t.due, v.date);
+    const pills = t.done ? monPill(t) : pillRow(t, n, ds);
+    const meta = t.done ? `完了 ${esc(t.done.who)} ${hm(t.done.dt.slice(11))}` : `${md(t.start)} から${t.due ? `・期日 ${mdw(t.due)}` : ''}`;
+    return `<div class="mtask ${t.done?'done':''}" role="button" tabindex="0" onclick="${t.done?`undo('${t.id}')`:`complete('${t.id}','${who}')`}">
+      <span class="box">${t.done?'✓':''}</span><div class="lbl"><div class="pills">${pills}</div><span class="nm">${esc(t.type)}</span>
+      ${t.memo?`<div style="font-size:13px">${esc(t.memo)}</div>`:''}<div class="meta">${meta}</div></div></div>`;
+  };
+  $('#mBody').innerHTML = `<div class="msec"><div style="color:var(--mute);font-size:13px">${mdw(v.date)} ${hm(v.start)}〜${hm(v.end)}</div><div style="font-size:13px;margin-top:4px">📍 〇〇市〇〇町 1-2-3（架空）</div></div>
+    ${band}
+    <div class="msec"><h4>📋 事務所からのお願い</h4>${tasks.length ? tasks.map(row).join('') : '<div class="empty">この訪問へのお願いはありません。</div>'}
+      ${tasks.length ? '<div style="font-size:11px;color:var(--mute);margin-top:6px">四角を押すと完了。もう一度押すと戻せます。</div>' : ''}</div>
+    ${memos.length ? `<div class="msec"><h4>💬 事務所からの伝言</h4>${memos.map(t => {
+      const ds = dueState(t.due, v.date);
+      return `<div class="memo"><div class="pills">${t.done ? '' : pillRow(t, nthForVisit(t, v), ds)}</div>${esc(t.memo)}<small>${esc(t.by)}・${md(t.start)} から</small>
+        <div style="margin-top:6px">${t.done ? `<span class="pill ok">読みました ${esc(t.done.who)} ${hm(t.done.dt.slice(11))}</span>` : `<button class="mini ok" onclick="complete('${t.id}','${who}')">読みました</button>`}</div></div>`;
+    }).join('')}</div>` : ''}
+    <div class="msec" style="color:var(--mute);font-size:13px">（この下は今の訪問詳細：QR・時刻・訪問記録など）</div>`;
+}
+
+// ---------------- D：毎月の設定 ----------------
+const untilLabel = u => u == null ? '—（期日なし）' : u === 'end' ? '毎月 末日 まで' : `毎月 ${u} 日まで`;
+function ruleMonths(r){
+  const out = [];
+  let y = 2026, m = 12;
+  for (let i = 0; i < 4; i++){
+    const first = `${y}-${pad(m)}-01`;
+    const from = `${y}-${pad(m)}-${pad(r.from)}`;
+    const due = r.until == null ? null : r.until === 'end' ? monthEnd(first) : `${y}-${pad(m)}-${pad(r.until)}`;
+    out.push({m, from, due});
+    m++; if (m > 12){ m = 1; y++; }
+  }
+  return out;
+}
+function rulesHTML(){
+  const e = state.ruleEdit;
+  const bad = e.until !== null && e.until !== 'end' && e.until < e.from;
+  const rows = state.rules.map(r => `<tr class="${r.active?'':'stop'}">
+      <td><b>${esc(r.type)}</b></td><td>${esc(r.target)}</td><td class="nw">毎月 ${r.from} 日から</td>
+      <td class="nw">${r.until == null ? '<span class="hint" style="margin:0">なし</span>' : `<b>${untilLabel(r.until)}</b>`}</td>
+      <td>${r.active?'<span class="pill ok">有効</span>':'<span class="pill gray">停止</span>'}</td>
+      <td><button class="mini pk" onclick="state.ruleEdit=JSON.parse(JSON.stringify(state.rules.find(x=>x.id==='${r.id}')));renderStage()">変える</button></td></tr>`).join('');
+  const fromOpts = Array.from({length:28}, (_,i) => i+1).map(d => `<option value="${d}" ${e.from===d?'selected':''}>${d}</option>`).join('');
+  const untilOpts = `<option value="" ${e.until==null?'selected':''}>なし</option>` + Array.from({length:28}, (_,i) => i+1).map(d => `<option value="${d}" ${e.until===d?'selected':''}>${d} 日</option>`).join('') + `<option value="end" ${e.until==='end'?'selected':''}>末日</option>`;
+  const months = bad ? '' : ruleMonths(e).map(x => `<div class="mon-card"><b>${x.m} 月分</b>${mdw(x.from)} から<br>${x.due ? `期日 <b style="display:inline;color:var(--ink)">${mdw(x.due)}</b>` : '<span style="color:var(--mute)">期日なし</span>'}</div>`).join('');
+  const sample = {type:e.type, due: bad || e.until == null ? null : ruleMonths(e)[0].due, monthly:{m:12}};
+  return `<div class="bar"><span style="font-size:12px;color:var(--mute)">毎月その日に、対象の方へやることを 1 件ずつ作ります。「毎月何日まで」を入れると、作るやることにその月の期日が入ります。</span></div>
+    <div class="panel"><h3>毎月のやることを変える：${esc(e.type)}</h3>
+      <div class="hint" style="margin:0 0 8px">ここでは、足す欄だけを見せています（項目・対象・伝言・有効／停止は今のままです）。</div>
+      <div class="grid2">
+        <div>
+          <label class="f">毎月何日から</label>
+          <div class="inline">毎月 <select aria-label="毎月何日から" onchange="state.ruleEdit.from=+this.value;renderStage()">${fromOpts}</select> 日から</div>
+          <div class="hint">その日以降の、その方の最初の訪問に出ます。</div>
+        </div>
+        <div class="newfield"><span class="tagnew">新しく足す欄</span>
+          <label class="f">毎月何日まで<small>任意・空欄でもよい</small></label>
+          <div class="inline">毎月 <select aria-label="毎月何日まで" onchange="state.ruleEdit.until=this.value===''?null:this.value==='end'?'end':+this.value;renderStage()">${untilOpts}</select> まで</div>
+          <div class="hint">「末日」は月ごとに 30 日・31 日・28 日へ合わせます。「なし」のときは期日を付けません。</div>
+        </div>
+      </div>
+      ${bad ? `<div class="note-warn">「まで」（${e.until} 日）が「から」（${e.from} 日）より前です。同じ月の ${e.from} 日以降か、末日を選んでください。</div>` : `<div class="months">${months}</div>
+        <div class="hint">作ったやることは、一覧とスマホでこう出ます：${pillRow(sample, 1, sample.due ? dueState(sample.due, '2026-12-01') : null)}</div>`}
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="primary" ${bad?'disabled':''} onclick="saveRule()">保存する</button>
+        <span class="hint" style="margin:0;align-self:center">保存すると、次に作る月の分から期日が入ります。作り済みの分の期日は変わりません。</span></div>
+    </div>
+    <div class="tbl"><table style="min-width:680px"><thead><tr><th>項目</th><th>対象</th><th>毎月何日から</th><th>毎月何日まで<span class="new">新</span></th><th>状態</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function saveRule(){
+  const e = state.ruleEdit, i = state.rules.findIndex(r => r.id === e.id);
+  state.rules[i] = JSON.parse(JSON.stringify(e));
+  toast(`保存しました：${e.type}（${untilLabel(e.until)}）`);
+  renderStage();
+}
+
+resetAll();
+</script>
+</body>
+</html>

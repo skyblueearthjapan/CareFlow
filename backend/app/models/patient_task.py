@@ -125,6 +125,8 @@ class PatientTask(Base, TimestampMixin):
     )
     #: 毎月の設定から作ったときだけ: 何月分か (その月の 1 日)。
     recurring_month: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: 期日 (いつまでに・任意)。NULL は期日なし。mig 0106。
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     __table_args__ = (
         Index("ix_patient_tasks_patient_start", "patient_id", "start_date"),
@@ -170,6 +172,8 @@ class RecurringTaskRule(Base, TimestampMixin):
     target_categories: Mapped[list[str]] = mapped_column(_JSONBish, nullable=False)
     #: 最初に作る月 (その月の 1 日)。
     start_month: Mapped[date] = mapped_column(Date, nullable=False)
+    #: 毎月何日まで (任意・1〜28、0 は末日)。NULL は期日なし。mig 0106。
+    due_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
     )
@@ -182,6 +186,7 @@ class RecurringTaskRule(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("item_type_id IS NOT NULL OR memo IS NOT NULL", name="item_or_memo"),
         CheckConstraint("day_of_month BETWEEN 1 AND 28", name="day_of_month_range"),
+        CheckConstraint("due_day IS NULL OR due_day BETWEEN 0 AND 28", name="due_day_range"),
     )
 
 
