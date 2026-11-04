@@ -117,7 +117,8 @@ export function MonthlyActualTab() {
   const progress: MonthlyActualProgress | null = (() => {
     const s = status.data;
     if (!running || !s) return null;
-    const c = s.counts;
+    // 記録書Ⅱだけの口が動いている間は、記録書Ⅱの件数で進み具合を出す。
+    const c = s.job?.phase === 'care_record' ? s.record2_counts : s.counts;
     const success = c.success + c.dry_run_ok;
     const failedN = c.failed + c.error;
     const processed = typeof s.progress?.processed === 'number' ? s.progress.processed : null;

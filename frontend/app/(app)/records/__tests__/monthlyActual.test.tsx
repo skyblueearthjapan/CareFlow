@@ -9,6 +9,8 @@
  *   5. 二度押しで 2 回送らない
  *   6. カイポケで確かめる行は流し直さない・反映済み（already_applied）は送る行に入れない
  *   7. 最後の段の看護師別の表（並べ替え）と「A4 で開く」（新しいタブに HTML を開く）
+ *   8. 記録書Ⅱ：列（今の時刻 → そろえる時刻）・「記録書Ⅱだけ」の件数と絞り込み・結果の欄
+ *      （知らない理由コードもそのまま出す）・記録書Ⅱだけの行の試しと送る行の数え方
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
@@ -67,6 +69,7 @@ import {
   failedRows,
   flagChips,
   pendingRows,
+  record2ReasonLabel,
 } from '../_components/monthly-actual/monthlyActualFormat';
 
 function makeRow(over: Partial<MonthlyActualRow> = {}): MonthlyActualRow {
@@ -105,6 +108,12 @@ function makeRow(over: Partial<MonthlyActualRow> = {}): MonthlyActualRow {
     result_dry_run: null,
     needs_kaipoke_check: false,
     dry_run_passed: false,
+    needs_actual: true,
+    needs_record2: false,
+    record2_result_status: null,
+    record2_result_reason: null,
+    record2_result_message: null,
+    record2_result_dry_run: null,
     ...over,
   };
 }
@@ -112,10 +121,12 @@ function makeRow(over: Partial<MonthlyActualRow> = {}): MonthlyActualRow {
 const COUNTS: MonthlyActualCounts = {
   match: 378,
   apply: 1,
+  k2_only: 0,
   review: 1,
   missing_in_kaipoke: 1,
   kaipoke_only: 0,
   total: 381,
+  record2: 0,
 };
 
 function makeList(over: Partial<MonthlyActualList> = {}): MonthlyActualList {
@@ -141,6 +152,8 @@ function job(over: Partial<NonNullable<MonthlyActualList['job']>> = {}) {
     total: 1,
     success: 1,
     failed: 0,
+    record2_success: 0,
+    record2_failed: 0,
     dry_run: true,
     scheduled_at: null,
     scheduled_dry_run: false,
@@ -593,5 +606,143 @@ describe('MonthlyActualTab 一覧を出す', () => {
       URL.createObjectURL = origCreate;
       URL.revokeObjectURL = origRevoke;
     }
+  });
+});
+
+describe('記録書Ⅱ', () => {
+  const K2_ROWS: MonthlyActualRow[] = [
+    makeRow({
+      id: 'b1',
+      record2_start: '15:30',
+      record2_end: '16:05',
+      needs_record2: true,
+    }),
+    makeRow({
+      id: 'k1',
+      status: 'k2_only',
+      status_label: '記録書Ⅱだけ',
+      patient_name: '患者K',
+      kp_start: '15:38',
+      kp_end: '16:20',
+      diff_start: 0,
+      diff_end: 0,
+      record2_start: '15:18',
+      record2_end: '16:20',
+      needs_actual: false,
+      needs_record2: true,
+    }),
+    makeRow({ id: 'n1', patient_name: '患者N' }),
+  ];
+  const K2_COUNTS: MonthlyActualCounts = { ...COUNTS, apply: 2, k2_only: 1, record2: 2 };
+
+  it('記録書Ⅱの列に今の時刻とそろえる時刻、無い行は「記録書Ⅱなし」', () => {
+    render(<MonthlyActualTable counts={K2_COUNTS} rows={K2_ROWS} onToggle={vi.fn()} />);
+    const k2 = screen.getByTestId('ma-record2-k1');
+    expect(k2.textContent).toContain('15:18〜16:20');
+    expect(k2.textContent).toContain('→ 15:38〜16:20 にそろえる');
+    expect(within(screen.getByTestId('ma-row-n1')).getByText('記録書Ⅱなし')).toBeTruthy();
+    expect(screen.getByTestId('ma-match-note').textContent).toContain('2 件');
+  });
+
+  it('「記録書Ⅱだけ」の件数と絞り込み', () => {
+    render(<MonthlyActualTable counts={K2_COUNTS} rows={K2_ROWS} onToggle={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /^記録書Ⅱだけ（1）/ }));
+    expect(screen.getByTestId('ma-row-k1')).toBeTruthy();
+    expect(screen.queryByTestId('ma-row-b1')).toBeNull();
+  });
+
+  it('結果は実績と記録書Ⅱを分けて出し、知らない理由コードもそのまま出す', () => {
+    const rows = [
+      makeRow({
+        id: 'b1',
+        record2_start: '15:30',
+        record2_end: '16:05',
+        needs_record2: true,
+        result_status: 'success',
+        result_dry_run: false,
+        record2_result_status: 'failed',
+        record2_result_reason: 'new_reason_from_rpa',
+        record2_result_dry_run: false,
+      }),
+      makeRow({
+        id: 'k1',
+        status: 'k2_only',
+        needs_actual: false,
+        needs_record2: true,
+        record2_start: '15:18',
+        record2_end: '16:20',
+        record2_result_status: 'skipped',
+        record2_result_reason: 'no_care_record',
+      }),
+    ];
+    render(<MonthlyActualTable counts={K2_COUNTS} rows={rows} onToggle={vi.fn()} />);
+    expect(screen.getByTestId('ma-result-b1').textContent).toContain('反映した');
+    const b1 = screen.getByTestId('ma-record2-result-b1').textContent ?? '';
+    expect(b1).toContain('失敗');
+    expect(b1).toContain('new_reason_from_rpa');
+    expect(screen.getByTestId('ma-record2-result-k1').textContent).toContain('記録書Ⅱが無い');
+    // 実績は送らない行なので、実績の結果は出さない。
+    expect(screen.queryByTestId('ma-result-k1')).toBeNull();
+  });
+
+  it('実績は反映済みで記録書Ⅱが失敗した行は、送る行と流し直しに入る', () => {
+    const row = makeRow({
+      id: 'b1',
+      needs_record2: true,
+      result_status: 'success',
+      result_dry_run: false,
+      record2_result_status: 'failed',
+      record2_result_dry_run: false,
+    });
+    expect(pendingRows([row]).map((r) => r.id)).toEqual(['b1']);
+    expect(failedRows([row]).map((r) => r.id)).toEqual(['b1']);
+    const done = { ...row, record2_result_status: 'success' };
+    expect(pendingRows([done])).toEqual([]);
+  });
+
+  it('試しは実績と記録書Ⅱの両方が進んで初めて「全部進んだ」', () => {
+    const base = {
+      dry_run_passed: true,
+      result_status: 'dry_run_ok',
+      result_dry_run: true,
+      needs_record2: true,
+    };
+    const ng = makeRow({ ...base, record2_result_status: 'failed' });
+    const ok = makeRow({ ...base, record2_result_status: 'dry_run_ok' });
+    const k2only = makeRow({
+      id: 'k1',
+      status: 'k2_only',
+      needs_actual: false,
+      needs_record2: true,
+      dry_run_passed: true,
+      record2_result_status: 'dry_run_ok',
+    });
+    const view = (rows: MonthlyActualRow[]) =>
+      makeList({ rows, job: job({ dry_run: true, running: false }) });
+    expect(dryRunAllOk(view([ng]))).toBe(false);
+    expect(dryRunAllOk(view([ok, k2only]))).toBe(true);
+    expect(currentStep(view([ok, k2only]))).toBe(4);
+  });
+
+  it('記録書Ⅱの理由：保存したかもしれない・ほかの欄も違った・選べない画面は、カイポケで確かめる', () => {
+    expect(record2ReasonLabel('save_maybe_saved')).toBe('保存したかもしれない・カイポケで確かめる');
+    expect(record2ReasonLabel('verify_other_field_changed')).toBe(
+      '保存後に時刻のほかの欄も違った・カイポケで確かめる',
+    );
+    expect(record2ReasonLabel('locked')).toBe('時刻を選べない画面だった・カイポケで確かめる');
+  });
+
+  it('実績が 0 件の回は「0 件を登録しました」を出さず、記録書Ⅱの件数だけを出す', () => {
+    render(
+      <MonthlyActualRunPanel
+        {...panelProps({
+          step: 5,
+          job: job({ dry_run: false, success: 0, record2_success: 2 }),
+        })}
+      />,
+    );
+    const text = screen.getByTestId('ma-applied').textContent ?? '';
+    expect(text).not.toContain('件を登録しました');
+    expect(text).toContain('記録書Ⅱは 2 件をそろえました。');
   });
 });

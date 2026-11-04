@@ -3,6 +3,8 @@
  * 表示だけ（押したときの処理は props で受け取る）。
  *
  * 反映と予約の前には、月と件数を書いた確認を画面の中で出す（confirm() は使わない）。
+ * 記録書Ⅱがある行は、同じ流れで記録書Ⅱの「実際の訪問時間」も同じ時刻にそろえる
+ * （設計 docs/plans/kaipoke-kiroku2-time-design-2026-11-04.md §2-2）。
  */
 
 import { useState } from 'react';
@@ -146,7 +148,7 @@ export function MonthlyActualRunPanel(props: MonthlyActualRunPanelProps) {
         <>
           <h3 className="text-base font-bold">試しに流す（登録しない）</h3>
           <p className="text-sm leading-relaxed">
-            ロボットがカイポケの実績の行を開き、時刻を入れるところまで行います。「登録する」は押さずに閉じます。
+            ロボットがカイポケの実績の行を開き、時刻を入れるところまで行います。「登録する」は押さずに閉じます。記録書Ⅱがある行は、続けて記録書Ⅱの「実際の訪問時間」も選ぶところまで行い、保存せずに戻ります。
           </p>
           {dryRunButton(`この ${selectedCount} 件で試しに流す`)}
         </>
@@ -200,7 +202,7 @@ export function MonthlyActualRunPanel(props: MonthlyActualRunPanelProps) {
               <h3 className="text-base font-bold">反映する</h3>
               <p className="text-sm leading-relaxed">
                 選んだ {selectedCount}{' '}
-                件の実績の時刻を、らく助の実績に合わせて登録します。提供時間はカイポケが計算し直します。夜に流すと、事務所のカイポケの作業とぶつかりません。
+                件の実績の時刻を、らく助の実績に合わせて登録します。記録書Ⅱがある行は、記録書Ⅱの「実際の訪問時間」も同じ時刻にそろえます。提供時間はカイポケが計算し直します。夜に流すと、事務所のカイポケの作業とぶつかりません。
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -227,12 +229,16 @@ export function MonthlyActualRunPanel(props: MonthlyActualRunPanelProps) {
       {step === 5 && (
         <>
           <p className="rounded-md bg-success-bg px-3 py-2 text-sm" data-testid="ma-applied">
-            {job?.success ?? 0} 件を登録しました。
+            {(job?.success ?? 0) > 0 && `${job?.success ?? 0} 件を登録しました。`}
+            {(job?.record2_success ?? 0) > 0 &&
+              `記録書Ⅱは ${job?.record2_success ?? 0} 件をそろえました。`}
+            {(job?.record2_failed ?? 0) > 0 &&
+              `記録書Ⅱで失敗 ${job?.record2_failed ?? 0} 件（理由は表の「結果」の欄）。`}
             {failedCount > 0 && `失敗 ${failedCount} 件（理由は表の「結果」の欄）。`}
           </p>
           <h3 className="text-base font-bold">確かめる</h3>
           <p className="text-sm leading-relaxed">
-            もう一度カイポケの実績を読み取り、反映した行の差が 0 になったかを見ます。
+            もう一度カイポケの実績を読み取り、反映した行の実績と記録書Ⅱの差が 0 になったかを見ます。
           </p>
           <div className="flex flex-wrap gap-2">
             {refreshButton('カイポケの実績を読み取り直す')}
@@ -295,7 +301,7 @@ export function MonthlyActualRunPanel(props: MonthlyActualRunPanelProps) {
         >
           <p>{confirmText[confirm]}</p>
           <p className="text-xs text-text-secondary">
-            カイポケの実績の時刻を書き換えます。予定には触れません。
+            カイポケの実績の時刻と、記録書Ⅱの「実際の訪問時間」を書き換えます。予定には触れません。
           </p>
           <div className="flex gap-2">
             <Button

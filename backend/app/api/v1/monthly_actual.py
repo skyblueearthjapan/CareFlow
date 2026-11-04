@@ -124,6 +124,7 @@ async def _month_view(db: DbDep, month: str) -> dict[str, Any]:
         "counts": (run.counts if run is not None and run.counts else svc.rules.count_statuses([])),
         "selected_count": len(svc.choose_rows(rows)),
         "apply_counts": svc.apply_counts(rows),
+        "care_record_counts": svc.care_record_counts(rows),
         "rows": [svc.row_view(r) for r in rows],
         "evening_warning": evening_warning(),
     }
@@ -308,12 +309,14 @@ async def apply_status(
     rows = await svc.load_rows(db, run.id)
     row_ids = set((job.params or {}).get("row_ids") or []) if job is not None else set()
     sent = [r for r in rows if str(r.id) in row_ids]
+    counts, care_counts = svc.job_counts(job, sent)
     return {
         "month": month,
         "state": run.state,
         "job": svc.job_view(job),
         "running": job is not None and job.status in ("pending", "running"),
-        "counts": svc.apply_counts(sent),
+        "counts": counts,
+        "care_record_counts": care_counts,
         "last_apply": run.last_apply,
         "verify_result": run.verify_result,
         "rows": [svc.row_view(r) for r in sent],

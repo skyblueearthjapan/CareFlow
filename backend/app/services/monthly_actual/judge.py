@@ -20,6 +20,7 @@ PO の決まり (``docs/plans/session-2026-11-01-HANDOFF.md`` §1)。
 判定
     * ``match``  一致 (開始・終了ともカイポケと同じ)
     * ``apply``  反映する (印が付いても、反映してよい印だけ)
+    * ``k2_only`` 記録書Ⅱだけ反映する (実績はもう QR どおりで、記録書Ⅱだけ違う)
     * ``review`` 人が見る (反映しない印が 1 つでも付いた)
     * ``missing`` カイポケに無い (足す候補・RPA はまだ足せない)
     * ``kaipoke_only`` カイポケだけ
@@ -31,7 +32,16 @@ PO の決まり (``docs/plans/session-2026-11-01-HANDOFF.md`` §1)。
     順番が入れ替わっている・同じ名前の別の方の可能性。
 反映してよい印
     30 分未満→到着＋35 分・退出の QR が無い→到着＋35 分・カイポケの終了が開始より前・
-    記録書Ⅱと 10 分以上ずれる・滞在が長い。
+    記録書Ⅱと 10 分以上ずれる・滞在が長い・記録書Ⅱと 60 分以上ずれる・記録書Ⅱの時刻の順が逆
+    (後の 2 つは実績だけ反映し、記録書Ⅱは送らない)。
+
+記録書Ⅱ (PO 決定 2026-11-04・``docs/plans/kaipoke-kiroku2-time-design-2026-11-04.md`` §2-2)
+    カイポケの行に記録書Ⅱの時刻 (CSV の「記録Ⅱ開始時間」「記録Ⅱ終了時間」) があり、新しい時刻と
+    違えば、実績と同じ流れで記録書Ⅱもそろえる (``JudgedRow.k2_apply``)。記録書Ⅱの開始が終了より
+    前 (``to_minutes`` で比べる) の行だけ扱う。記録書Ⅱと新しい時刻が 60 分以上ずれる行と、記録書Ⅱの
+    時刻の順が逆・読めない行は、記録書Ⅱを送らない (実績は今までどおり反映する・PO 決定 案B)。
+    実績はもう QR どおりで記録書Ⅱだけがそうなっている行は「人が見る」(送らない)。
+    記録書Ⅱが無い行は記録書Ⅱを扱わない。
 """
 
 from __future__ import annotations
@@ -66,19 +76,30 @@ KP_LONGER_MINUTES: Final = 60
 
 STATUS_MATCH: Final = "match"
 STATUS_APPLY: Final = "apply"
+STATUS_K2_ONLY: Final = "k2_only"
 STATUS_REVIEW: Final = "review"
 STATUS_MISSING: Final = "missing"
 STATUS_KAIPOKE_ONLY: Final = "kaipoke_only"
-STATUSES: Final = (STATUS_REVIEW, STATUS_APPLY, STATUS_MISSING, STATUS_KAIPOKE_ONLY, STATUS_MATCH)
+STATUSES: Final = (
+    STATUS_REVIEW,
+    STATUS_APPLY,
+    STATUS_K2_ONLY,
+    STATUS_MISSING,
+    STATUS_KAIPOKE_ONLY,
+    STATUS_MATCH,
+)
 STATUS_LABELS: Final = {
     STATUS_MATCH: "一致",
     STATUS_APPLY: "反映する",
+    STATUS_K2_ONLY: "記録書Ⅱだけ",
     STATUS_REVIEW: "人が見る",
     STATUS_MISSING: "カイポケに無い",
     STATUS_KAIPOKE_ONLY: "カイポケだけ",
 }
 #: 「反映する／しない」を選べる判定 (カイポケの行と新しい時刻の両方がある)。
-SELECTABLE_STATUSES: Final = (STATUS_APPLY, STATUS_REVIEW)
+SELECTABLE_STATUSES: Final = (STATUS_APPLY, STATUS_K2_ONLY, STATUS_REVIEW)
+#: 既定で「反映する」に選ぶ判定。
+DEFAULT_SELECTED_STATUSES: Final = (STATUS_APPLY, STATUS_K2_ONLY)
 
 # 印のコード。review=True の印が 1 つでもあれば「人が見る」。
 FLAG_BIG_GAP: Final = "big_gap"
@@ -95,6 +116,8 @@ FLAG_SHORT_STAY: Final = "short_stay"
 FLAG_NO_DEPARTURE: Final = "no_departure"
 FLAG_KP_END_BEFORE_START: Final = "kp_end_before_start"
 FLAG_K2_GAP: Final = "k2_gap"
+FLAG_K2_BIG_GAP: Final = "k2_big_gap"
+FLAG_K2_ORDER: Final = "k2_order"
 FLAG_LONG_STAY: Final = "long_stay"
 REVIEW_FLAGS: Final = frozenset(
     {
@@ -110,6 +133,8 @@ REVIEW_FLAGS: Final = frozenset(
         FLAG_CODE_VARIANT,
     }
 )
+#: 記録書Ⅱを送らない印 (実績は反映してよい・記録書Ⅱは人が見る)。
+K2_HOLD_FLAGS: Final = frozenset({FLAG_K2_BIG_GAP, FLAG_K2_ORDER})
 
 #: 名前の字体をそろえる追加の表 (``normalize_name_key`` に無いもの)。
 _EXTRA_VARIANTS: Final = str.maketrans({"德": "徳", "冨": "富", "濱": "浜", "邉": "辺"})
@@ -210,6 +235,8 @@ class JudgedRow:
     new_start: str | None = None
     new_end: str | None = None
     rk_stay: int | None = None
+    #: 記録書Ⅱも新しい時刻へそろえる (カイポケの行に記録書Ⅱがあり、新しい時刻と違う)。
+    k2_apply: bool = False
 
     @property
     def item_key(self) -> str | None:
@@ -226,7 +253,7 @@ class JudgedRow:
 
     @property
     def default_selected(self) -> bool:
-        return self.status == STATUS_APPLY
+        return self.status in DEFAULT_SELECTED_STATUSES
 
     @property
     def rk_adjusted(self) -> str:
@@ -358,11 +385,26 @@ def _compare_with_kaipoke(row: JudgedRow, v: RkVisit, r: KpRow) -> None:
             row.add(FLAG_BIG_GAP, "1 時間以上ずれる（別の訪問の取り違えかも）")
     k2s = to_minutes(r.k2_start)
     k2e = to_minutes(r.k2_end)
-    if ns is not None and k2s is not None:
-        if abs(ns - k2s) >= K2_GAP_MINUTES or (
-            ne is not None and k2e is not None and abs(ne - k2e) >= K2_GAP_MINUTES
-        ):
+    k2_ok = k2s is not None and k2e is not None and k2s < k2e
+    if (r.k2_start or r.k2_end) and not k2_ok:
+        # RPA は開始 < 終了でない旧の時刻を受け付けない (400)。
+        row.add(FLAG_K2_ORDER, "記録書Ⅱの時刻の順が逆・人が見る")
+    if k2_ok and ns is not None and ne is not None:
+        assert k2s is not None and k2e is not None
+        k2_gap = max(abs(ns - k2s), abs(ne - k2e))
+        if k2_gap >= BIG_GAP_MINUTES:
+            row.add(FLAG_K2_BIG_GAP, f"記録書Ⅱと {BIG_GAP_MINUTES} 分以上ずれる・記録書Ⅱは人が見る")
+        elif k2_gap >= K2_GAP_MINUTES:
             row.add(FLAG_K2_GAP, f"記録書Ⅱと {K2_GAP_MINUTES} 分以上ずれる")
+    # 記録書Ⅱは開始 < 終了で読めるときだけ扱う (RPA は旧の時刻で照らすため)。
+    # 60 分以上ずれる行・順が逆の行は記録書Ⅱを送らない (実績は反映してよい)。
+    row.k2_apply = bool(
+        row.new_start
+        and row.new_end
+        and k2_ok
+        and not any(row.has(code) for code in K2_HOLD_FLAGS)
+        and (norm_time(r.k2_start or ""), norm_time(r.k2_end or "")) != (row.new_start, row.new_end)
+    )
     if row.has(FLAG_SHORT_STAY) or row.has(FLAG_NO_DEPARTURE):
         kp_stay = ke - ks if ks is not None and ke is not None and ke >= ks else r.minutes
         if kp_stay is not None and kp_stay >= KP_LONGER_MINUTES:
@@ -523,7 +565,16 @@ def judge(rk_visits: Sequence[RkVisit], kp_rows: Sequence[KpRow]) -> list[Judged
             and row.new_start == norm_time(row.kp.start)
             and row.new_end == norm_time(row.kp.end)
         ):
-            row.status = STATUS_MATCH
+            # 実績は QR どおり。記録書Ⅱだけ違えば「記録書Ⅱだけ」(反映しない印があれば人が見る)。
+            # 記録書Ⅱが 60 分以上ずれる・順が逆なら、送るものが無いので人が見る (送らない)。
+            if any(row.has(code) for code in K2_HOLD_FLAGS):
+                row.status = STATUS_REVIEW
+            elif not row.k2_apply:
+                row.status = STATUS_MATCH
+            elif any(f.review for f in row.flags):
+                row.status = STATUS_REVIEW
+            else:
+                row.status = STATUS_K2_ONLY
         elif row.new_start is None or row.new_end is None or any(f.review for f in row.flags):
             row.status = STATUS_REVIEW
         else:
@@ -550,12 +601,19 @@ def count_statuses(rows: Iterable[Any]) -> dict[str, int]:
     return counts
 
 
+def count_k2(rows: Iterable[JudgedRow]) -> int:
+    """記録書Ⅱもそろえる行の数 (実績と続けて・記録書Ⅱだけ の両方)。"""
+    return sum(1 for row in rows if row.k2_apply)
+
+
 __all__ = [
     "FLAG_BIG_GAP",
     "FLAG_CODE_VARIANT",
     "FLAG_COUNT_DIFF",
     "FLAG_DUP_TARGET",
+    "FLAG_K2_BIG_GAP",
     "FLAG_K2_GAP",
+    "FLAG_K2_ORDER",
     "FLAG_KP_END_BEFORE_START",
     "FLAG_KP_LONGER",
     "FLAG_LONG_STAY",
@@ -564,12 +622,15 @@ __all__ = [
     "FLAG_ORDER_SWAP",
     "FLAG_OVERLAP",
     "FLAG_SHORT_STAY",
+    "K2_HOLD_FLAGS",
     "FLAG_STAFF_COUNT",
     "FLAG_STAFF_DIFF",
     "REVIEW_FLAGS",
     "SELECTABLE_STATUSES",
     "STATUSES",
+    "DEFAULT_SELECTED_STATUSES",
     "STATUS_APPLY",
+    "STATUS_K2_ONLY",
     "STATUS_KAIPOKE_ONLY",
     "STATUS_LABELS",
     "STATUS_MATCH",
@@ -579,6 +640,7 @@ __all__ = [
     "JudgedRow",
     "KpRow",
     "RkVisit",
+    "count_k2",
     "count_statuses",
     "fmt_minutes",
     "judge",

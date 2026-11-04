@@ -82,6 +82,8 @@ const FLAG_CHIPS: Record<string, { label: string; tone: ChipTone }> = {
   staff_diff: { label: '担当が違う', tone: 'red' },
   staff_count: { label: '人数', tone: 'red' },
   k2_gap: { label: '記録書Ⅱ', tone: 'amber' },
+  k2_big_gap: { label: '記録書Ⅱと 60 分以上', tone: 'amber' },
+  k2_order: { label: '記録書Ⅱの順が逆', tone: 'amber' },
   no_arrival: { label: '到着なし', tone: 'red' },
   dup_target: { label: '同じ行を 2 件', tone: 'red' },
   kp_end_before_start: { label: 'カイポケの時刻', tone: 'amber' },
@@ -177,31 +179,91 @@ export function resultLabel(
   }
 }
 
-/** 反映済み（本番の成功・already_applied は試しで返っても済み）。BE の `is_applied` と同じ。 */
-export function isDoneRow(r: MonthlyActualRow): boolean {
+/**
+ * 記録書Ⅱの理由コード（RPA の care_record_reason）→ 短い言葉。知らないコードはそのまま出す
+ * （RPA 側で理由が増えることがあるため）。
+ */
+const RECORD2_REASONS: Record<string, string> = {
+  no_care_record: '記録書Ⅱが無い（作りません）',
+  already_applied: 'すでにそろっていた',
+  no_change: '同じ時刻',
+  actual_not_applied: '実績が書けていないので触っていない',
+  record_time_mismatch: '記録書Ⅱの時刻が一覧と違う',
+  edit_screen_left_open: '編集画面が開いたまま（カイポケで確かめる）',
+  verify_failed: '保存の後に確かめられない（カイポケで確かめる）',
+  save_maybe_saved: '保存したかもしれない・カイポケで確かめる',
+  verify_other_field_changed: '保存後に時刻のほかの欄も違った・カイポケで確かめる',
+  locked: '時刻を選べない画面だった・カイポケで確かめる',
+};
+
+export function record2ReasonLabel(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  return RECORD2_REASONS[reason] ?? reason;
+}
+
+/** 実績を反映済み（本番の成功・already_applied は試しで返っても済み）。BE の `is_applied` と同じ。 */
+function isActualDone(r: MonthlyActualRow): boolean {
   return (
     r.result_reason === 'already_applied' ||
     (r.result_dry_run === false && r.result_status === 'success')
   );
 }
 
-/** これから送る行（「する」・送れる・まだ反映していない・本番で要目視になっていない）。 */
-export function pendingRows(rows: MonthlyActualRow[]): MonthlyActualRow[] {
-  return rows.filter(
-    (r) =>
-      r.apply &&
-      r.selectable &&
-      !isLockedStatus(r.status) &&
-      !isDoneRow(r) &&
-      !(r.result_dry_run === false && r.needs_kaipoke_check),
+/** 記録書Ⅱをそろえ済み。BE の `is_care_record_applied` と同じ。 */
+function isRecord2Done(r: MonthlyActualRow): boolean {
+  return (
+    r.record2_result_reason === 'already_applied' ||
+    (r.record2_result_dry_run === false && r.record2_result_status === 'success')
   );
 }
 
-/** 前の反映（試しでない）で失敗した行（カイポケで確かめる行は流し直さない）。 */
+/** 実績の口へ送る（実績の時刻が違い、まだ反映していない）。 */
+function sendsActual(r: MonthlyActualRow): boolean {
+  return r.needs_actual && !isActualDone(r);
+}
+
+/** 記録書Ⅱをそろえる（記録書Ⅱの時刻が違い、まだそろえていない）。 */
+function sendsRecord2(r: MonthlyActualRow): boolean {
+  return r.needs_record2 && !isRecord2Done(r);
+}
+
+/** 反映済み（実績も記録書Ⅱも、送る分は済んだ）。 */
+export function isDoneRow(r: MonthlyActualRow): boolean {
+  return !sendsActual(r) && !sendsRecord2(r);
+}
+
+/** 本番で「カイポケで確かめてから」になった（流し直さない）。 */
+function liveCheck(r: MonthlyActualRow): boolean {
+  return (
+    r.needs_kaipoke_check && (r.result_dry_run === false || r.record2_result_dry_run === false)
+  );
+}
+
+/** これから送る行（「する」・送れる・まだ反映していない・本番で要目視になっていない）。 */
+export function pendingRows(rows: MonthlyActualRow[]): MonthlyActualRow[] {
+  return rows.filter(
+    (r) => r.apply && r.selectable && !isLockedStatus(r.status) && !isDoneRow(r) && !liveCheck(r),
+  );
+}
+
+/** 前の反映（試しでない）で失敗した行（実績か記録書Ⅱ・カイポケで確かめる行は流し直さない）。 */
 export function failedRows(rows: MonthlyActualRow[]): MonthlyActualRow[] {
   return rows.filter(
-    (r) => r.result_dry_run === false && r.result_status === 'failed' && !r.needs_kaipoke_check,
+    (r) =>
+      !r.needs_kaipoke_check &&
+      ((r.result_dry_run === false && r.result_status === 'failed') ||
+        (r.record2_result_dry_run === false && r.record2_result_status === 'failed')),
   );
+}
+
+/** 試しで、送る分（実績・記録書Ⅱ）が全部進んだ。 */
+function dryRunRowOk(r: MonthlyActualRow): boolean {
+  const actualOk = !sendsActual(r) || r.result_status === 'dry_run_ok';
+  const record2Ok =
+    !sendsRecord2(r) ||
+    r.record2_result_status === 'dry_run_ok' ||
+    r.record2_result_reason === 'already_applied';
+  return r.dry_run_passed && actualOk && record2Ok;
 }
 
 export function isJobRunning(job: MonthlyActualJobSummary | null | undefined): boolean {
@@ -221,9 +283,7 @@ export function dryRunAllOk(view: MonthlyActualList | null | undefined): boolean
   const job = view?.job;
   if (!view || !job?.dry_run || job.running) return false;
   const pending = pendingRows(view.rows);
-  return (
-    pending.length > 0 && pending.every((r) => r.result_status === 'dry_run_ok' && r.dry_run_passed)
-  );
+  return pending.length > 0 && pending.every(dryRunRowOk);
 }
 
 export type StepNo = 1 | 2 | 3 | 4 | 5 | 6;
