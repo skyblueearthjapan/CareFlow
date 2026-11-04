@@ -3,8 +3,10 @@
 /**
  * /tasks — 事務所からのやること (管理者だけ・patient-tasks-design-2026-11-01 §2-6 / §3)。
  *
- * 未完了・期日を過ぎた・完了の件数、絞り込み (状態・看護師)、表 (日付・患者様・
- * やること／伝言・出す訪問・状態・操作)、右上の「＋ やることを付ける」、下に「項目の設定」。
+ * 未完了・期日を過ぎた・2 回目以降の訪問待ち・完了の件数、絞り込み (状態・看護師)、表 (日付・
+ * 患者様・やること／伝言・期日・出す訪問・状態・操作)、右上の「＋ やることを付ける」、
+ * 下に「項目の設定」。期日と何回目の訪問待ちは patient-tasks-due-design-2026-11-04。
+ * 期日の欄を押すと日付を選び直せる (管理者・完了／取消の行は押せない・§6-3)。
  * 出す訪問は BE が見るたびに決める (患者 + 日付以降の最初の訪問)。
  *
  * 上のタブで「やることの一覧」と「毎月のやること」(繰り返しの設定・
@@ -24,10 +26,11 @@ import { toast } from '@/components/ui/sonner';
 import { AddTaskDialog } from '@/components/tasks/AddTaskDialog';
 import { RecurringTasksPanel } from '@/components/tasks/RecurringTasksPanel';
 import { TaskItemTypesSettings } from '@/components/tasks/TaskItemTypesSettings';
-import { Pill, RecurringMark } from '@/components/tasks/TaskPill';
+import { Pill, RecurringMark, RoundPill } from '@/components/tasks/TaskPill';
 import {
   taskActionErrorMessage,
   taskDoneLabel,
+  taskDueState,
   taskMdWd,
   taskTitle,
   visitBriefLabel,
@@ -36,7 +39,13 @@ import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { isAdminRole } from '@/lib/rbac';
 import { cn } from '@/lib/utils';
 import { useStaffList } from '@/lib/queries/staff';
-import { useCancelTask, useCompleteTask, useReopenTask, useTasks } from '@/lib/queries/tasks';
+import {
+  useCancelTask,
+  useCompleteTask,
+  useReopenTask,
+  useSetTaskDue,
+  useTasks,
+} from '@/lib/queries/tasks';
 import type { PatientTaskRead, TaskListStatus } from '@/lib/schemas/patient-task';
 
 /** 完了の件数と一覧は、完了した日が直近この日数の分だけ (完了は増え続けるため)。 */
@@ -56,6 +65,7 @@ function addDays(ymd: string, days: number): string {
 const STATUS_FILTERS: { key: TaskListStatus; label: string }[] = [
   { key: 'open', label: '未完了' },
   { key: 'overdue', label: '期日を過ぎた' },
+  { key: 'waiting2plus', label: '2 回目以降' },
   { key: 'done', label: '完了' },
   { key: 'all', label: 'すべて' },
 ];
@@ -88,10 +98,11 @@ export default function TasksPage() {
     },
     { enabled: isAdmin },
   );
-  const rows = rowsQuery.data ?? [];
+  const rows = useMemo(() => sortByUrgency(rowsQuery.data ?? [], today), [rowsQuery.data, today]);
   const stats = {
     open: openAll.data?.length ?? 0,
     overdue: (openAll.data ?? []).filter((t) => t.overdue).length,
+    waiting2plus: (openAll.data ?? []).filter((t) => t.visit_round >= 2).length,
     done: doneRecent.data?.length ?? 0,
   };
 
@@ -107,7 +118,8 @@ export default function TasksPage() {
   const complete = useCompleteTask();
   const reopen = useReopenTask();
   const cancel = useCancelTask();
-  const busy = complete.isPending || reopen.isPending || cancel.isPending;
+  const setDue = useSetTaskDue();
+  const busy = complete.isPending || reopen.isPending || cancel.isPending || setDue.isPending;
   const onError = (fallback: string) => (err: unknown) =>
     toast.error(fallback, { description: taskActionErrorMessage(err) });
 
@@ -166,6 +178,12 @@ export default function TasksPage() {
               testId="tasks-stat-overdue"
             />
             <Stat
+              label="2 回目以降の訪問待ち"
+              value={stats.waiting2plus}
+              tone="carry"
+              testId="tasks-stat-waiting2plus"
+            />
+            <Stat
               label={`完了（直近 ${DONE_LOOKBACK_DAYS} 日）`}
               value={stats.done}
               tone="ok"
@@ -216,12 +234,13 @@ export default function TasksPage() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px] text-sm" data-testid="tasks-table">
+                <table className="w-full min-w-[900px] text-sm" data-testid="tasks-table">
                   <thead className="border-b border-border-default bg-bg-muted text-left text-xs text-text-secondary">
                     <tr>
                       <th className="px-3 py-2 font-medium">日付</th>
                       <th className="px-3 py-2 font-medium">患者様</th>
                       <th className="px-3 py-2 font-medium">やること・伝言</th>
+                      <th className="px-3 py-2 font-medium">期日</th>
                       <th className="px-3 py-2 font-medium">出す訪問</th>
                       <th className="px-3 py-2 font-medium">状態</th>
                       <th className="px-3 py-2 font-medium" />
@@ -230,7 +249,7 @@ export default function TasksPage() {
                   <tbody>
                     {rows.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="px-3 py-8 text-center text-text-muted">
+                        <td colSpan={7} className="px-3 py-8 text-center text-text-muted">
                           該当するやることはありません。
                         </td>
                       </tr>
@@ -239,7 +258,24 @@ export default function TasksPage() {
                         <TaskTableRow
                           key={t.id}
                           task={t}
+                          today={today}
                           busy={busy}
+                          onSetDue={(dueDate, onDone) =>
+                            setDue.mutate(
+                              { taskId: t.id, dueDate },
+                              {
+                                onSuccess: () => {
+                                  toast.success(
+                                    dueDate
+                                      ? `期日を ${taskMdWd(dueDate)} にしました`
+                                      : '期日をなしにしました',
+                                  );
+                                  onDone();
+                                },
+                                onError: onError('期日を変えられませんでした'),
+                              },
+                            )
+                          }
                           onComplete={() =>
                             complete.mutate(
                               { taskId: t.id },
@@ -270,6 +306,20 @@ export default function TasksPage() {
               </div>
             )}
           </div>
+          <p
+            className="m-0 flex flex-wrap items-center gap-1.5 text-xs text-text-muted"
+            data-testid="tasks-legend"
+          >
+            札：
+            <RoundPill round={1} />
+            まだ訪問が来ていない
+            <RoundPill round={2} />
+            <RoundPill round={3} />
+            <RoundPill round={4} />
+            前の訪問で済まなかった（数が多いほど濃い）
+            <Pill tone="overStrong">期日を過ぎた</Pill>
+            期日がある分だけ
+          </p>
 
           <details className="rounded-lg border border-border-default bg-bg-base p-4">
             <summary className="cursor-pointer text-base font-bold text-text-primary">
@@ -295,7 +345,7 @@ function Stat({
 }: {
   label: string;
   value: number;
-  tone?: 'over' | 'ok';
+  tone?: 'over' | 'ok' | 'carry';
   testId?: string;
 }) {
   return (
@@ -316,7 +366,9 @@ function Stat({
             ? 'text-error'
             : tone === 'ok'
               ? 'text-success'
-              : 'text-text-primary',
+              : tone === 'carry' && value > 0
+                ? 'text-[#e07800]'
+                : 'text-text-primary',
         )}
       >
         {value}
@@ -325,15 +377,142 @@ function Stat({
   );
 }
 
+/**
+ * 急ぐ順 (モック A): 期日を過ぎた → 今日まで → 訪問の回数が多い順 → 期日の近い順 → 日付の順。
+ * 完了・取消は後ろ (その中の並びは BE のまま)。
+ */
+function sortByUrgency(list: PatientTaskRead[], today: string): PatientTaskRead[] {
+  const rank = (t: PatientTaskRead) => {
+    if (t.status !== 'open') return 9;
+    if (t.overdue) return 0;
+    if (taskDueState(t.due_date, today)?.kind === 'today') return 1;
+    return t.visit_round >= 2 ? 2 : 3;
+  };
+  return list.slice().sort((a, b) => {
+    const r = rank(a) - rank(b);
+    if (r !== 0 || rank(a) === 9) return r;
+    return (
+      b.visit_round - a.visit_round ||
+      (a.due_date ?? '9999').localeCompare(b.due_date ?? '9999') ||
+      a.start_date.localeCompare(b.start_date)
+    );
+  });
+}
+
+/** 期日の欄。管理者は押すと日付を選び直せる (未完了の行だけ・「なし」にも戻せる)。 */
+function DueCell({
+  task: t,
+  today,
+  busy,
+  onSetDue,
+}: {
+  task: PatientTaskRead;
+  today: string;
+  busy: boolean;
+  onSetDue: (dueDate: string | null, onDone: () => void) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(t.due_date ?? '');
+  const editable = t.status === 'open';
+  const ds = editable ? taskDueState(t.due_date, today) : null;
+
+  if (editing) {
+    const valid = /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const before = valid && value < t.start_date;
+    return (
+      <div className="space-y-1.5" data-testid={`tasks-due-edit-${t.id}`}>
+        <input
+          type="date"
+          aria-label="期日"
+          value={value}
+          min={t.start_date}
+          onChange={(e) => setValue(e.target.value)}
+          className="block h-9 w-40 rounded-md border border-border-default bg-bg-base px-2 text-sm"
+          data-testid={`tasks-due-input-${t.id}`}
+        />
+        {before && (
+          <p className="m-0 text-xs font-bold text-error" role="alert">
+            日付（{taskMdWd(t.start_date)}）より前です
+          </p>
+        )}
+        <div className="flex flex-wrap gap-1">
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !valid || before}
+            onClick={() => onSetDue(value, () => setEditing(false))}
+            data-testid={`tasks-due-save-${t.id}`}
+          >
+            決める
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy || !t.due_date}
+            onClick={() => onSetDue(null, () => setEditing(false))}
+            data-testid={`tasks-due-clear-${t.id}`}
+          >
+            なし
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
+            やめる
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const body = !t.due_date ? (
+    <span className="text-xs text-text-muted">なし</span>
+  ) : (
+    <>
+      <b className={cn(ds && ds.kind !== 'left' && 'text-error')}>{taskMdWd(t.due_date)} まで</b>
+      {ds && (
+        <div
+          className={cn('text-xs', ds.kind === 'left' ? 'text-text-muted' : 'font-bold text-error')}
+        >
+          {ds.kind === 'over'
+            ? `${ds.days} 日過ぎた`
+            : ds.kind === 'today'
+              ? '今日まで'
+              : `あと ${ds.days} 日`}
+        </div>
+      )}
+    </>
+  );
+
+  if (!editable) return <div data-testid={`tasks-due-${t.id}`}>{body}</div>;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setValue(t.due_date ?? '');
+        setEditing(true);
+      }}
+      disabled={busy}
+      title="押すと期日を選べます"
+      className="rounded-md px-1 py-0.5 text-left hover:bg-bg-muted"
+      data-testid={`tasks-due-${t.id}`}
+    >
+      {body}
+    </button>
+  );
+}
+
 function TaskTableRow({
   task: t,
+  today,
   busy,
+  onSetDue,
   onComplete,
   onReopen,
   onCancel,
 }: {
   task: PatientTaskRead;
+  today: string;
   busy: boolean;
+  onSetDue: (dueDate: string | null, onDone: () => void) => void;
   onComplete: () => void;
   onReopen: () => void;
   onCancel: () => void;
@@ -356,6 +535,9 @@ function TaskTableRow({
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2">
+        <DueCell task={t} today={today} busy={busy} onSetDue={onSetDue} />
+      </td>
+      <td className="whitespace-nowrap px-3 py-2">
         {shownVisit ? (
           visitBriefLabel(shownVisit)
         ) : done ? (
@@ -370,10 +552,11 @@ function TaskTableRow({
             <Pill tone="ok">完了</Pill>
             <div className="mt-0.5 text-xs text-text-muted">{taskDoneLabel(t)}</div>
           </>
-        ) : t.overdue ? (
-          <Pill tone="over">期日を過ぎた</Pill>
         ) : (
-          <Pill tone="open">未完了</Pill>
+          <div className="flex flex-wrap items-center gap-1">
+            {t.overdue && <Pill tone="overStrong">期日を過ぎた</Pill>}
+            <RoundPill round={t.visit_round} />
+          </div>
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2">

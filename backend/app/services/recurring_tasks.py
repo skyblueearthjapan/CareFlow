@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 import logging
 import uuid
@@ -90,6 +91,18 @@ def task_start_date(rule: RecurringTaskRule, month: date, today: date) -> date:
     (今日以降の最初の訪問) は同じ。
     """
     return max(rule_day(rule, month), today)
+
+
+def task_due_date(rule: RecurringTaskRule, month: date, today: date) -> date | None:
+    """作るやることの ``due_date`` (``docs/plans/patient-tasks-due-design-2026-11-04.md``).
+
+    その月の ``due_day`` 日 (0 は末日)。その日が作った日 (今日) より前なら今日にする
+    (§6-2: 作った直後に「期日を過ぎた」と出さない)。``due_day`` が無ければ期日なし。
+    """
+    if rule.due_day is None:
+        return None
+    day = rule.due_day or calendar.monthrange(month.year, month.month)[1]
+    return max(month.replace(day=day), today)
 
 
 # ---------------------------------------------------------------------------
@@ -250,11 +263,13 @@ async def ensure_rule_month(
         return 0
     now = datetime.now(UTC)
     start = task_start_date(rule, month, today)
+    due = task_due_date(rule, month, today)
     rows = [
         {
             "id": uuid.uuid4(),
             "patient_id": p.id,
             "start_date": start,
+            "due_date": due,
             "item_type_id": rule.item_type_id,
             "memo": rule.memo,
             "created_by": created_by,
@@ -452,6 +467,7 @@ async def preview(db: AsyncSession, rule: RecurringTaskRule, month: date) -> dic
         "rule_id": rule.id,
         "month": month,
         "start_date": start,
+        "due_date": task_due_date(rule, month, today),
         "is_active": rule.is_active,
         "item_is_active": await _item_is_active(db, rule),
         "counts": dict(counts),

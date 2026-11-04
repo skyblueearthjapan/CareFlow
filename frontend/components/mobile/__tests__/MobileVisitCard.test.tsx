@@ -244,16 +244,41 @@ describe('MobileVisitCard 時刻の調整の印 (設計 2026-09-30 §7-7)', () =
 });
 
 describe('MobileVisitCard 事務所からのやること (patient-tasks-design §3)', () => {
-  it('未完了があれば「📋 やること N 件」、持ち越しがあれば（持ち越しあり）', () => {
+  it('未完了があれば「📋 やること N 件」、2 回目以降があれば（2 回目以降あり）', () => {
     setSession('staff-senior-1');
     render(
       <MobileVisitCard
         visit={makeVisit()}
-        taskCount={{ open_count: 2, total_count: 3, has_carried_over: true, all_done: false }}
+        taskCount={{
+          open_count: 2,
+          total_count: 3,
+          has_carried_over: true,
+          has_overdue: false,
+          all_done: false,
+        }}
       />,
     );
     expect(screen.getByTestId('mobile-visit-tasks').textContent).toBe(
-      '📋 やること 2 件（持ち越しあり）',
+      '📋 やること 2 件（2 回目以降あり）',
+    );
+  });
+
+  it('期日を過ぎたものがあれば（期日を過ぎたものあり）を先に出す', () => {
+    setSession('staff-senior-1');
+    render(
+      <MobileVisitCard
+        visit={makeVisit()}
+        taskCount={{
+          open_count: 1,
+          total_count: 1,
+          has_carried_over: true,
+          has_overdue: true,
+          all_done: false,
+        }}
+      />,
+    );
+    expect(screen.getByTestId('mobile-visit-tasks').textContent).toBe(
+      '📋 やること 1 件（期日を過ぎたものあり）',
     );
   });
 
@@ -262,7 +287,13 @@ describe('MobileVisitCard 事務所からのやること (patient-tasks-design �
     render(
       <MobileVisitCard
         visit={makeVisit()}
-        taskCount={{ open_count: 0, total_count: 2, has_carried_over: false, all_done: true }}
+        taskCount={{
+          open_count: 0,
+          total_count: 2,
+          has_carried_over: false,
+          has_overdue: false,
+          all_done: true,
+        }}
       />,
     );
     expect(screen.getByTestId('mobile-visit-tasks').textContent).toBe('✓ やることは完了');

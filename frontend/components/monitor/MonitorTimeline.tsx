@@ -1106,7 +1106,7 @@ function VisitBars({
               2名
             </span>
           )}
-          {/* 事務所からのやること (📋N・期日を過ぎたものがあれば赤・全部完了なら ✓)。 */}
+          {/* 事務所からのやること (📋N・期日を過ぎたものがあれば赤・2 回目以降があれば橙・全部完了なら ✓)。 */}
           <TaskCountBadge count={taskCount} testId={`monitor-bar-tasks-${visit.visit_id}`} />
         </span>
         <span className="flex min-w-0 items-center gap-1 text-[9px] leading-tight opacity-80">

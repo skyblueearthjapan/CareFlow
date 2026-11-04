@@ -74,7 +74,13 @@ describe('AddTaskForm', () => {
     fireEvent.change(screen.getByTestId('add-task-date'), { target: { value: '2026-11-04' } });
     fireEvent.click(screen.getByTestId('add-task-submit'));
     expect(createMutate).toHaveBeenCalledWith(
-      { patient_id: 'p-1', start_date: '2026-11-04', item_type_ids: ['i1', 'i2'], memo: null },
+      {
+        patient_id: 'p-1',
+        start_date: '2026-11-04',
+        item_type_ids: ['i1', 'i2'],
+        memo: null,
+        due_date: null,
+      },
       expect.any(Object),
     );
   });
@@ -126,5 +132,83 @@ describe('AddTaskForm', () => {
     settle?.();
     fireEvent.click(submit);
     expect(createMutate).toHaveBeenCalledTimes(2);
+  });
+
+  it('期日の早押しは日付 (この日から) をもとに数え、選んだ期日で付ける', () => {
+    // 11/4 は水曜: 今週中 = 11/7（土）・1 週間 = 11/11・2 週間 = 11/18・月末 = 11/30
+    render(<AddTaskForm defaultDate="2026-11-04" onClose={vi.fn()} />);
+    expect(screen.getByTestId('add-task-due-quick-今週中').textContent).toBe(
+      '今週中（11/7（土））',
+    );
+    expect(screen.getByTestId('add-task-due-quick-1 週間').textContent).toBe(
+      '1 週間（11/11（水））',
+    );
+    expect(screen.getByTestId('add-task-due-quick-2 週間').textContent).toBe(
+      '2 週間（11/18（水））',
+    );
+    expect(screen.getByTestId('add-task-due-quick-月末').textContent).toBe('月末（11/30（月））');
+    // 既定は「なし」で、日付の欄は押せない
+    expect(screen.getByTestId('add-task-due-date')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('pick-patient'));
+    fireEvent.click(screen.getByRole('button', { name: '項目あ' }));
+    fireEvent.click(screen.getByTestId('add-task-due-quick-1 週間'));
+    expect(screen.getByTestId('add-task-due-date')).toHaveValue('2026-11-11');
+    fireEvent.click(screen.getByTestId('add-task-submit'));
+    expect(createMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ start_date: '2026-11-04', due_date: '2026-11-11' }),
+      expect.any(Object),
+    );
+  });
+
+  it('日付を変えると早押しの日も変わる (土曜なら今週中はその日)', () => {
+    render(<AddTaskForm defaultDate="2026-11-04" onClose={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('add-task-date'), { target: { value: '2026-11-07' } });
+    expect(screen.getByTestId('add-task-due-quick-今週中').textContent).toBe(
+      '今週中（11/7（土））',
+    );
+    expect(screen.getByTestId('add-task-due-quick-1 週間').textContent).toBe(
+      '1 週間（11/14（土））',
+    );
+  });
+
+  it('期日が日付より前なら赤い注意を出し、「付ける」を押せない。「なし」に戻すと付けられる', () => {
+    render(<AddTaskForm defaultDate="2026-11-04" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('pick-patient'));
+    fireEvent.click(screen.getByRole('button', { name: '項目あ' }));
+    fireEvent.click(screen.getByTestId('add-task-due-on'));
+    // 日をまだ選んでいない間も押せない
+    expect(screen.getByTestId('add-task-submit')).toBeDisabled();
+    expect(screen.getByTestId('add-task-missing').textContent).toContain('期日');
+
+    fireEvent.change(screen.getByTestId('add-task-due-date'), {
+      target: { value: '2026-11-03' },
+    });
+    expect(screen.getByTestId('add-task-due-before').textContent).toContain(
+      '期日（11/3（火））が、日付（11/4（水））より前です',
+    );
+    expect(screen.getByTestId('add-task-submit')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('add-task-submit'));
+    expect(createMutate).not.toHaveBeenCalled();
+
+    // 同じ日なら付けられる
+    fireEvent.change(screen.getByTestId('add-task-due-date'), {
+      target: { value: '2026-11-04' },
+    });
+    expect(screen.queryByTestId('add-task-due-before')).toBeNull();
+    expect(screen.getByTestId('add-task-submit')).toBeEnabled();
+
+    // 前の日へ戻してから「なし」にすると、期日なしで付けられる
+    fireEvent.change(screen.getByTestId('add-task-due-date'), {
+      target: { value: '2026-11-01' },
+    });
+    expect(screen.getByTestId('add-task-submit')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('add-task-due-none'));
+    expect(screen.getByTestId('add-task-submit')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('add-task-submit'));
+    expect(createMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ due_date: null }),
+      expect.any(Object),
+    );
   });
 });

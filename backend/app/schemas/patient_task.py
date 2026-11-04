@@ -9,7 +9,8 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 TaskStatus = Literal["open", "done", "cancelled"]
-TaskListStatus = Literal["open", "overdue", "done", "all"]
+#: waiting2plus = 未完了で 2 回目以降の訪問待ち (visit_round >= 2)。
+TaskListStatus = Literal["open", "overdue", "waiting2plus", "done", "all"]
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,12 @@ class PatientTaskRead(BaseModel):
     patient_id: UUID
     patient_name: str | None
     start_date: date
+    #: いつまでに (任意)。null は期日なし。
+    due_date: date | None = None
+    #: 何回目の訪問待ち (1 以上)。一覧・作成・1 件の読み出しは「いまの時刻から見て」
+    #: (日付以降で予定の終わりが過ぎた訪問の数 + 1)、訪問ごとの読み出しは「その訪問から見て」
+    #: (日付以降でその訪問より前の訪問の数 + 1)。
+    visit_round: int = Field(default=1, ge=1)
     item_type_id: UUID | None
     item_type_name: str | None
     #: 伝言 (item_type_id が NULL) なら true。
@@ -86,7 +93,7 @@ class PatientTaskRead(BaseModel):
     created_by_name: str | None
     created_at: datetime
     status: TaskStatus
-    #: 未完了で、日付以降の出す訪問の日がもう過ぎた (= 持ち越し) = 期日を過ぎた。
+    #: 期日を過ぎた = 未完了で、期日が今日 (JST) より前。期日がないものは常に false。
     overdue: bool
     #: 訪問ごとの読み出しだけ: この訪問より前に出す訪問があった (= 持ち越し)。
     carried_over: bool = False
@@ -110,6 +117,8 @@ class PatientTaskRead(BaseModel):
 class PatientTaskCreate(BaseModel):
     patient_id: UUID
     start_date: date
+    #: 期日 (任意)。日付より前は 422。
+    due_date: date | None = None
     #: 複数なら 1 件ずつ作る。空なら伝言だけの 1 件。
     item_type_ids: list[UUID] = Field(default_factory=list, max_length=50)
     #: 伝言 (任意)。項目と一緒なら最初の 1 件に付ける。
@@ -130,6 +139,12 @@ class PatientTaskCreateResult(BaseModel):
     notified_user_count: int
 
 
+class PatientTaskDueUpdate(BaseModel):
+    """期日を変える。null で期日なしに戻す (欄は省けない)."""
+
+    due_date: date | None
+
+
 class PatientTaskComplete(BaseModel):
     visit_id: UUID | None = None
 
@@ -138,6 +153,8 @@ class VisitTaskCount(BaseModel):
     open_count: int
     total_count: int
     has_carried_over: bool
+    #: その訪問に出る未完了のうち、期日を過ぎたものがある。
+    has_overdue: bool
     all_done: bool
 
 

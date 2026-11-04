@@ -470,7 +470,8 @@ export default function MonitorPage() {
               <span className="rounded-full bg-brand-primary-light px-1 text-[10px] font-bold text-brand-primary-hover">
                 📋2
               </span>
-              未完了のやること（赤＝期日を過ぎたものあり・✓＝全部完了）
+              未完了のやること（赤＝期日を過ぎたものあり・橙＝2
+              回目以降の訪問待ちあり・✓＝全部完了）
             </span>
           )}
           <span className="text-text-muted">→1.2km 次までの距離</span>

@@ -1614,7 +1614,11 @@ function MobileVisitDetailPageInner() {
 
           {/* ---- 事務所からのお願い・伝言 (patient-tasks-design §3) ------------ */}
           {/* 先の日はお願いの完了を押せない (伝言の「読みました」は押せる)。 */}
-          <MobileVisitTasks visitId={visit.id} readOnly={isFutureDay} />
+          <MobileVisitTasks
+            visitId={visit.id}
+            readOnly={isFutureDay}
+            visitDate={visit.visit_date}
+          />
 
           {/* ---- Preview / confirm overlay (BEFORE the single POST) ------- */}
           {flow.step === 'preview' && (

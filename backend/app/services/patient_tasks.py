@@ -27,7 +27,7 @@ from typing import Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course
@@ -83,38 +83,76 @@ def task_status(task: PatientTask) -> str:
 
 
 def overdue_clause(today: date):
-    """期日を過ぎた = 未完了・取消でなく、日付以降の出す訪問の日がもう過ぎた (今日より前).
+    """期日を過ぎた = 未完了・取消でなく、期日 (``due_date``) が今日 (JST) より前.
 
-    日付 (この日から) が過ぎただけでは出さない。その日以降の最初の訪問が終わっても
-    未完了のとき (= 持ち越し) だけ。訪問がまだ無い・先の訪問しか無いものは出さない。
-    日の単位で見る (PO 2026-11-04)。同じ日に訪問が 2 回あり朝の分で未完了のとき、
-    午後の訪問には持ち越し (carried_over) が立つが、ここはその日が終わるまで立てない。
+    期日がないものは期日を過ぎたにならない (「何回目の訪問待ち」で見る)。
+    正典 ``docs/plans/patient-tasks-due-design-2026-11-04.md`` §2-b (PO 2026-11-04)。
     """
-    passed_visit = (
-        select(Visit.id)
-        .where(
-            Visit.patient_id == PatientTask.patient_id,
-            Visit.visit_date >= PatientTask.start_date,
-            Visit.visit_date < today,
-            eligible_visit_clause(),
-        )
-        .exists()
+    return and_(
+        PatientTask.done_at.is_(None),
+        PatientTask.cancelled_at.is_(None),
+        PatientTask.due_date.is_not(None),
+        PatientTask.due_date < today,
     )
-    return and_(PatientTask.done_at.is_(None), PatientTask.cancelled_at.is_(None), passed_visit)
 
 
-async def overdue_task_ids(db: AsyncSession, tasks: list[PatientTask], today: date) -> set[UUID]:
-    """渡したやることのうち、期日を過ぎたものの id (問い合わせ 1 回)."""
-    ids = [t.id for t in tasks if task_status(t) == "open"]
-    if not ids:
-        return set()
-    return set(
-        (
-            await db.scalars(
-                select(PatientTask.id).where(PatientTask.id.in_(ids), overdue_clause(today))
+def is_overdue(task: PatientTask, today: date) -> bool:
+    """:func:`overdue_clause` と同じ判定を読み込んだ行で."""
+    return task_status(task) == "open" and task.due_date is not None and task.due_date < today
+
+
+def _visit_ended_clause(now: datetime):
+    """予定の終わり (``visit_date`` + ``end_time``、JST) が ``now`` より前の訪問."""
+    local = now.astimezone(JST)
+    today, now_t = local.date(), local.time().replace(tzinfo=None)
+    return or_(
+        Visit.visit_date < today,
+        and_(Visit.visit_date == today, Visit.end_time < now_t),
+    )
+
+
+def _ended_visits_for_task(now: datetime):
+    """そのやることの日付以降で、予定の終わりが過ぎた出せる訪問 (相関サブクエリの条件)."""
+    return and_(
+        Visit.patient_id == PatientTask.patient_id,
+        Visit.visit_date >= PatientTask.start_date,
+        eligible_visit_clause(),
+        _visit_ended_clause(now),
+    )
+
+
+def waiting2plus_clause(now: datetime):
+    """2 回目以降の訪問待ち = 未完了・取消でなく、日付以降に終わった訪問が 1 件以上."""
+    return and_(
+        PatientTask.done_at.is_(None),
+        PatientTask.cancelled_at.is_(None),
+        select(Visit.id).where(_ended_visits_for_task(now)).exists(),
+    )
+
+
+async def visit_rounds_now(
+    db: AsyncSession, tasks: list[PatientTask], now: datetime
+) -> dict[UUID, int]:
+    """やること id → いまの時刻から見た「何回目の訪問待ち」(問い合わせ 1 回).
+
+    日付以降の取消・削除でない訪問のうち、予定の終わりが ``now`` より前のものの数 + 1
+    (§2-d)。同じ日の 2 回も別に数える。画面は未完了にだけ札を出すので、完了・取消は
+    数えずに 1 を返す。
+    """
+    ids = [t.id for t in tasks]
+    open_ids = [t.id for t in tasks if task_status(t) == "open"]
+    ended: dict[UUID, int] = {}
+    if open_ids:
+        rows = (
+            await db.execute(
+                select(PatientTask.id, func.count(Visit.id))
+                .join(Visit, _ended_visits_for_task(now))
+                .where(PatientTask.id.in_(open_ids))
+                .group_by(PatientTask.id)
             )
         ).all()
-    )
+        ended = {tid: int(n) for tid, n in rows}
+    return {tid: ended.get(tid, 0) + 1 for tid in ids}
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +317,8 @@ def visit_brief(v: Visit, staff: list[StaffRef]) -> dict:
 class VisitTaskEntry:
     task: PatientTask
     carried_over: bool
+    #: その訪問から見た何回目 (日付以降の出せる訪問のうち、この訪問より前の数 + 1)。
+    visit_round: int = 1
 
 
 def _done_shows_on(task: PatientTask, v: Visit) -> bool:
@@ -327,26 +367,32 @@ async def tasks_for_visits(
         return {}
 
     today = jst_today()
-    open_tasks = [t for t in tasks if t.done_at is None]
     first_by_task: dict[UUID, tuple[date, time, str]] = {}
     # 今日より後の訪問には、max(日付, 今日) 以降の最初の訪問にだけ出す
     # (まだ来ていない先の訪問へ持ち越しで重ねて出さない)。
     next_by_task: dict[UUID, UUID] = {}
-    if open_tasks:
-        by_patient = await load_patient_visits(
-            db,
-            {t.patient_id for t in open_tasks},
-            min(t.start_date for t in open_tasks),
-            max_d,
-        )
-        for t in open_tasks:
-            pvs = by_patient.get(t.patient_id, [])
-            fv = first_visit_on_or_after(pvs, t.start_date)
-            if fv is not None:
-                first_by_task[t.id] = _visit_key(fv)
-            nv = first_visit_on_or_after(pvs, max(t.start_date, today))
-            if nv is not None:
-                next_by_task[t.id] = nv.id
+    # 何回目の数え方用: やること id → (患者の訪問の並び, 日付以降の最初の位置)。
+    rounds_base: dict[UUID, tuple[list[tuple[date, time, str]], int]] = {}
+    by_patient = await load_patient_visits(
+        db, {t.patient_id for t in tasks}, min(t.start_date for t in tasks), max_d
+    )
+    keys_by_patient = {pid: [_visit_key(v) for v in vs] for pid, vs in by_patient.items()}
+    for t in tasks:
+        pvs = by_patient.get(t.patient_id, [])
+        keys = keys_by_patient.get(t.patient_id, [])
+        rounds_base[t.id] = (keys, bisect.bisect_left(keys, (t.start_date,)))
+        if t.done_at is not None:
+            continue
+        fv = first_visit_on_or_after(pvs, t.start_date)
+        if fv is not None:
+            first_by_task[t.id] = _visit_key(fv)
+        nv = first_visit_on_or_after(pvs, max(t.start_date, today))
+        if nv is not None:
+            next_by_task[t.id] = nv.id
+
+    def _round(t: PatientTask, v: Visit) -> int:
+        keys, lo_i = rounds_base[t.id]
+        return max(bisect.bisect_left(keys, _visit_key(v)) - lo_i, 0) + 1
 
     tasks_by_patient: dict[UUID, list[PatientTask]] = defaultdict(list)
     for t in tasks:
@@ -361,9 +407,11 @@ async def tasks_for_visits(
                     continue
                 if t.start_date <= v.visit_date:
                     first = first_by_task.get(t.id)
-                    entries.append(VisitTaskEntry(t, first is not None and first < _visit_key(v)))
+                    entries.append(
+                        VisitTaskEntry(t, first is not None and first < _visit_key(v), _round(t, v))
+                    )
             elif _done_shows_on(t, v):
-                entries.append(VisitTaskEntry(t, False))
+                entries.append(VisitTaskEntry(t, False, _round(t, v)))
         if entries:
             out[v.id] = entries
     return out
@@ -436,7 +484,9 @@ def task_sort_key(task: PatientTask, names: TaskNames) -> tuple:
     )
 
 
-def serialize_task(task: PatientTask, names: TaskNames, *, overdue: bool) -> dict:
+def serialize_task(
+    task: PatientTask, names: TaskNames, *, overdue: bool, visit_round: int = 1
+) -> dict:
     item = names.item_types.get(task.item_type_id) if task.item_type_id else None
     done_by_name = None
     if task.done_by_staff_id is not None:
@@ -448,6 +498,8 @@ def serialize_task(task: PatientTask, names: TaskNames, *, overdue: bool) -> dic
         "patient_id": task.patient_id,
         "patient_name": names.patients.get(task.patient_id),
         "start_date": task.start_date,
+        "due_date": task.due_date,
+        "visit_round": visit_round,
         "item_type_id": task.item_type_id,
         "item_type_name": item[0] if item else None,
         "is_message": task.item_type_id is None,

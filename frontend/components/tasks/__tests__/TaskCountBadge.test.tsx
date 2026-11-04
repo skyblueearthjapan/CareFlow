@@ -9,7 +9,13 @@ describe('TaskCountBadge', () => {
     render(
       <TaskCountBadge
         testId="b"
-        count={{ open_count: 2, total_count: 3, has_carried_over: false, all_done: false }}
+        count={{
+          open_count: 2,
+          total_count: 3,
+          has_carried_over: false,
+          has_overdue: false,
+          all_done: false,
+        }}
       />,
     );
     const b = screen.getByTestId('b');
@@ -19,21 +25,57 @@ describe('TaskCountBadge', () => {
     expect(b).toHaveAttribute('role', 'img');
   });
 
-  it('期日を過ぎたもの (持ち越し) があれば赤', () => {
+  it('期日を過ぎたものがあれば赤 (2 回目以降があっても赤を先に)', () => {
     render(
       <TaskCountBadge
         testId="b"
-        count={{ open_count: 1, total_count: 1, has_carried_over: true, all_done: false }}
+        count={{
+          open_count: 1,
+          total_count: 1,
+          has_carried_over: true,
+          has_overdue: true,
+          all_done: false,
+        }}
       />,
     );
-    expect(screen.getByTestId('b').dataset.tone).toBe('over');
+    const b = screen.getByTestId('b');
+    expect(b.dataset.tone).toBe('over');
+    expect(b.getAttribute('title')).toBe(
+      '事務所からのやること：未完了 1 件（期日を過ぎたものあり・2 回目以降の訪問待ちあり）',
+    );
+  });
+
+  it('2 回目以降の訪問待ちだけなら橙', () => {
+    render(
+      <TaskCountBadge
+        testId="b"
+        count={{
+          open_count: 2,
+          total_count: 2,
+          has_carried_over: true,
+          has_overdue: false,
+          all_done: false,
+        }}
+      />,
+    );
+    const b = screen.getByTestId('b');
+    expect(b.dataset.tone).toBe('carry');
+    expect(b.getAttribute('title')).toBe(
+      '事務所からのやること：未完了 2 件（2 回目以降の訪問待ちあり）',
+    );
   });
 
   it('全部完了なら ✓', () => {
     render(
       <TaskCountBadge
         testId="b"
-        count={{ open_count: 0, total_count: 2, has_carried_over: false, all_done: true }}
+        count={{
+          open_count: 0,
+          total_count: 2,
+          has_carried_over: false,
+          has_overdue: false,
+          all_done: true,
+        }}
       />,
     );
     const b = screen.getByTestId('b');

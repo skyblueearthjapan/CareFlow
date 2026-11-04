@@ -8,6 +8,7 @@ const c = (open: number, total: number) => ({
   open_count: open,
   total_count: total,
   has_carried_over: false,
+  has_overdue: false,
   all_done: open === 0,
 });
 

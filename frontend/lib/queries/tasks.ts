@@ -10,6 +10,7 @@
  *   POST  /api/v1/tasks/{id}/complete           (admin・その訪問の担当の職員)
  *   POST  /api/v1/tasks/{id}/reopen             (admin・自分で完了にした職員)
  *   POST  /api/v1/tasks/{id}/cancel             (admin)
+ *   PATCH /api/v1/tasks/{id}/due                (admin・期日を変える／なしに戻す)
  *   GET   /api/v1/visits/{visitId}/tasks        (admin・その訪問の担当の職員)
  *
  * 正典 = docs/plans/patient-tasks-design-2026-11-01.md。
@@ -29,6 +30,7 @@ import { useSession } from 'next-auth/react';
 import { fetcher } from '@/lib/api/fetcher';
 import {
   patientTaskCreateSchema,
+  patientTaskDueUpdateSchema,
   taskItemTypeCreateSchema,
   taskItemTypeUpdateSchema,
   type PatientTaskCreate,
@@ -269,6 +271,34 @@ export function useReopenTask(options: TaskIdOptions = {}) {
 /** 取り消す (管理者)。引数は taskId。 */
 export function useCancelTask(options: TaskIdOptions = {}) {
   return useTaskAction('cancel', options);
+}
+
+type SetDueVars = { taskId: string; dueDate: string | null };
+type SetDueOptions = UseMutationOptions<PatientTaskRead, Error, SetDueVars>;
+
+/** 期日を変える (管理者)。dueDate = null で期日なしに戻す。日付より前は 422。 */
+export function useSetTaskDue(options: SetDueOptions = {}) {
+  const invalidate = useInvalidateTasks();
+  const { accessToken, refreshToken } = useAuthTokens();
+  return useMutation<PatientTaskRead, Error, SetDueVars>({
+    mutationFn: ({ taskId, dueDate }) =>
+      fetcher<PatientTaskRead>(`${TASKS}/${taskId}/due`, {
+        method: 'PATCH',
+        body: JSON.stringify(patientTaskDueUpdateSchema.parse({ due_date: dueDate })),
+        accessToken,
+        refreshToken,
+      }),
+    ...options,
+    onSuccess: async (data, variables, onMutateResult, context) => {
+      await invalidate();
+      return options.onSuccess?.(data, variables, onMutateResult, context);
+    },
+    // 422 (完了・取消の後・日付より前) のときも、いまの状態を読み直す。
+    onError: async (error, variables, onMutateResult, context) => {
+      await invalidate();
+      return options.onError?.(error, variables, onMutateResult, context);
+    },
+  });
 }
 
 function useInvalidateItemTypes() {

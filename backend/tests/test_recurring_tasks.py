@@ -9,6 +9,8 @@
 7. 項目を「使わない」にした設定は作らない。保存したとき今月の分を作る。
 8. 権限 (管理者だけ)・GET /tasks に設定と月が出る・試し表示。
 9. migration 0105 の chain と SQLite の upgrade/downgrade。
+10. 毎月何日まで (due_day・patient-tasks-due-design-2026-11-04): 0 は末日・作った日より前なら
+    今日・範囲と「毎月何日から」より前は 422。migration 0106 の upgrade/downgrade。
 """
 
 from __future__ import annotations
@@ -531,6 +533,104 @@ def test_task_start_date_past_month_is_today() -> None:
     assert svc.task_start_date(rule, date(2026, 11, 1), today) == today
 
 
+def test_task_due_date_end_of_month_and_today() -> None:
+    """毎月何日まで: 0 は末日 (2 月は 28／29 日)。作った日より前なら今日。なしは null."""
+    from types import SimpleNamespace
+
+    rule = SimpleNamespace(day_of_month=1, due_day=0)
+    today = date(2026, 11, 2)
+    assert svc.task_due_date(rule, date(2027, 2, 1), today) == date(2027, 2, 28)
+    assert svc.task_due_date(rule, date(2028, 2, 1), today) == date(2028, 2, 29)
+    assert svc.task_due_date(rule, date(2026, 11, 1), today) == date(2026, 11, 30)
+    rule.due_day = 10
+    assert svc.task_due_date(rule, date(2026, 12, 1), today) == date(2026, 12, 10)
+    # 月の途中で作り、その月の期日がもう過ぎた → 作った日 (§6-2)
+    assert svc.task_due_date(rule, date(2026, 11, 1), date(2026, 11, 20)) == date(2026, 11, 20)
+    assert svc.task_due_date(rule, date(2026, 10, 1), today) == today
+    rule.due_day = None
+    assert svc.task_due_date(rule, date(2026, 12, 1), today) is None
+
+
+@pytest.mark.asyncio
+async def test_due_day_sets_due_date_on_created_tasks(client, db) -> None:
+    admin = await _user(db, "adm", "admin")
+    await _patient(db, "A")
+    rule = await _rule(
+        client, admin, memo="x", start_month="2026-12-01", day_of_month=1, due_day=10
+    )
+    assert rule["due_day"] == 10
+    no_due = await _rule(client, admin, memo="y", start_month="2026-12-01", day_of_month=1)
+    assert no_due["due_day"] is None
+    end = await _rule(client, admin, memo="z", start_month="2026-12-01", day_of_month=5, due_day=0)
+
+    r = await svc.run_due(db, today=date(2026, 12, 3))
+    await db.commit()
+    assert r.created_total == 2  # day_of_month=5 の設定はまだ
+    (t,) = await _tasks(db, rule["id"])
+    assert (t.start_date, t.due_date) == (date(2026, 12, 3), date(2026, 12, 10))
+    (t,) = await _tasks(db, no_due["id"])
+    assert t.due_date is None
+
+    # 見回りが止まり、期日 (12/10) を過ぎてから作った月 → 作った日を期日にする
+    r = await svc.run_due(db, today=date(2027, 1, 12))
+    await db.commit()
+    jan = [t for t in await _tasks(db, rule["id"]) if t.recurring_month == date(2027, 1, 1)]
+    assert [(t.start_date, t.due_date) for t in jan] == [(date(2027, 1, 12), date(2027, 1, 12))]
+    jan_end = [t for t in await _tasks(db, end["id"]) if t.recurring_month == date(2027, 1, 1)]
+    assert [t.due_date for t in jan_end] == [date(2027, 1, 31)]
+
+    # 試し表示にも作る期日が出る
+    res = await client.get(
+        f"/api/v1/recurring-task-rules/{end['id']}/preview?month=2027-02", headers=_h(admin)
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["due_date"] == "2027-02-28"
+
+
+@pytest.mark.asyncio
+async def test_due_day_validation(client, db) -> None:
+    admin = await _user(db, "adm", "admin")
+    url = "/api/v1/recurring-task-rules"
+    base = {
+        "memo": "x",
+        "target_categories": ["psychiatric"],
+        "start_month": NEXT_MONTH.isoformat(),
+        "day_of_month": 10,
+    }
+    for bad in (-1, 29):
+        res = await client.post(url, json={**base, "due_day": bad}, headers=_h(admin))
+        assert res.status_code == 422, bad
+    res = await client.post(url, json={**base, "due_day": 9}, headers=_h(admin))
+    assert res.status_code == 422
+    assert (
+        res.json()["detail"]
+        == "期日（毎月何日まで）は、毎月何日からと同じ日か、後の日にしてください"
+    )
+    for ok in (10, 28, 0):
+        res = await client.post(url, json={**base, "due_day": ok}, headers=_h(admin))
+        assert res.status_code == 201, (ok, res.text)
+        assert res.json()["due_day"] == ok
+
+    rule = await _rule(client, admin, memo="x", day_of_month=5, due_day=20)
+    rid = rule["id"]
+    # 毎月何日からを期日より後へ動かすと 422・期日を前へ動かしても 422
+    res = await client.patch(f"{url}/{rid}", json={"day_of_month": 21}, headers=_h(admin))
+    assert res.status_code == 422
+    res = await client.patch(f"{url}/{rid}", json={"due_day": 4}, headers=_h(admin))
+    assert res.status_code == 422
+    res = await client.patch(f"{url}/{rid}", json={"due_day": 0}, headers=_h(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["due_day"] == 0
+    # 送らなければ変えない・null で期日なし
+    res = await client.patch(f"{url}/{rid}", json={"memo": "y"}, headers=_h(admin))
+    assert res.json()["due_day"] == 0
+    res = await client.patch(f"{url}/{rid}", json={"due_day": None}, headers=_h(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["due_day"] is None
+    listed = (await client.get(url, headers=_h(admin))).json()
+    assert next(r for r in listed if r["id"] == rid)["due_day"] is None
+
+
 # ---------------------------------------------------------------------------
 # migration 0105
 # ---------------------------------------------------------------------------
@@ -607,3 +707,71 @@ def test_migration_0105_upgrade_downgrade(tmp_path: Path) -> None:
     assert not ({"recurring_rule_id", "recurring_month"} & cols)
     with engine.begin() as conn:
         assert conn.execute(sa.text("SELECT COUNT(*) FROM patient_tasks")).scalar() == 1
+
+
+# ---------------------------------------------------------------------------
+# migration 0106
+# ---------------------------------------------------------------------------
+
+
+def test_migration_0106_revision_chain() -> None:
+    cfg = Config(str(_BACKEND_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_ROOT / "alembic"))
+    script = ScriptDirectory.from_config(cfg)
+    rev = script.get_revision("0106_task_due_date")
+    assert rev is not None
+    assert rev.down_revision == "0105_recurring_tasks"
+    heads = list(script.get_heads())
+    assert len(heads) == 1
+    assert "0106_task_due_date" in {r.revision for r in script.iterate_revisions(heads[0], "base")}
+
+
+def test_migration_0106_upgrade_downgrade(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'migration_0106.db'}")
+    with engine.begin() as conn:
+        for name in ("users", "patients", "staff", "visits"):
+            conn.execute(sa.text(f"CREATE TABLE {name} (id CHAR(32) PRIMARY KEY)"))
+    _run_migration(engine, "0103_patient_tasks", "upgrade")
+    _run_migration(engine, "0105_recurring_tasks", "upgrade")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO patient_tasks (id, patient_id, start_date, memo)"
+                " VALUES ('a', 'p', '2026-12-01', 'm')"
+            )
+        )
+    _run_migration(engine, "0106_task_due_date", "upgrade")
+    insp = inspect(engine)
+    assert "due_date" in {c["name"] for c in insp.get_columns("patient_tasks")}
+    assert "due_day" in {c["name"] for c in insp.get_columns("recurring_task_rules")}
+    with engine.begin() as conn:
+        # 既存の行は期日なし
+        assert conn.execute(sa.text("SELECT due_date FROM patient_tasks")).scalar() is None
+        conn.execute(sa.text("UPDATE patient_tasks SET due_date = '2026-12-10'"))
+        for i, day in enumerate((None, 0, 28)):
+            conn.execute(
+                sa.text(
+                    "INSERT INTO recurring_task_rules (id, memo, day_of_month, due_day,"
+                    " target_categories, start_month)"
+                    " VALUES (:id, 'm', 1, :d, '[\"psychiatric\"]', '2026-12-01')"
+                ),
+                {"id": f"ok{i}", "d": day},
+            )
+    # 0〜28 の外は落ちる
+    for bad in (-1, 29):
+        with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO recurring_task_rules (id, memo, day_of_month, due_day,"
+                    " target_categories, start_month)"
+                    " VALUES (:id, 'm', 1, :d, '[\"psychiatric\"]', '2026-12-01')"
+                ),
+                {"id": f"bad{bad}", "d": bad},
+            )
+    _run_migration(engine, "0106_task_due_date", "downgrade")
+    insp = inspect(engine)
+    assert "due_date" not in {c["name"] for c in insp.get_columns("patient_tasks")}
+    assert "due_day" not in {c["name"] for c in insp.get_columns("recurring_task_rules")}
+    with engine.begin() as conn:
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM patient_tasks")).scalar() == 1
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM recurring_task_rules")).scalar() == 3

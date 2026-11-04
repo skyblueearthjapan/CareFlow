@@ -3,7 +3,8 @@
 /**
  * やることのページの「＋ やることを付ける」(管理者・設計 §2-6)。
  *
- * 患者様・日付 (この日から出す)・項目 (いくつでも)・伝言を選んで付ける。
+ * 患者様・日付 (この日から出す)・項目 (いくつでも)・伝言・期日 (任意・
+ * patient-tasks-due-design-2026-11-04 §2・§6-1) を選んで付ける。期日が日付より前なら付けられない。
  * 付けた結果の next_visit で「出す訪問」を見せる (無ければ「訪問が入ったら出ます」)。
  * 文字と操作の大きさはモーダルの可読性の基準 (add-visit-anywhere-design §3-5) に合わせる。
  */
@@ -21,11 +22,14 @@ import {
 import { toast } from '@/components/ui/sonner';
 import { PatientCombobox } from '@/components/master/PatientCombobox';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
+import { cn } from '@/lib/utils';
 import { useCreateTasks, useTaskItemTypes } from '@/lib/queries/tasks';
 import type { PatientTaskCreateResult } from '@/lib/schemas/patient-task';
 
 import { TaskItemChips, canSubmitTask, toggleId } from './TaskItemChips';
-import { visitBriefLabel } from './taskFormat';
+import { dueQuickPicks, taskMd, taskMdWd, visitBriefLabel } from './taskFormat';
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
 interface AddTaskDialogProps {
   open: boolean;
@@ -56,19 +60,31 @@ export function AddTaskForm({
   const [date, setDate] = useState(defaultDate);
   const [types, setTypes] = useState<string[]>([]);
   const [memo, setMemo] = useState('');
+  // 期日: dueOn = 「日付を決める」を選んだ。due = 選んだ日 (空 = まだ選んでいない)。
+  const [dueOn, setDueOn] = useState(false);
+  const [due, setDue] = useState('');
   const [result, setResult] = useState<PatientTaskCreateResult | null>(null);
   const itemTypes = useTaskItemTypes();
   const create = useCreateTasks();
   // 二度押しで同じやることを 2 回付けないための送信中の旗 (isPending は次の描画まで立たない)。
   const sendingRef = useRef(false);
 
-  const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(date);
-  const ok = !!patientId && dateOk && canSubmitTask(types, memo);
+  const dateOk = YMD.test(date);
+  const dueOk = YMD.test(due);
+  const noDue = dueOn && !dueOk;
+  // 期日が日付より前 (PO 2026-11-04 §6-1: 赤い注意を出して付けられなくする・BE も 422)。
+  const badDue = dueOn && dueOk && dateOk && due < date;
+  const ok = !!patientId && dateOk && canSubmitTask(types, memo) && !noDue && !badDue;
   const missing = [
     !patientId ? '患者様' : null,
     !dateOk ? '日付' : null,
     !canSubmitTask(types, memo) ? '項目か伝言' : null,
+    noDue ? '期日' : null,
   ].filter((x): x is string => x !== null);
+  const pickDue = (d: string) => {
+    setDueOn(true);
+    setDue(d);
+  };
 
   const submit = () => {
     if (!ok || create.isPending || sendingRef.current) return;
@@ -79,6 +95,7 @@ export function AddTaskForm({
         start_date: date,
         item_type_ids: types,
         memo: memo.trim() || null,
+        due_date: dueOn ? due : null,
       },
       {
         onSuccess: (res) => {
@@ -117,6 +134,10 @@ export function AddTaskForm({
               訪問が入ったら出ます
             </span>
           )}
+          <div className="mt-1 text-sm" data-testid="add-task-result-due">
+            期日：
+            {result.tasks[0]?.due_date ? `${taskMdWd(result.tasks[0].due_date)} まで` : 'なし'}
+          </div>
         </div>
         <DialogFooter>
           <Button
@@ -193,6 +214,99 @@ export function AddTaskForm({
           data-testid="add-task-memo"
         />
       </label>
+
+      <div className="space-y-1.5">
+        <span className="block text-sm font-semibold text-text-primary">
+          期日
+          <span className="ml-1 font-normal text-text-muted">
+            （いつまでに・空欄でも付けられます）
+          </span>
+        </span>
+        <div
+          className="space-y-2 rounded-lg border border-border-default bg-bg-muted p-3"
+          data-testid="add-task-due"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex overflow-hidden rounded-md border border-border-default">
+              {(
+                [
+                  [false, 'なし'],
+                  [true, '日付を決める'],
+                ] as const
+              ).map(([v, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  aria-pressed={dueOn === v}
+                  onClick={() => setDueOn(v)}
+                  className={cn(
+                    'h-9 border-l border-border-default px-3 text-sm first:border-l-0',
+                    dueOn === v
+                      ? 'bg-brand-primary font-bold text-white'
+                      : 'bg-bg-base text-text-primary',
+                  )}
+                  data-testid={v ? 'add-task-due-on' : 'add-task-due-none'}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <input
+              type="date"
+              aria-label="期日"
+              value={due}
+              min={dateOk ? date : undefined}
+              disabled={!dueOn}
+              onChange={(e) => pickDue(e.target.value)}
+              className="block h-9 w-44 rounded-md border border-border-default bg-bg-base px-3 text-sm text-text-primary disabled:bg-bg-muted disabled:text-text-muted"
+              data-testid="add-task-due-date"
+            />
+          </div>
+          {dateOk && (
+            <div className="flex flex-wrap gap-1.5">
+              {dueQuickPicks(date).map((q) => (
+                <button
+                  key={q.label}
+                  type="button"
+                  aria-pressed={dueOn && due === q.date}
+                  onClick={() => pickDue(q.date)}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-xs',
+                    dueOn && due === q.date
+                      ? 'border-brand-primary bg-brand-primary-50 font-bold text-brand-primary-hover'
+                      : 'border-dashed border-brand-primary bg-bg-base text-brand-primary-hover',
+                  )}
+                  data-testid={`add-task-due-quick-${q.label}`}
+                >
+                  {q.label}（{taskMdWd(q.date)}）
+                </button>
+              ))}
+            </div>
+          )}
+          {badDue ? (
+            <p
+              className="m-0 rounded-md bg-error-bg px-3 py-2 text-xs font-bold text-error"
+              role="alert"
+              data-testid="add-task-due-before"
+            >
+              期日（{taskMdWd(due)}）が、日付（{taskMdWd(date)}
+              ）より前です。日付と同じ日か、後の日を選んでください。
+            </p>
+          ) : noDue ? (
+            <p className="m-0 rounded-md bg-warning-bg px-3 py-2 text-xs text-warning-strong">
+              期日の日を選んでください。期日を付けないときは「なし」を押します。
+            </p>
+          ) : dueOn ? (
+            <p className="m-0 text-xs text-text-muted">
+              {taskMd(due)} を過ぎても済んでいなければ「期日を過ぎた」になります。
+            </p>
+          ) : (
+            <p className="m-0 text-xs text-text-muted">
+              期日なしのときは「期日を過ぎた」になりません。済むまで、次の訪問へ持ち越して「何回目の訪問待ち」を出します。
+            </p>
+          )}
+        </div>
+      </div>
 
       <DialogFooter className="items-center">
         {missing.length > 0 && (

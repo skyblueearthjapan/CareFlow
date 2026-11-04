@@ -17,16 +17,25 @@ import { toast } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
 import { useCompleteTask, useReopenTask, useVisitTasks } from '@/lib/queries/tasks';
 import type { PatientTaskRead } from '@/lib/schemas/patient-task';
-import { RecurringMark } from '@/components/tasks/TaskPill';
-import { taskActionErrorMessage, taskDoneLabel, taskMd } from '@/components/tasks/taskFormat';
+import { RecurringMark, TaskOpenPills } from '@/components/tasks/TaskPill';
+import {
+  taskActionErrorMessage,
+  taskDoneLabel,
+  taskMd,
+  taskMdWd,
+  taskTodayJst,
+} from '@/components/tasks/taskFormat';
 
 export function MobileVisitTasks({
   visitId,
   readOnly = false,
+  visitDate,
 }: {
   visitId: string;
   /** 先の日の訪問: お願いの完了を押せない (伝言の「読みました」は押せる)。 */
   readOnly?: boolean;
+  /** 期日を見る日 (その訪問の日・YYYY-MM-DD)。省くと今日。 */
+  visitDate?: string;
 }) {
   const { data, isError } = useVisitTasks(visitId);
   const complete = useCompleteTask();
@@ -34,6 +43,7 @@ export function MobileVisitTasks({
   const busy = complete.isPending || reopen.isPending;
 
   if (isError || !data || data.length === 0) return null;
+  const refDate = visitDate ?? taskTodayJst();
   const requests = data.filter((t) => !t.is_message);
   const messages = data.filter((t) => t.is_message);
 
@@ -108,31 +118,31 @@ export function MobileVisitTasks({
                       {done ? '✓' : ''}
                     </span>
                     <span className="min-w-0 flex-1">
+                      {/* 札の並び = ［期日を過ぎた］期日／N 回目の訪問待ち (この訪問から見て)／毎月。 */}
+                      <span className="mb-0.5 flex flex-wrap items-center gap-1">
+                        {done ? (
+                          <RecurringMark month={t.recurring_month} />
+                        ) : (
+                          <TaskOpenPills task={t} refDate={refDate} />
+                        )}
+                      </span>
                       <span
                         className={cn(
                           'block text-[15px] font-bold text-text-primary',
                           done && 'text-text-secondary line-through',
                         )}
                       >
-                        {t.item_type_name ?? '（項目なし）'}{' '}
-                        <RecurringMark month={t.recurring_month} />
+                        {t.item_type_name ?? '（項目なし）'}
                       </span>
                       {t.memo && (
                         <span className="mt-0.5 block whitespace-pre-wrap text-sm text-text-primary">
                           {t.memo}
                         </span>
                       )}
-                      <span
-                        className={cn(
-                          'mt-0.5 block text-xs',
-                          !done && t.carried_over ? 'font-bold text-error' : 'text-text-muted',
-                        )}
-                      >
+                      <span className="mt-0.5 block text-xs text-text-muted">
                         {done
                           ? `完了 ${taskDoneLabel(t)}`
-                          : t.carried_over
-                            ? `${taskMd(t.start_date)} からの持ち越し`
-                            : `${taskMd(t.start_date)} から`}
+                          : `${taskMd(t.start_date)} から${t.due_date ? `・期日 ${taskMdWd(t.due_date)}` : ''}`}
                       </span>
                     </span>
                   </button>
@@ -163,10 +173,16 @@ export function MobileVisitTasks({
               className="rounded-md border border-border-default bg-bg-muted px-3 py-2.5"
               data-testid={`mobile-message-${t.id}`}
             >
+              <div className="mb-1 flex flex-wrap items-center gap-1">
+                {t.status === 'done' ? (
+                  <RecurringMark month={t.recurring_month} />
+                ) : (
+                  <TaskOpenPills task={t} refDate={refDate} />
+                )}
+              </div>
               <p className="m-0 whitespace-pre-wrap text-[15px] text-text-primary">{t.memo}</p>
               <p className="m-0 mt-1 text-xs text-text-muted">
-                {[t.created_by_name, taskMd(t.start_date)].filter(Boolean).join('・')}{' '}
-                <RecurringMark month={t.recurring_month} />
+                {[t.created_by_name, `${taskMd(t.start_date)} から`].filter(Boolean).join('・')}
               </p>
               <div className="mt-2">
                 {t.status === 'done' ? (

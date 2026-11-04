@@ -33,6 +33,8 @@ export const recurringTaskRuleReadSchema = z.object({
   item_type_active: z.boolean(),
   memo: z.string().nullable(),
   day_of_month: z.number().int(),
+  /** 毎月何日まで (期日)。null = なし・0 = 末日・1〜28 = その日。 */
+  due_day: z.number().int().nullable(),
   target_categories: z.array(z.string()),
   /** 最初に作る月 (その月の 1 日)。 */
   start_month: z.string(),
@@ -55,6 +57,8 @@ export const recurringTaskRuleInputSchema = z
     item_type_id: z.string().uuid().nullable(),
     memo: z.string().max(2000).nullable(),
     day_of_month: z.number().int().min(1).max(28),
+    /** 毎月何日まで。null = なし・0 = 末日・1〜28 (「から」より前は BE も 422)。 */
+    due_day: z.number().int().min(0).max(28).nullable(),
     target_categories: z.array(visitCategorySchema).min(1, '訪問の区分を 1 つ以上選んでください'),
     /** YYYY-MM-01 */
     start_month: z.string().regex(/^\d{4}-\d{2}-01$/),
@@ -64,6 +68,10 @@ export const recurringTaskRuleInputSchema = z
   .refine((v) => v.item_type_id !== null || (v.memo ?? '').trim().length > 0, {
     message: '項目か伝言のどちらかを入れてください',
     path: ['memo'],
+  })
+  .refine((v) => v.due_day === null || v.due_day === 0 || v.due_day >= v.day_of_month, {
+    message: '「まで」は「から」と同じ日か、後の日にしてください',
+    path: ['due_day'],
   });
 export type RecurringTaskRuleInput = z.infer<typeof recurringTaskRuleInputSchema>;
 

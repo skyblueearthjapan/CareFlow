@@ -24,7 +24,7 @@ import {
 import type { PatientTaskRead } from '@/lib/schemas/patient-task';
 
 import { TaskItemChips, canSubmitTask, toggleId } from './TaskItemChips';
-import { Pill, RecurringMark } from './TaskPill';
+import { Pill, RecurringMark, TaskOpenPills } from './TaskPill';
 import {
   taskActionErrorMessage,
   taskDoneLabel,
@@ -76,6 +76,7 @@ export function VisitTasksBox({ visitId, visitDate, patientId, patientName }: Vi
             <TaskRow
               key={t.id}
               task={t}
+              visitDate={visitDate}
               busy={busy}
               onComplete={() =>
                 complete.mutate(
@@ -117,12 +118,15 @@ export function VisitTasksBox({ visitId, visitDate, patientId, patientName }: Vi
 
 function TaskRow({
   task: t,
+  visitDate,
   busy,
   onComplete,
   onReopen,
   onCancel,
 }: {
   task: PatientTaskRead;
+  /** 期日を見る日 (その訪問の日)。 */
+  visitDate: string;
   busy: boolean;
   onComplete: () => void;
   onReopen: () => void;
@@ -136,23 +140,23 @@ function TaskRow({
       data-status={t.status}
     >
       <div className="min-w-0 flex-1 text-xs text-text-primary">
+        {/* 札の並び = ［期日を過ぎた］伝言／期日／N 回目の訪問待ち (この訪問から見て)／毎月。 */}
         <div className="flex flex-wrap items-center gap-1">
-          {t.is_message && <Pill tone="msg">伝言</Pill>}
           {done ? (
-            <Pill tone="ok">完了 {taskDoneLabel(t)}</Pill>
-          ) : (
             <>
-              {t.carried_over && <Pill tone="carry">持ち越し</Pill>}
-              {/* overdue = 日付以降の出す訪問の日が過ぎても未完了 (日付が過ぎただけでは出ない)。 */}
-              {t.overdue && <Pill tone="over">訪問日を過ぎて未完了</Pill>}
+              {t.is_message && <Pill tone="msg">伝言</Pill>}
+              <Pill tone="ok">完了 {taskDoneLabel(t)}</Pill>
+              <RecurringMark month={t.recurring_month} />
             </>
+          ) : (
+            <TaskOpenPills task={t} refDate={visitDate} />
           )}
-          {!t.is_message && <b className="text-[13px]">{taskTitle(t)}</b>}
-          <RecurringMark month={t.recurring_month} />
         </div>
+        {!t.is_message && <b className="mt-0.5 block text-[13px]">{taskTitle(t)}</b>}
         {t.memo && <p className="m-0 mt-0.5 whitespace-pre-wrap">{t.memo}</p>}
         <p className="m-0 mt-0.5 text-[11px] text-text-muted">
-          日付 {taskMd(t.start_date)}
+          {taskMd(t.start_date)} から
+          {t.due_date ? `・期日 ${taskMd(t.due_date)}` : '・期日なし'}
           {t.created_by_name ? `・付けた人 ${t.created_by_name}` : ''}
         </p>
       </div>

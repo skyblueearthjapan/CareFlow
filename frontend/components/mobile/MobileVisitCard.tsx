@@ -211,7 +211,13 @@ export function MobileVisitCard({
                 {/* inline-flex の子は省略記号が出ないので、文字は span で切る。 */}
                 <span className="min-w-0 truncate">
                   {taskCount.open_count > 0
-                    ? `📋 やること ${taskCount.open_count} 件${taskCount.has_carried_over ? '（持ち越しあり）' : ''}`
+                    ? `📋 やること ${taskCount.open_count} 件${
+                        taskCount.has_overdue
+                          ? '（期日を過ぎたものあり）'
+                          : taskCount.has_carried_over
+                            ? '（2 回目以降あり）'
+                            : ''
+                      }`
                     : '✓ やることは完了'}
                 </span>
               </p>

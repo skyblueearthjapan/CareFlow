@@ -41,7 +41,9 @@ function makeTask(over: Partial<PatientTaskRead> = {}): PatientTaskRead {
     created_by_name: '事務 太郎',
     created_at: '2026-11-01T00:00:00Z',
     status: 'open',
+    due_date: null,
     overdue: false,
+    visit_round: 1,
     carried_over: false,
     done_at: null,
     done_by_user_id: null,
@@ -71,11 +73,13 @@ describe('MobileVisitTasks', () => {
   });
 
   it('四角を押すとその訪問で完了にする', () => {
-    tasks = [makeTask({ carried_over: true, start_date: '2026-10-29' })];
-    render(<MobileVisitTasks visitId="v1" />);
-    expect(screen.getByTestId('mobile-visit-requests').textContent).toContain(
-      '10/29 からの持ち越し',
-    );
+    tasks = [makeTask({ carried_over: true, visit_round: 2, start_date: '2026-10-29' })];
+    render(<MobileVisitTasks visitId="v1" visitDate="2026-11-04" />);
+    const text = screen.getByTestId('mobile-visit-requests').textContent ?? '';
+    // 「持ち越し」は「N 回目の訪問待ち」に置き換えた
+    expect(text).toContain('2 回目の訪問待ち');
+    expect(text).toContain('10/29 から');
+    expect(text).not.toContain('持ち越し');
     const box = screen.getByTestId('mobile-task-t1');
     expect(box).toHaveAttribute('aria-checked', 'false');
     fireEvent.click(box);
@@ -206,5 +210,50 @@ describe('MobileVisitTasks', () => {
     expect(screen.getByTestId('mobile-task-r11').textContent).toContain('毎月・11 月分');
     expect(screen.getByTestId('mobile-task-r12').textContent).toContain('毎月・12 月分');
     expect(screen.getByTestId('mobile-task-r0').textContent).not.toContain('毎月');
+  });
+
+  it('期日を過ぎたら赤い「期日を過ぎた」を先頭に、期日前は「〇/〇 まで」を出す', () => {
+    tasks = [
+      makeTask({ id: 'o1', due_date: '2026-11-03', overdue: true, visit_round: 2 }),
+      makeTask({ id: 'o2', due_date: '2026-11-13', visit_round: 1 }),
+    ];
+    render(<MobileVisitTasks visitId="v1" visitDate="2026-11-04" />);
+    const o1 = screen.getByTestId('mobile-task-o1').textContent ?? '';
+    expect(o1.indexOf('期日を過ぎた（11/3 まで）')).toBe(0);
+    expect(o1).toContain('2 回目の訪問待ち');
+    expect(o1).toContain('期日 11/3（火）');
+    const o2 = screen.getByTestId('mobile-task-o2').textContent ?? '';
+    expect(o2).not.toContain('期日を過ぎた');
+    expect(o2).toContain('11/13 まで・あと 9 日');
+    expect(o2.indexOf('11/13 まで')).toBeLessThan(o2.indexOf('1 回目の訪問待ち'));
+  });
+
+  it('伝言にも 伝言／期日／N 回目 の札を出す (完了したものには出さない)', () => {
+    tasks = [
+      makeTask({
+        id: 'm1',
+        is_message: true,
+        item_type_id: null,
+        item_type_name: null,
+        memo: '封筒を渡す',
+        due_date: '2026-11-04',
+        visit_round: 1,
+      }),
+      makeTask({
+        id: 'm2',
+        is_message: true,
+        item_type_id: null,
+        item_type_name: null,
+        memo: '済んだ伝言',
+        status: 'done',
+        visit_round: 2,
+      }),
+    ];
+    render(<MobileVisitTasks visitId="v1" visitDate="2026-11-04" />);
+    const m1 = screen.getByTestId('mobile-message-m1').textContent ?? '';
+    expect(m1).toContain('伝言');
+    expect(m1).toContain('今日まで');
+    expect(m1).toContain('1 回目の訪問待ち');
+    expect(screen.getByTestId('mobile-message-m2').textContent).not.toContain('回目の訪問待ち');
   });
 });

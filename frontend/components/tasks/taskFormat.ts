@@ -22,6 +22,56 @@ export function taskMdWd(ymd: string): string {
   return `${taskMd(ymd)}（${wd}）`;
 }
 
+/** 今日 (JST・YYYY-MM-DD)。 */
+export function taskTodayJst(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(new Date());
+}
+
+function ymdToUtc(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+}
+
+/** YYYY-MM-DD に n 日足す。 */
+export function taskAddDays(ymd: string, n: number): string {
+  const dt = ymdToUtc(ymd);
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return dt.toISOString().slice(0, 10);
+}
+
+/** その月の末日 (YYYY-MM-DD)。 */
+export function taskMonthEnd(ymd: string): string {
+  const dt = ymdToUtc(ymd);
+  return new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * 期日の早押し (patient-tasks-due-design §3・モック B)。日付 (この日から) をもとに数える。
+ * 今週中 = その週の土曜 (日付が土曜ならその日)・1 週間・2 週間・月末。
+ */
+export function dueQuickPicks(start: string): { label: string; date: string }[] {
+  const wd = ymdToUtc(start).getUTCDay();
+  return [
+    { label: '今週中', date: taskAddDays(start, (6 - wd + 7) % 7) },
+    { label: '1 週間', date: taskAddDays(start, 7) },
+    { label: '2 週間', date: taskAddDays(start, 14) },
+    { label: '月末', date: taskMonthEnd(start) },
+  ];
+}
+
+export type DueState = { kind: 'over' | 'today' | 'left'; days: number };
+
+/** 期日の状態 (ref の日から見て)。期日なしは null。days は過ぎた日数／残りの日数。 */
+export function taskDueState(due: string | null | undefined, ref: string): DueState | null {
+  if (!due) return null;
+  const d = Math.round((ymdToUtc(due).getTime() - ymdToUtc(ref).getTime()) / 86_400_000);
+  if (d < 0) return { kind: 'over', days: -d };
+  if (d === 0) return { kind: 'today', days: 0 };
+  return { kind: 'left', days: d };
+}
+
 /** ISO 日時 → `11/2 09:31` (JST)。 */
 export function taskDateTime(iso: string | null | undefined): string {
   if (!iso) return '';

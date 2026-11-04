@@ -5,8 +5,8 @@
  *
  * 正典 = docs/plans/patient-tasks-recurring-design-2026-11-02.md §3-1・
  * モック docs/mockups/patient-tasks-recurring-mock.html。
- * 設定の一覧・作る／変える欄 (項目・対象の区分・個別に外す方・毎月何日から・最初に作る月・
- * 伝言・有効／停止)・止めた後の「未完了をまとめて取り消す」・来月の試し表示。
+ * 設定の一覧・作る／変える欄 (項目・対象の区分・個別に外す方・毎月何日から・毎月何日まで
+ * (patient-tasks-due-design-2026-11-04 §2-e)・最初に作る月・伝言・有効／停止)・止めた後の「未完了をまとめて取り消す」・来月の試し表示。
  * 作るのは BE の毎日の見回り (保存したときも、今月の設定日を過ぎていれば今月の分を作る)。
  */
 import { useMemo, useState } from 'react';
@@ -38,6 +38,17 @@ import { taskMdWd, visitBriefLabel } from './taskFormat';
 
 const CATEGORIES: VisitCategory[] = ['psychiatric', 'general'];
 const DAYS = Array.from({ length: 28 }, (_, i) => i + 1);
+
+/** 毎月何日まで: null = なし・0 = 末日・1〜28 = その日。 */
+function dueDayLabel(dueDay: number | null): string | null {
+  if (dueDay === null) return null;
+  return dueDay === 0 ? '毎月 末日 まで' : `毎月 ${dueDay} 日まで`;
+}
+
+/** 「まで」が「から」より前 (1〜28 で day_of_month より小さい)。末日・なしは前にならない。 */
+function dueDayBefore(dueDay: number | null, dayOfMonth: number): boolean {
+  return dueDay !== null && dueDay !== 0 && dueDay < dayOfMonth;
+}
 
 function todayJst(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(new Date());
@@ -78,6 +89,7 @@ function draftFrom(rule: RecurringTaskRuleRead | null, today: string): Draft {
       item_type_id: null,
       memo: '',
       day_of_month: 1,
+      due_day: null,
       target_categories: ['psychiatric'],
       // 初めは来月から (今月は手で付けた分を使う・設計 §6 (f))。
       start_month: monthStart(today, 1),
@@ -90,6 +102,7 @@ function draftFrom(rule: RecurringTaskRuleRead | null, today: string): Draft {
     item_type_id: rule.item_type_id,
     memo: rule.memo ?? '',
     day_of_month: rule.day_of_month,
+    due_day: rule.due_day ?? null,
     target_categories: rule.target_categories.filter((c): c is VisitCategory =>
       (CATEGORIES as string[]).includes(c),
     ),
@@ -162,6 +175,7 @@ export function RecurringTasksPanel() {
               <th className="px-3 py-2 font-medium">項目</th>
               <th className="px-3 py-2 font-medium">対象</th>
               <th className="px-3 py-2 font-medium">毎月何日から</th>
+              <th className="px-3 py-2 font-medium">毎月何日まで</th>
               <th className="px-3 py-2 font-medium">対象の人数</th>
               <th className="px-3 py-2 font-medium">状態</th>
               <th className="px-3 py-2 font-medium" />
@@ -170,19 +184,19 @@ export function RecurringTasksPanel() {
           <tbody>
             {rulesQuery.isLoading ? (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-text-muted">
+                <td colSpan={7} className="px-3 py-6 text-center text-text-muted">
                   読み込み中…
                 </td>
               </tr>
             ) : rulesQuery.isError ? (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-error">
+                <td colSpan={7} className="px-3 py-6 text-center text-error">
                   毎月のやることを読み込めませんでした：{apiErrorMessage(rulesQuery.error)}
                 </td>
               </tr>
             ) : rules.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-text-muted">
+                <td colSpan={7} className="px-3 py-8 text-center text-text-muted">
                   毎月のやることはまだありません。
                 </td>
               </tr>
@@ -218,6 +232,11 @@ export function RecurringTasksPanel() {
                   <td className="whitespace-nowrap px-3 py-2">
                     毎月 {r.day_of_month} 日から
                     <div className="text-xs text-text-muted">{monthLabel(r.start_month)} から</div>
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2" data-testid={`recurring-due-${r.id}`}>
+                    {dueDayLabel(r.due_day ?? null) ?? (
+                      <span className="text-xs text-text-muted">なし</span>
+                    )}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 tabular-nums">{r.target_count} 名</td>
                   <td className="whitespace-nowrap px-3 py-2">
@@ -315,8 +334,11 @@ function RuleForm({
   const activeCount = (candidates.data ?? []).filter(
     (p) => p.status === 'active' && !excluded.has(p.patient_id),
   ).length;
+  const dueBefore = dueDayBefore(d.due_day, d.day_of_month);
   const canSave =
-    d.target_categories.length > 0 && (d.item_type_id !== null || (d.memo ?? '').trim().length > 0);
+    d.target_categories.length > 0 &&
+    (d.item_type_id !== null || (d.memo ?? '').trim().length > 0) &&
+    !dueBefore;
 
   const toggleCategory = (c: VisitCategory) =>
     set({
@@ -399,6 +421,40 @@ function RuleForm({
           <p className="m-0 mt-1 text-xs text-text-muted">
             その日以降の、その方の最初の訪問に出ます。29〜31 日は月によって無いため選べません。
           </p>
+          <label className={label}>
+            毎月何日まで（任意）
+            <select
+              className={field}
+              value={d.due_day === null ? '' : String(d.due_day)}
+              onChange={(e) =>
+                set({ due_day: e.target.value === '' ? null : Number(e.target.value) })
+              }
+              data-testid="recurring-due-day"
+            >
+              <option value="">なし</option>
+              {DAYS.map((n) => (
+                <option key={n} value={n}>
+                  毎月 {n} 日まで
+                </option>
+              ))}
+              <option value="0">毎月 末日 まで</option>
+            </select>
+          </label>
+          {dueBefore ? (
+            <p
+              className="m-0 mt-1 rounded-md bg-error-bg px-3 py-2 text-xs font-bold text-error"
+              role="alert"
+              data-testid="recurring-due-before"
+            >
+              「まで」（{d.due_day} 日）が「から」（{d.day_of_month} 日）より前です。同じ月の{' '}
+              {d.day_of_month} 日以降か、末日を選んでください。
+            </p>
+          ) : (
+            <p className="m-0 mt-1 text-xs text-text-muted">
+              作るやることに、その月の期日が入ります。「末日」は月ごとに 30 日・31 日・28
+              日へ合わせます。「なし」のときは期日を付けません。作り済みの分の期日は変わりません。
+            </p>
+          )}
           <label className={label}>
             最初に作る月
             <select

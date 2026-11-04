@@ -50,6 +50,7 @@ function makeRule(over: Partial<RecurringTaskRuleRead> = {}): RecurringTaskRuleR
     item_type_active: true,
     memo: null,
     day_of_month: 1,
+    due_day: null,
     target_categories: ['psychiatric'],
     start_month: '2026-12-01',
     is_active: true,
@@ -137,6 +138,7 @@ describe('RecurringTasksPanel', () => {
       item_type_id: ITEM,
       memo: null,
       day_of_month: 3,
+      due_day: null,
       target_categories: ['psychiatric', 'general'],
       is_active: true,
       excluded_patient_ids: [P2],
@@ -237,5 +239,58 @@ describe('RecurringTasksPanel', () => {
     expect(screen.getByTestId(`recurring-preview-row-${P2}`).textContent).toContain(
       '個別に外した方',
     );
+  });
+
+  it('一覧に「毎月何日まで」を出す (なし・N 日・末日)', () => {
+    rules = [
+      makeRule({ id: '00000000-0000-0000-0000-0000000000f1', due_day: null }),
+      makeRule({ id: '00000000-0000-0000-0000-0000000000f2', due_day: 15 }),
+      makeRule({ id: '00000000-0000-0000-0000-0000000000f3', due_day: 0 }),
+    ];
+    render(<RecurringTasksPanel />);
+    expect(
+      screen.getByTestId('recurring-due-00000000-0000-0000-0000-0000000000f1').textContent,
+    ).toBe('なし');
+    expect(
+      screen.getByTestId('recurring-due-00000000-0000-0000-0000-0000000000f2').textContent,
+    ).toBe('毎月 15 日まで');
+    expect(
+      screen.getByTestId('recurring-due-00000000-0000-0000-0000-0000000000f3').textContent,
+    ).toBe('毎月 末日 まで');
+  });
+
+  it('「まで」が「から」より前なら注意を出して保存できない・末日や後の日なら保存できる', () => {
+    rules = [makeRule({ due_day: null })];
+    render(<RecurringTasksPanel />);
+    fireEvent.click(screen.getByTestId(`recurring-edit-${rules[0]!.id}`));
+    expect(screen.getByTestId('recurring-due-day')).toHaveValue('');
+    fireEvent.change(screen.getByTestId('recurring-day'), { target: { value: '10' } });
+    fireEvent.change(screen.getByTestId('recurring-due-day'), { target: { value: '5' } });
+    expect(screen.getByTestId('recurring-due-before').textContent).toContain(
+      '「まで」（5 日）が「から」（10 日）より前です',
+    );
+    expect(screen.getByTestId('recurring-save')).toBeDisabled();
+
+    // 末日 (0) は前にならない
+    fireEvent.change(screen.getByTestId('recurring-due-day'), { target: { value: '0' } });
+    expect(screen.queryByTestId('recurring-due-before')).toBeNull();
+    expect(screen.getByTestId('recurring-save')).toBeEnabled();
+
+    // 同じ日も保存できる
+    fireEvent.change(screen.getByTestId('recurring-due-day'), { target: { value: '10' } });
+    fireEvent.click(screen.getByTestId('recurring-save'));
+    const [vars] = saveMutate.mock.calls[0]!;
+    expect(vars.payload).toMatchObject({ day_of_month: 10, due_day: 10 });
+  });
+
+  it('保存済みの「まで」を変える欄に出し、「なし」に戻せる', () => {
+    rules = [makeRule({ due_day: 0 })];
+    render(<RecurringTasksPanel />);
+    fireEvent.click(screen.getByTestId(`recurring-edit-${rules[0]!.id}`));
+    expect(screen.getByTestId('recurring-due-day')).toHaveValue('0');
+    fireEvent.change(screen.getByTestId('recurring-due-day'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('recurring-save'));
+    const [vars] = saveMutate.mock.calls[0]!;
+    expect(vars.payload.due_day).toBeNull();
   });
 });

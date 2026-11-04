@@ -11,10 +11,12 @@
     POST  /api/v1/tasks/{id}/complete           — 管理者・その訪問の担当の職員
     POST  /api/v1/tasks/{id}/reopen             — 管理者・自分で完了にした職員
     POST  /api/v1/tasks/{id}/cancel             — 管理者
+    PATCH /api/v1/tasks/{id}/due                — 管理者 (期日を変える・null で期日なし)
     GET   /api/v1/visits/{visit_id}/tasks       — 管理者・その訪問の担当の職員
 
 職員の「自分の訪問」は ``visits.py`` の一覧と同じ規則 (主・2 人目・VSA・同行・コース担当)。
 出す訪問の決め方は ``app.services.patient_tasks`` の 1 か所にある。
+期日と「何回目の訪問待ち」は ``docs/plans/patient-tasks-due-design-2026-11-04.md`` (PO 2026-11-04)。
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from sqlalchemy import func, or_, select, update
 
 from app.api.v1.visits import _staff_visibility_filter
 from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.models.audit_log import AuditLog
 from app.models.patient import Patient
 from app.models.patient_task import PatientTask, TaskItemType
 from app.models.user import User, normalize_user_role
@@ -36,6 +39,7 @@ from app.schemas.patient_task import (
     PatientTaskComplete,
     PatientTaskCreate,
     PatientTaskCreateResult,
+    PatientTaskDueUpdate,
     PatientTaskRead,
     TaskItemTypeCreate,
     TaskItemTypeRead,
@@ -46,18 +50,20 @@ from app.schemas.patient_task import (
 from app.services.patient_tasks import (
     JST,
     eligible_visit_clause,
+    is_overdue,
     jst_today,
     load_task_names,
     next_visits_for_tasks,
     notify_task_assigned,
     overdue_clause,
-    overdue_task_ids,
     serialize_task,
     task_sort_key,
     task_status,
     tasks_for_visits,
     visit_brief,
+    visit_rounds_now,
     visit_staff_map,
+    waiting2plus_clause,
 )
 
 router = APIRouter()
@@ -78,6 +84,9 @@ def _can_reopen(task: PatientTask, user: User) -> bool:
     if task_status(task) != "done":
         return False
     return _is_admin(user) or task.done_by_user_id == user.id
+
+
+DUE_BEFORE_START = "期日は日付（この日から）と同じ日か、後の日にしてください"
 
 
 def _item_read(row: TaskItemType) -> TaskItemTypeRead:
@@ -104,9 +113,11 @@ async def _get_task(db, task_id: UUID) -> PatientTask:
 
 async def _read_one(db, task: PatientTask, user: User) -> dict:
     names = await load_task_names(db, [task])
-    overdue = task.id in await overdue_task_ids(db, [task], jst_today())
+    rounds = await visit_rounds_now(db, [task], datetime.now(UTC))
     return {
-        **serialize_task(task, names, overdue=overdue),
+        **serialize_task(
+            task, names, overdue=is_overdue(task, jst_today()), visit_round=rounds[task.id]
+        ),
         "can_reopen": _can_reopen(task, user),
     }
 
@@ -205,6 +216,7 @@ async def list_tasks(
     limit: Annotated[int, Query(ge=1, le=2000)] = 500,
 ) -> list[dict]:
     today = jst_today()
+    now = datetime.now(UTC)
     stmt = (
         select(PatientTask)
         .join(Patient, Patient.id == PatientTask.patient_id)
@@ -214,6 +226,8 @@ async def list_tasks(
         stmt = stmt.where(PatientTask.done_at.is_(None))
     elif status_ == "overdue":
         stmt = stmt.where(overdue_clause(today))
+    elif status_ == "waiting2plus":
+        stmt = stmt.where(waiting2plus_clause(now))
     elif status_ == "done":
         stmt = stmt.where(PatientTask.done_at.is_not(None))
     if patient_id is not None:
@@ -256,7 +270,7 @@ async def list_tasks(
     staff_by_visit = await visit_staff_map(db, list(all_visits.values()))
 
     names = await load_task_names(db, tasks)
-    overdue_ids = await overdue_task_ids(db, tasks, today)
+    rounds = await visit_rounds_now(db, tasks, now)
     out: list[dict] = []
     for t in tasks:
         nv = next_by_task.get(t.id)
@@ -274,7 +288,7 @@ async def list_tasks(
                 continue
         out.append(
             {
-                **serialize_task(t, names, overdue=t.id in overdue_ids),
+                **serialize_task(t, names, overdue=is_overdue(t, today), visit_round=rounds[t.id]),
                 "next_visit": visit_brief(nv, staff_by_visit.get(nv.id, [])) if nv else None,
                 "done_visit": visit_brief(dv, staff_by_visit.get(dv.id, [])) if dv else None,
                 "can_reopen": _can_reopen(t, user),
@@ -293,6 +307,10 @@ async def create_tasks(payload: PatientTaskCreate, db: DbDep, user: AdminUser) -
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="患者様が見つかりません")
 
+    if payload.due_date is not None and payload.due_date < payload.start_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=DUE_BEFORE_START
+        )
     item_ids = list(dict.fromkeys(payload.item_type_ids))
     if not item_ids and payload.memo is None:
         raise HTTPException(
@@ -325,6 +343,7 @@ async def create_tasks(payload: PatientTaskCreate, db: DbDep, user: AdminUser) -
         t = PatientTask(
             patient_id=patient.id,
             start_date=payload.start_date,
+            due_date=payload.due_date,
             item_type_id=iid,
             memo=memo,
             created_by=user.id,
@@ -350,11 +369,14 @@ async def create_tasks(payload: PatientTaskCreate, db: DbDep, user: AdminUser) -
     await db.commit()
 
     names = await load_task_names(db, tasks)
-    overdue_ids = await overdue_task_ids(db, tasks, today)
+    rounds = await visit_rounds_now(db, tasks, datetime.now(UTC))
     brief = visit_brief(visit, staff) if visit else None
     return {
         "tasks": [
-            {**serialize_task(t, names, overdue=t.id in overdue_ids), "next_visit": brief}
+            {
+                **serialize_task(t, names, overdue=is_overdue(t, today), visit_round=rounds[t.id]),
+                "next_visit": brief,
+            }
             for t in tasks
         ],
         "next_visit": brief,
@@ -369,7 +391,7 @@ async def visit_task_counts(
     date_: Annotated[date, Query(alias="date")],
     staff_id: Annotated[UUID | None, Query(description="管理者だけ: この職員の訪問に絞る")] = None,
 ) -> dict:
-    """訪問 id → 未完了数・持ち越しの有無・全部完了か (訪問モニター・スマホの今日の一覧用)."""
+    """訪問 id → 未完了数・持ち越し・期日を過ぎたものの有無・全部完了か (訪問モニター・スマホ用)."""
     _ensure_admin_or_staff(user)
     stmt = (
         select(Visit)
@@ -384,6 +406,7 @@ async def visit_task_counts(
         stmt = stmt.where(_staff_visibility_filter(staff_id))
     visits = list((await db.scalars(stmt)).all())
     entries_by_visit = await tasks_for_visits(db, visits)
+    today = jst_today()
     counts = {}
     for vid, entries in entries_by_visit.items():
         open_entries = [e for e in entries if e.task.done_at is None]
@@ -391,6 +414,7 @@ async def visit_task_counts(
             "open_count": len(open_entries),
             "total_count": len(entries),
             "has_carried_over": any(e.carried_over for e in open_entries),
+            "has_overdue": any(is_overdue(e.task, today) for e in open_entries),
             "all_done": not open_entries,
         }
     return {"date": date_, "counts": counts}
@@ -408,11 +432,13 @@ async def list_visit_tasks(visit_id: UUID, db: DbDep, user: CurrentActiveUser) -
     entries = (await tasks_for_visits(db, [visit])).get(visit.id, [])
     tasks = [e.task for e in entries]
     names = await load_task_names(db, tasks)
-    overdue_ids = await overdue_task_ids(db, tasks, jst_today())
+    today = jst_today()
     entries.sort(key=lambda e: task_sort_key(e.task, names))
     return [
         {
-            **serialize_task(e.task, names, overdue=e.task.id in overdue_ids),
+            **serialize_task(
+                e.task, names, overdue=is_overdue(e.task, today), visit_round=e.visit_round
+            ),
             "carried_over": e.carried_over,
             "can_reopen": _can_reopen(e.task, user),
         }
@@ -554,5 +580,37 @@ async def cancel_task(task_id: UUID, db: DbDep, user: AdminUser) -> dict:
     task.cancelled_at = now
     task.cancelled_by = user.id
     task.updated_at = now
+    await db.commit()
+    return await _read_one(db, task, user)
+
+
+@router.patch("/tasks/{task_id}/due", response_model=PatientTaskRead)
+async def change_task_due(
+    task_id: UUID, payload: PatientTaskDueUpdate, db: DbDep, user: AdminUser
+) -> dict:
+    """期日を変える (null で期日なし)。未完了のものだけ。前後の値を監査ログに残す (§6-3)."""
+    task = await _get_task(db, task_id)
+    if task_status(task) != "open":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="未完了のやることだけ期日を変えられます",
+        )
+    if payload.due_date is not None and payload.due_date < task.start_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=DUE_BEFORE_START
+        )
+    before = task.due_date
+    task.due_date = payload.due_date
+    task.updated_at = datetime.now(UTC)
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="task_due_change",
+            target_table="patient_tasks",
+            target_id=str(task.id),
+            before={"due_date": before.isoformat() if before else None},
+            after={"due_date": task.due_date.isoformat() if task.due_date else None},
+        )
+    )
     await db.commit()
     return await _read_one(db, task, user)

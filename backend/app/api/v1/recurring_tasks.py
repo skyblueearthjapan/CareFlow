@@ -79,6 +79,15 @@ async def _ensure_item_usable(db, item_type_id: UUID | None) -> None:
         )
 
 
+def _ensure_due_day(day_of_month: int, due_day: int | None) -> None:
+    """毎月何日まで (1〜28) は毎月何日から以降 (0 = 末日はいつでもよい)."""
+    if due_day is not None and due_day != 0 and due_day < day_of_month:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="期日（毎月何日まで）は、毎月何日からと同じ日か、後の日にしてください",
+        )
+
+
 async def _set_exclusions(db, rule_id: UUID, patient_ids: list[UUID], user_id: UUID) -> None:
     ids = list(dict.fromkeys(patient_ids))
     if ids:
@@ -154,6 +163,7 @@ async def _read_rules(db, rules: list[RecurringTaskRule]) -> list[dict]:
                 "item_type_active": item[1] if item else r.item_type_id is None,
                 "memo": r.memo,
                 "day_of_month": r.day_of_month,
+                "due_day": r.due_day,
                 "target_categories": list(r.target_categories),
                 "start_month": r.start_month,
                 "is_active": r.is_active,
@@ -228,11 +238,13 @@ async def create_rule(payload: RecurringTaskRuleCreate, db: DbDep, user: AdminUs
             detail="項目か伝言のどちらかを入れてください",
         )
     await _ensure_item_usable(db, payload.item_type_id)
+    _ensure_due_day(payload.day_of_month, payload.due_day)
     now = datetime.now(UTC)
     rule = RecurringTaskRule(
         item_type_id=payload.item_type_id,
         memo=payload.memo,
         day_of_month=payload.day_of_month,
+        due_day=payload.due_day,
         target_categories=list(payload.target_categories),
         start_month=payload.start_month,
         is_active=payload.is_active,
@@ -269,6 +281,9 @@ async def update_rule(
         )
     if payload.day_of_month is not None:
         rule.day_of_month = payload.day_of_month
+    if "due_day" in sent:
+        rule.due_day = payload.due_day
+    _ensure_due_day(rule.day_of_month, rule.due_day)
     if payload.target_categories is not None:
         rule.target_categories = list(payload.target_categories)
     if payload.start_month is not None:

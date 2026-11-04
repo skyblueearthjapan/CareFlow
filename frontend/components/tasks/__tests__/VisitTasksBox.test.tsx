@@ -41,7 +41,9 @@ function makeTask(over: Partial<PatientTaskRead> = {}): PatientTaskRead {
     created_by_name: '事務 太郎',
     created_at: '2026-11-01T00:00:00Z',
     status: 'open',
+    due_date: '2026-11-01',
     overdue: true,
+    visit_round: 2,
     carried_over: true,
     done_at: null,
     done_by_user_id: null,
@@ -66,7 +68,7 @@ describe('VisitTasksBox', () => {
     createMutate.mockReset();
   });
 
-  it('持ち越し・期日を過ぎた印と、付けた人を出し、その訪問で完了にする', () => {
+  it('期日を過ぎた・N 回目の訪問待ちの札と、付けた人を出し、その訪問で完了にする', () => {
     tasks = [makeTask()];
     render(
       <VisitTasksBox
@@ -77,9 +79,14 @@ describe('VisitTasksBox', () => {
       />,
     );
     const row = screen.getByTestId('visit-task-t1');
-    expect(row.textContent).toContain('持ち越し');
-    expect(row.textContent).toContain('訪問日を過ぎて未完了');
-    expect(row.textContent).toContain('付けた人 事務 太郎');
+    const text = row.textContent ?? '';
+    // 期日を過ぎたときは、赤い「期日を過ぎた」を先頭に出す
+    expect(text.indexOf('期日を過ぎた（11/1 まで）')).toBe(0);
+    expect(text).toContain('2 回目の訪問待ち');
+    expect(text).not.toContain('持ち越し');
+    expect(text).not.toContain('訪問日を過ぎて未完了');
+    expect(text).toContain('10/29 から・期日 11/1');
+    expect(text).toContain('付けた人 事務 太郎');
     fireEvent.click(screen.getByRole('button', { name: '完了にする' }));
     expect(completeMutate).toHaveBeenCalledWith(
       { taskId: 't1', visitId: 'v1' },
@@ -196,5 +203,57 @@ describe('VisitTasksBox', () => {
       />,
     );
     expect(screen.getByTestId('visit-task-t1').textContent).toContain('毎月・12 月分');
+  });
+
+  it('札は 伝言／期日／N 回目／毎月 の順・期日を過ぎていなければ赤を出さない', () => {
+    tasks = [
+      makeTask({
+        is_message: true,
+        item_type_id: null,
+        item_type_name: null,
+        memo: '裏口から',
+        due_date: '2026-11-10',
+        overdue: false,
+        visit_round: 1,
+        carried_over: false,
+        recurring_rule_id: '00000000-0000-0000-0000-0000000000f1',
+        recurring_month: '2026-11-01',
+      }),
+    ];
+    render(
+      <VisitTasksBox
+        visitId="v1"
+        visitDate="2026-11-04"
+        patientId={PATIENT}
+        patientName="岡本 翔"
+      />,
+    );
+    const text = screen.getByTestId('visit-task-t1').textContent ?? '';
+    expect(text).not.toContain('期日を過ぎた');
+    const order = ['伝言', '11/10 まで・あと 6 日', '1 回目の訪問待ち', '毎月・11 月分'].map((w) =>
+      text.indexOf(w),
+    );
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it('期日がその訪問の日なら「今日まで」、期日なしなら期日の札を出さない', () => {
+    tasks = [
+      makeTask({ id: 't1', due_date: '2026-11-04', overdue: false, visit_round: 1 }),
+      makeTask({ id: 't2', due_date: null, overdue: false, visit_round: 3 }),
+    ];
+    render(
+      <VisitTasksBox
+        visitId="v1"
+        visitDate="2026-11-04"
+        patientId={PATIENT}
+        patientName="岡本 翔"
+      />,
+    );
+    expect(screen.getByTestId('visit-task-t1').textContent).toContain('今日まで');
+    const t2 = screen.getByTestId('visit-task-t2');
+    expect(t2.textContent).toContain('3 回目の訪問待ち');
+    expect(t2.textContent).toContain('期日なし');
+    expect(t2.textContent).not.toContain('まで・');
   });
 });

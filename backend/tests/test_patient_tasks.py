@@ -7,13 +7,15 @@
 5. 通知 (出す訪問の担当のアカウントへ・1 回の登録で 1 人 1 通)。
 6. 項目の CRUD (管理者だけ変更・使わないは職員に見えない・作成に使えない)。
 7. migration 0103 の chain と SQLite の upgrade/downgrade。
+8. 期日と何回目の訪問待ち (patient-tasks-due-design-2026-11-04 §4): 期日を過ぎたは期日で
+   決まる・何回目は終わった訪問の数 + 1・訪問の詳細はその訪問から見た回数・期日の変更。
 """
 
 from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 import pytest
@@ -25,8 +27,9 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Accompaniment, Notification, Patient, Staff, User, Visit
-from app.services.patient_tasks import NOTIFY_TASK_ASSIGNED, jst_today
+from app.models import Accompaniment, Notification, Patient, PatientTask, Staff, User, Visit
+from app.models.audit_log import AuditLog
+from app.services.patient_tasks import JST, NOTIFY_TASK_ASSIGNED, jst_today, visit_rounds_now
 
 T = jst_today()
 
@@ -76,8 +79,6 @@ async def _visit(
     status: str = "planned",
     deleted: bool = False,
 ) -> Visit:
-    from datetime import UTC, datetime
-
     v = Visit(
         patient_id=patient.id,
         visit_date=d,
@@ -102,7 +103,7 @@ async def _item(client, admin, name: str) -> str:
     return res.json()["id"]
 
 
-async def _create(client, admin, patient, start, item_ids=(), memo=None):
+async def _create(client, admin, patient, start, item_ids=(), memo=None, due=None):
     res = await client.post(
         "/api/v1/tasks",
         json={
@@ -110,11 +111,18 @@ async def _create(client, admin, patient, start, item_ids=(), memo=None):
             "start_date": start.isoformat(),
             "item_type_ids": list(item_ids),
             "memo": memo,
+            "due_date": due.isoformat() if due else None,
         },
         headers=_h(admin),
     )
     assert res.status_code == 201, res.text
     return res.json()
+
+
+def _uuid(body):
+    from uuid import UUID
+
+    return UUID(body["tasks"][0]["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -158,56 +166,55 @@ async def test_no_visit_then_visit_added_later(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overdue_carries_over_to_today_or_later(client, db) -> None:
+async def test_carries_over_to_today_or_later_without_overdue(client, db) -> None:
+    """日付が過ぎた未完了は今日以降の訪問に持ち越す。期日がなければ期日を過ぎたにしない."""
     admin = await _user(db, "adm", "admin")
     s = await _staff(db, "佐藤")
     p = await _patient(db, "P1")
     past = await _visit(db, p, T - timedelta(days=3), primary=s)
-    today_v = await _visit(db, p, T, primary=s)
+    # 明日の訪問 (今日の遅い時刻にすると、夜に流したとき終わった扱いになって揺れる)。
+    today_v = await _visit(db, p, T + timedelta(days=1), primary=s)
     await _create(client, admin, p, T - timedelta(days=5), memo="持ち越し")
 
-    res = await client.get("/api/v1/tasks?status=overdue", headers=_h(admin))
-    (row,) = res.json()
-    assert row["overdue"] is True
+    (row,) = (await client.get("/api/v1/tasks", headers=_h(admin))).json()
+    assert row["overdue"] is False
+    assert row["due_date"] is None
+    assert row["visit_round"] == 2  # 3 日前の訪問が終わった
     assert row["next_visit"]["visit_id"] == str(today_v.id)
+    assert (await client.get("/api/v1/tasks?status=overdue", headers=_h(admin))).json() == []
 
     # 過去の訪問 (日付以降の最初) では持ち越しでない・今日の訪問では持ち越し。
     r_past = (await client.get(f"/api/v1/visits/{past.id}/tasks", headers=_h(admin))).json()
     r_today = (await client.get(f"/api/v1/visits/{today_v.id}/tasks", headers=_h(admin))).json()
-    assert r_past[0]["carried_over"] is False
-    assert r_today[0]["carried_over"] is True
+    assert (r_past[0]["carried_over"], r_past[0]["visit_round"]) == (False, 1)
+    assert (r_today[0]["carried_over"], r_today[0]["visit_round"]) == (True, 2)
 
 
 @pytest.mark.asyncio
-async def test_not_overdue_until_the_visit_day_has_passed(client, db) -> None:
-    """日付が過ぎただけでは期日を過ぎたにしない。出す訪問の日が過ぎてから (11/4 小林様)."""
+async def test_overdue_only_by_due_date(client, db) -> None:
+    """期日を過ぎた = 未完了で期日が今日より前。期日の当日は過ぎていない・期日なしは出ない."""
     admin = await _user(db, "adm", "admin")
     s = await _staff(db, "佐藤")
-    p_future = await _patient(db, "P1")  # 日付は過去・訪問は先だけ
-    p_today = await _patient(db, "P2")  # 訪問が今日
-    p_cancel = await _patient(db, "P3")  # 過去の訪問は取消・削除だけ
-    p_none = await _patient(db, "P4")  # 訪問が無い
-    p_before = await _patient(db, "P5")  # 過去の訪問は日付より前だけ
-    await _visit(db, p_future, T + timedelta(days=2), primary=s)
-    await _visit(db, p_today, T, primary=s)
-    await _visit(db, p_cancel, T - timedelta(days=1), primary=s, status="cancelled")
-    await _visit(db, p_cancel, T - timedelta(days=1), hour=11, primary=s, deleted=True)
-    await _visit(db, p_before, T - timedelta(days=4), primary=s)
-    for p in (p_future, p_today, p_cancel, p_none, p_before):
-        body = await _create(client, admin, p, T - timedelta(days=2), memo="伝言")
-        assert body["tasks"][0]["overdue"] is False
+    p = await _patient(db, "P1")
+    await _visit(db, p, T - timedelta(days=1), primary=s)  # 終わった訪問があっても
+    no_due = await _create(client, admin, p, T - timedelta(days=3), memo="期日なし")
+    due_today = await _create(client, admin, p, T - timedelta(days=3), memo="今日まで", due=T)
+    due_past = await _create(
+        client, admin, p, T - timedelta(days=3), memo="昨日まで", due=T - timedelta(days=1)
+    )
+    assert no_due["tasks"][0]["overdue"] is False
+    assert due_today["tasks"][0]["overdue"] is False
+    assert due_today["tasks"][0]["due_date"] == T.isoformat()
+    assert due_past["tasks"][0]["overdue"] is True
 
-    rows = (await client.get("/api/v1/tasks", headers=_h(admin))).json()
-    assert len(rows) == 5
-    assert all(r["overdue"] is False for r in rows)
+    rows = {r["memo"]: r for r in (await client.get("/api/v1/tasks", headers=_h(admin))).json()}
+    assert {m: r["overdue"] for m, r in rows.items()} == {
+        "期日なし": False,
+        "今日まで": False,
+        "昨日まで": True,
+    }
     over = (await client.get("/api/v1/tasks?status=overdue", headers=_h(admin))).json()
-    assert over == []
-
-    # 出す訪問の日 (昨日) が過ぎて未完了なら期日を過ぎた。
-    await _visit(db, p_future, T - timedelta(days=1), primary=s)
-    over = (await client.get("/api/v1/tasks?status=overdue", headers=_h(admin))).json()
-    assert [r["patient_id"] for r in over] == [str(p_future.id)]
-    assert over[0]["overdue"] is True
+    assert [r["memo"] for r in over] == ["昨日まで"]
 
 
 @pytest.mark.asyncio
@@ -217,7 +224,8 @@ async def test_overdue_flag_on_visit_tasks_reopen_and_done_or_cancelled(client, 
     s = await _staff(db, "佐藤")
     p = await _patient(db, "P1")
     past = await _visit(db, p, T - timedelta(days=1), primary=s)
-    body = await _create(client, admin, p, T - timedelta(days=3), memo="過ぎた")
+    yesterday = T - timedelta(days=1)
+    body = await _create(client, admin, p, T - timedelta(days=3), memo="過ぎた", due=yesterday)
     tid = body["tasks"][0]["id"]
     assert body["tasks"][0]["overdue"] is True
 
@@ -230,8 +238,9 @@ async def test_overdue_flag_on_visit_tasks_reopen_and_done_or_cancelled(client, 
     res = await client.post(f"/api/v1/tasks/{tid}/reopen", headers=_h(admin))
     assert res.status_code == 200, res.text
     assert res.json()["overdue"] is True
+    assert res.json()["visit_round"] == 2
 
-    other = await _create(client, admin, p, T - timedelta(days=3), memo="取消")
+    other = await _create(client, admin, p, T - timedelta(days=3), memo="取消", due=yesterday)
     res = await client.post(f"/api/v1/tasks/{other['tasks'][0]['id']}/cancel", headers=_h(admin))
     assert res.status_code == 200, res.text
     assert res.json()["overdue"] is False
@@ -240,20 +249,150 @@ async def test_overdue_flag_on_visit_tasks_reopen_and_done_or_cancelled(client, 
 
 
 @pytest.mark.asyncio
-async def test_same_day_second_visit_carries_over_but_not_overdue_until_day_ends(
-    client, db
-) -> None:
-    """同じ日の 2 回目の訪問では持ち越しだが、期日を過ぎたはその日が終わってから."""
+async def test_same_day_second_visit_carries_over_round_two_not_overdue(client, db) -> None:
+    """同じ日の 2 回: 午後の訪問の詳細では 2 回目 (持ち越し)。期日がなければ過ぎたにしない."""
     admin = await _user(db, "adm", "admin")
     s = await _staff(db, "佐藤")
     p = await _patient(db, "P1")
-    await _visit(db, p, T, hour=9, primary=s)
+    morning = await _visit(db, p, T, hour=9, primary=s)
     later = await _visit(db, p, T, hour=14, primary=s)
     await _create(client, admin, p, T, memo="朝の分")
 
     (row,) = (await client.get(f"/api/v1/visits/{later.id}/tasks", headers=_h(admin))).json()
     assert row["carried_over"] is True
+    assert row["visit_round"] == 2
     assert row["overdue"] is False
+    (row,) = (await client.get(f"/api/v1/visits/{morning.id}/tasks", headers=_h(admin))).json()
+    assert (row["carried_over"], row["visit_round"]) == (False, 1)
+
+
+@pytest.mark.asyncio
+async def test_visit_round_now_counts_each_ended_visit_same_day(client, db) -> None:
+    """いまの時刻から見た回数: 朝の訪問の終わり (9:30) を過ぎたら 2、午後の後で 3."""
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    p = await _patient(db, "P1")
+    await _visit(db, p, T, hour=9, primary=s)
+    await _visit(db, p, T, hour=14, primary=s)
+    body = await _create(client, admin, p, T, memo="朝の分")
+    task = await db.scalar(select(PatientTask).where(PatientTask.id == _uuid(body)))
+
+    def at(h: int, m: int) -> datetime:
+        return datetime.combine(T, time(h, m), tzinfo=JST).astimezone(UTC)
+
+    assert (await visit_rounds_now(db, [task], at(9, 29)))[task.id] == 1
+    assert (await visit_rounds_now(db, [task], at(9, 31)))[task.id] == 2
+    assert (await visit_rounds_now(db, [task], at(14, 31)))[task.id] == 3
+
+
+@pytest.mark.asyncio
+async def test_visit_round_skips_cancelled_deleted_and_before_start(client, db) -> None:
+    """何回目: 日付より前・取消・削除の訪問は数えない。終わった訪問ごとに 1 つ増える."""
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    p = await _patient(db, "P1")
+    q = await _patient(db, "P2")
+    await _visit(db, p, T - timedelta(days=6), primary=s)  # 日付より前
+    first = await _visit(db, p, T - timedelta(days=4), primary=s)
+    await _visit(db, p, T - timedelta(days=3), primary=s, status="cancelled")
+    await _visit(db, p, T - timedelta(days=2), primary=s, deleted=True)
+    nxt = await _visit(db, p, T + timedelta(days=1), primary=s)
+    await _visit(db, q, T + timedelta(days=1), primary=s)
+    await _create(client, admin, p, T - timedelta(days=5), memo="P1")
+    await _create(client, admin, q, T - timedelta(days=5), memo="P2")
+
+    def rounds(rows):
+        return {r["memo"]: r["visit_round"] for r in rows}
+
+    rows = (await client.get("/api/v1/tasks", headers=_h(admin))).json()
+    assert rounds(rows) == {"P1": 2, "P2": 1}
+    w2 = (await client.get("/api/v1/tasks?status=waiting2plus", headers=_h(admin))).json()
+    assert [r["memo"] for r in w2] == ["P1"]
+
+    await _visit(db, p, T - timedelta(days=1), primary=s)
+    rows = (await client.get("/api/v1/tasks", headers=_h(admin))).json()
+    assert rounds(rows) == {"P1": 3, "P2": 1}
+    # 訪問の詳細はその訪問から見た回数
+    (r_first,) = (await client.get(f"/api/v1/visits/{first.id}/tasks", headers=_h(admin))).json()
+    (r_next,) = (await client.get(f"/api/v1/visits/{nxt.id}/tasks", headers=_h(admin))).json()
+    assert (r_first["visit_round"], r_next["visit_round"]) == (1, 3)
+
+    # 完了したものは 2 回目以降の訪問待ちに出ない
+    tid = next(r["id"] for r in rows if r["memo"] == "P1")
+    await client.post(f"/api/v1/tasks/{tid}/complete", json={}, headers=_h(admin))
+    assert (await client.get("/api/v1/tasks?status=waiting2plus", headers=_h(admin))).json() == []
+
+
+@pytest.mark.asyncio
+async def test_create_with_due_date_validation(client, db) -> None:
+    admin = await _user(db, "adm", "admin")
+    p = await _patient(db, "P1")
+    base = {"patient_id": str(p.id), "start_date": T.isoformat(), "memo": "x"}
+    res = await client.post(
+        "/api/v1/tasks",
+        json={**base, "due_date": (T - timedelta(days=1)).isoformat()},
+        headers=_h(admin),
+    )
+    assert res.status_code == 422
+    assert res.json()["detail"] == "期日は日付（この日から）と同じ日か、後の日にしてください"
+    body = await _create(client, admin, p, T, memo="当日", due=T)
+    assert body["tasks"][0]["due_date"] == T.isoformat()
+    body = await _create(client, admin, p, T, memo="なし")
+    assert body["tasks"][0]["due_date"] is None
+
+
+@pytest.mark.asyncio
+async def test_change_due_admin_only_open_only_and_audited(client, db) -> None:
+    admin = await _user(db, "adm", "admin")
+    s = await _staff(db, "佐藤")
+    us = await _user(db, "us", "staff", staff_id=s.id)
+    p = await _patient(db, "P1")
+    body = await _create(client, admin, p, T - timedelta(days=2), memo="x")
+    tid = body["tasks"][0]["id"]
+    url = f"/api/v1/tasks/{tid}/due"
+    yesterday = (T - timedelta(days=1)).isoformat()
+
+    res = await client.patch(url, json={"due_date": T.isoformat()}, headers=_h(us))
+    assert res.status_code == 403
+    res = await client.patch(
+        url, json={"due_date": (T - timedelta(days=3)).isoformat()}, headers=_h(admin)
+    )
+    assert res.status_code == 422
+    assert res.json()["detail"] == "期日は日付（この日から）と同じ日か、後の日にしてください"
+
+    res = await client.patch(url, json={"due_date": yesterday}, headers=_h(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["due_date"] == yesterday
+    assert res.json()["overdue"] is True
+    assert res.json()["can_reopen"] is False
+    res = await client.patch(url, json={"due_date": None}, headers=_h(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["due_date"] is None
+    assert res.json()["overdue"] is False
+    assert (await client.patch(url, json={}, headers=_h(admin))).status_code == 422
+
+    logs = (
+        await db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "task_due_change", AuditLog.target_id == str(_uuid(body)))
+            .order_by(AuditLog.id)
+        )
+    ).all()
+    assert [(a.before, a.after) for a in logs] == [
+        ({"due_date": None}, {"due_date": yesterday}),
+        ({"due_date": yesterday}, {"due_date": None}),
+    ]
+
+    await client.post(f"/api/v1/tasks/{tid}/complete", json={}, headers=_h(admin))
+    res = await client.patch(url, json={"due_date": T.isoformat()}, headers=_h(admin))
+    assert res.status_code == 422
+    other = await _create(client, admin, p, T, memo="取消")
+    oid = other["tasks"][0]["id"]
+    await client.post(f"/api/v1/tasks/{oid}/cancel", headers=_h(admin))
+    res = await client.patch(
+        f"/api/v1/tasks/{oid}/due", json={"due_date": T.isoformat()}, headers=_h(admin)
+    )
+    assert res.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -658,9 +797,22 @@ async def test_counts_and_staff_filter(client, db) -> None:
         "open_count": 2,
         "total_count": 2,
         "has_carried_over": True,
+        "has_overdue": False,
         "all_done": False,
     }
     assert counts[str(v2.id)]["all_done"] is True
+    assert counts[str(v2.id)]["has_overdue"] is False
+
+    # 期日を過ぎたものが 1 件あれば has_overdue
+    tid = next(r["id"] for r in (await client.get("/api/v1/tasks", headers=_h(admin))).json())
+    res = await client.patch(
+        f"/api/v1/tasks/{tid}/due",
+        json={"due_date": (T - timedelta(days=1)).isoformat()},
+        headers=_h(admin),
+    )
+    assert res.status_code == 200, res.text
+    res = await client.get(f"/api/v1/tasks/counts?date={T.isoformat()}", headers=_h(admin))
+    assert res.json()["counts"][str(v1.id)]["has_overdue"] is True
 
     res = await client.get(f"/api/v1/tasks/counts?date={T.isoformat()}", headers=_h(ua))
     assert set(res.json()["counts"]) == {str(v1.id)}

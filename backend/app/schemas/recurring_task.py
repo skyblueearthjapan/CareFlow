@@ -47,6 +47,8 @@ class RecurringTaskRuleRead(BaseModel):
     item_type_active: bool
     memo: str | None
     day_of_month: int
+    #: 毎月何日まで (任意)。1〜28 日、0 は末日。null は期日なし。
+    due_day: int | None = None
     target_categories: list[str]
     start_month: date
     is_active: bool
@@ -64,6 +66,8 @@ class RecurringTaskRuleCreate(BaseModel):
     item_type_id: UUID | None = None
     memo: str | None = Field(default=None, max_length=2000)
     day_of_month: int = Field(default=1, ge=1, le=28)
+    #: 毎月何日まで (任意)。1〜28 日、0 は末日。毎月何日からより前は 422。
+    due_day: int | None = Field(default=None, ge=0, le=28)
     target_categories: list[VisitCategory] = Field(..., max_length=2)
     #: 最初に作る月 (日は 1 日に丸める)。
     start_month: date
@@ -81,6 +85,8 @@ class RecurringTaskRuleUpdate(BaseModel):
     item_type_id: UUID | None = None
     memo: str | None = Field(default=None, max_length=2000)
     day_of_month: int | None = Field(default=None, ge=1, le=28)
+    #: 送ると変える (null で期日なし)。
+    due_day: int | None = Field(default=None, ge=0, le=28)
     target_categories: list[VisitCategory] | None = Field(default=None, max_length=2)
     start_month: date | None = None
     is_active: bool | None = None
@@ -132,6 +138,8 @@ class RecurringPreview(BaseModel):
     month: date
     #: 作るやることの日付 (この日から出す)。
     start_date: date
+    #: 作るやることの期日 (設定に「毎月何日まで」が無ければ null)。
+    due_date: date | None = None
     is_active: bool
     item_is_active: bool
     counts: dict[str, int]

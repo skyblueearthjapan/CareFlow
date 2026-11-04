@@ -50,8 +50,11 @@ export type TaskVisitBrief = z.infer<typeof taskVisitBriefSchema>;
 export const taskStatusSchema = z.enum(['open', 'done', 'cancelled']);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
-/** 一覧の絞り込み: open = 未完了 / overdue = 期日を過ぎた / done = 完了 / all = すべて (取消は除く)。 */
-export type TaskListStatus = 'open' | 'overdue' | 'done' | 'all';
+/**
+ * 一覧の絞り込み: open = 未完了 / overdue = 期日を過ぎた / waiting2plus = 未完了で 2 回目以降の
+ * 訪問待ち / done = 完了 / all = すべて (取消は除く)。
+ */
+export type TaskListStatus = 'open' | 'overdue' | 'waiting2plus' | 'done' | 'all';
 
 export const patientTaskReadSchema = z.object({
   id: z.string().uuid(),
@@ -68,9 +71,16 @@ export const patientTaskReadSchema = z.object({
   created_by_name: z.string().nullable(),
   created_at: z.string(),
   status: taskStatusSchema,
-  /** 未完了で、日付が今日より前。 */
+  /** 期日 (任意・YYYY-MM-DD)。null = 期日なし (patient-tasks-due-design-2026-11-04 §2)。 */
+  due_date: z.string().nullable(),
+  /** 未完了で、期日が今日 (JST) より前。期日がないものは false。 */
   overdue: z.boolean(),
-  /** 訪問ごとの読み出しだけ: この訪問より前に出す訪問があった (持ち越し)。 */
+  /**
+   * 何回目の訪問待ち (1 以上)。一覧・作成は「いまの時刻から見て」、
+   * GET /visits/{id}/tasks は「その訪問から見て」の回数。
+   */
+  visit_round: z.number().int().min(1),
+  /** 訪問ごとの読み出しだけ: この訪問より前に出す訪問があった (2 回目以降と同じ意味)。 */
   carried_over: z.boolean(),
   done_at: z.string().nullable(),
   done_by_user_id: z.string().uuid().nullable(),
@@ -100,10 +110,20 @@ export const patientTaskCreateSchema = z
     item_type_ids: z.array(z.string().uuid()).max(50).default([]),
     /** 伝言 (任意)。項目と一緒なら最初の 1 件に付く。 */
     memo: z.string().max(2000).nullable().optional(),
+    /** 期日 (任意・YYYY-MM-DD)。日付より前は BE も 422。 */
+    due_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
   })
   .refine((v) => v.item_type_ids.length > 0 || (v.memo ?? '').trim().length > 0, {
     message: '項目か伝言のどちらかを入れてください',
     path: ['memo'],
+  })
+  .refine((v) => !v.due_date || v.due_date >= v.start_date, {
+    message: '期日は日付と同じ日か、後の日にしてください',
+    path: ['due_date'],
   });
 export type PatientTaskCreate = z.input<typeof patientTaskCreateSchema>;
 
@@ -114,10 +134,22 @@ export const patientTaskCreateResultSchema = z.object({
 });
 export type PatientTaskCreateResult = z.infer<typeof patientTaskCreateResultSchema>;
 
+export const patientTaskDueUpdateSchema = z.object({
+  /** YYYY-MM-DD。null = 期日なしに戻す。 */
+  due_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable(),
+});
+export type PatientTaskDueUpdate = z.infer<typeof patientTaskDueUpdateSchema>;
+
 export const visitTaskCountSchema = z.object({
   open_count: z.number().int().nonnegative(),
   total_count: z.number().int().nonnegative(),
+  /** 未完了のうち、2 回目以降の訪問待ちがある。 */
   has_carried_over: z.boolean(),
+  /** 未完了のうち、期日を過ぎたものがある。 */
+  has_overdue: z.boolean(),
   all_done: z.boolean(),
 });
 export type VisitTaskCount = z.infer<typeof visitTaskCountSchema>;
