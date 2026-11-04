@@ -9,7 +9,12 @@
  * 変える (`toMonthlyActualRow`・`toMonthlyActualList`)。名前の対応:
  *   rk_arrival → rk_start / rk_departure → rk_end / k2_* → record2_* /
  *   patient → patient_name / selected → apply / apply_status → result_status /
- *   status 'missing' → 'missing_in_kaipoke' / flags[].label → flags (文字列)。
+ *   status 'missing' → 'missing_in_kaipoke' / flags[].label → flags (文字列) /
+ *   care_record_* → record2_result_* / needs_care_record → needs_record2。
+ *
+ * 記録書Ⅱ (設計 docs/plans/kaipoke-kiroku2-time-design-2026-11-04.md §2-2): 実績を反映するとき、
+ * 記録書Ⅱの「実際の訪問時間」も同じ時刻にそろえる。'k2_only' は実績はもう QR どおりで
+ * 記録書Ⅱだけ違う行。結果は実績 (result_*) と記録書Ⅱ (record2_result_*) を別に持つ。
  */
 import { z } from 'zod';
 
@@ -17,12 +22,20 @@ const hm = z.string().nullable().optional();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 /** 判定 (BE の値)。 */
-export const rawStatusSchema = z.enum(['match', 'apply', 'review', 'missing', 'kaipoke_only']);
+export const rawStatusSchema = z.enum([
+  'match',
+  'apply',
+  'k2_only',
+  'review',
+  'missing',
+  'kaipoke_only',
+]);
 
 /** 判定 (画面の値)。 */
 export type MonthlyActualStatus =
   | 'match'
   | 'apply'
+  | 'k2_only'
   | 'review'
   | 'missing_in_kaipoke'
   | 'kaipoke_only';
@@ -30,6 +43,7 @@ export type MonthlyActualStatus =
 export const MONTHLY_ACTUAL_STATUS_LABELS: Record<MonthlyActualStatus, string> = {
   match: '一致',
   apply: '反映する',
+  k2_only: '記録書Ⅱだけ',
   review: '人が見る',
   missing_in_kaipoke: 'カイポケに無い',
   kaipoke_only: 'カイポケだけ',
@@ -86,6 +100,15 @@ export const rawRowSchema = z.object({
   needs_kaipoke_check: z.boolean().default(false),
   /** 今の鍵と新しい時刻で試しを通った (本番はこの行だけ送れる)。 */
   dry_run_passed: z.boolean().default(false),
+  /** カイポケの実績の時刻が新しい時刻と違う。 */
+  needs_actual: z.boolean().default(true),
+  /** 記録書Ⅱがあり、時刻が新しい時刻と違う (記録書Ⅱもそろえる)。 */
+  needs_care_record: z.boolean().default(false),
+  /** 記録書Ⅱの結果 (status・reason は RPA の値。知らない reason もそのまま出す)。 */
+  care_record_status: z.string().nullable().optional(),
+  care_record_reason: z.string().nullable().optional(),
+  care_record_message: z.string().nullable().optional(),
+  care_record_dry_run: z.boolean().nullable().optional(),
 });
 export type RawMonthlyActualRow = z.infer<typeof rawRowSchema>;
 
@@ -139,6 +162,15 @@ export interface MonthlyActualRow {
   needs_kaipoke_check: boolean;
   /** 今の鍵と新しい時刻で試しを通った。 */
   dry_run_passed: boolean;
+  /** カイポケの実績の時刻が新しい時刻と違う (実績を書き換える)。 */
+  needs_actual: boolean;
+  /** 記録書Ⅱがあり、時刻が新しい時刻と違う (記録書Ⅱもそろえる)。 */
+  needs_record2: boolean;
+  /** 記録書Ⅱの結果 (queued / success / dry_run_ok / skipped / failed / error / unknown)。 */
+  record2_result_status: string | null;
+  record2_result_reason: string | null;
+  record2_result_message: string | null;
+  record2_result_dry_run: boolean | null;
 }
 
 export function toMonthlyActualStatus(
@@ -183,6 +215,12 @@ export function toMonthlyActualRow(r: RawMonthlyActualRow): MonthlyActualRow {
     result_dry_run: r.apply_dry_run ?? null,
     needs_kaipoke_check: r.needs_kaipoke_check,
     dry_run_passed: r.dry_run_passed,
+    needs_actual: r.needs_actual,
+    needs_record2: r.needs_care_record,
+    record2_result_status: r.care_record_status ?? null,
+    record2_result_reason: r.care_record_reason ?? null,
+    record2_result_message: r.care_record_message ?? null,
+    record2_result_dry_run: r.care_record_dry_run ?? null,
   };
 }
 
@@ -196,6 +234,9 @@ export const rawJobSchema = z.object({
   total: z.number().int().nullable().optional(),
   progress: z.record(z.string(), z.unknown()).nullable().optional(),
   counts: z.record(z.string(), z.number()).nullable().optional(),
+  care_record_counts: z.record(z.string(), z.number()).nullable().optional(),
+  /** いま RPA で動いている口 (actual = 実績と続けて記録書Ⅱ・care_record = 記録書Ⅱだけ)。 */
+  phase: z.string().nullable().optional(),
   error: z.string().nullable().optional(),
   started_at: z.string().nullable().optional(),
   completed_at: z.string().nullable().optional(),
@@ -206,10 +247,13 @@ export type MonthlyActualJob = z.infer<typeof rawJobSchema>;
 const rawCountsSchema = z.object({
   match: z.number().int().default(0),
   apply: z.number().int().default(0),
+  k2_only: z.number().int().default(0),
   review: z.number().int().default(0),
   missing: z.number().int().default(0),
   kaipoke_only: z.number().int().default(0),
   total: z.number().int().default(0),
+  /** 記録書Ⅱが新しい時刻と違う行の数 (実績と続けて・記録書Ⅱだけ の両方)。 */
+  care_record: z.number().int().default(0),
 });
 
 const applyCountsSchema = z.object({
@@ -230,6 +274,7 @@ const lastApplySchema = z
     dry_run: z.boolean(),
     finished_at: z.string(),
     counts: z.record(z.string(), z.number()),
+    care_record_counts: z.record(z.string(), z.number()).nullable().optional(),
     error: z.string().nullable().optional(),
   })
   .nullable()
@@ -242,6 +287,10 @@ const verifySchema = z
     kaipoke_fetched_at: z.string().nullable().optional(),
     applied: z.number().int().optional(),
     matched: z.number().int().optional(),
+    actual_applied: z.number().int().optional(),
+    actual_matched: z.number().int().optional(),
+    care_record_applied: z.number().int().optional(),
+    care_record_matched: z.number().int().optional(),
     not_matched: z.array(z.record(z.string(), z.unknown())).optional(),
     error: z.string().nullable().optional(),
   })
@@ -282,6 +331,7 @@ export const rawListSchema = z.object({
   counts: rawCountsSchema,
   selected_count: z.number().int(),
   apply_counts: applyCountsSchema,
+  care_record_counts: applyCountsSchema.default({}),
   rows: z.array(rawRowSchema),
   evening_warning: z.string().nullable().optional(),
 });
@@ -289,10 +339,14 @@ export const rawListSchema = z.object({
 export interface MonthlyActualCounts {
   match: number;
   apply: number;
+  /** 実績はもう QR どおりで、記録書Ⅱだけ違う行。 */
+  k2_only: number;
   review: number;
   missing_in_kaipoke: number;
   kaipoke_only: number;
   total: number;
+  /** 記録書Ⅱもそろえる行 (実績と続けて・記録書Ⅱだけ の両方)。 */
+  record2: number;
 }
 
 /** 反映の作業のまとめ (一覧の上に出すもの)。 */
@@ -305,6 +359,9 @@ export interface MonthlyActualJobSummary {
   success: number;
   /** 失敗 (failed + error)。 */
   failed: number;
+  /** 記録書Ⅱの成功 (試しなら保存の直前まで進めた件数)・失敗。 */
+  record2_success: number;
+  record2_failed: number;
   dry_run: boolean | null;
   scheduled_at?: string | null;
   scheduled_dry_run: boolean;
@@ -340,16 +397,19 @@ function toCounts(c: z.infer<typeof rawCountsSchema>): MonthlyActualCounts {
   return {
     match: c.match,
     apply: c.apply,
+    k2_only: c.k2_only,
     review: c.review,
     missing_in_kaipoke: c.missing,
     kaipoke_only: c.kaipoke_only,
     total: c.total,
+    record2: c.care_record,
   };
 }
 
 function toJobSummary(
   run: RawMonthlyActualRun,
   applyCounts: MonthlyActualApplyCounts,
+  record2Counts: MonthlyActualApplyCounts,
 ): MonthlyActualJobSummary {
   const job = run.apply_job ?? null;
   const dryRun = job?.dry_run ?? run.last_apply?.dry_run ?? null;
@@ -358,6 +418,8 @@ function toJobSummary(
     total: job?.total ?? 0,
     success: dryRun ? applyCounts.dry_run_ok : applyCounts.success,
     failed: applyCounts.failed + applyCounts.error,
+    record2_success: dryRun ? record2Counts.dry_run_ok : record2Counts.success,
+    record2_failed: record2Counts.failed + record2Counts.error,
     dry_run: dryRun,
     scheduled_at: run.scheduled_at ?? null,
     scheduled_dry_run: run.scheduled_dry_run,
@@ -373,7 +435,7 @@ export function toMonthlyActualList(raw: z.infer<typeof rawListSchema>): Monthly
     kp_fetched_at: run?.kaipoke_fetched_at ?? raw.kaipoke?.fetched_at ?? null,
     counts: toCounts(raw.counts),
     rows: raw.rows.map(toMonthlyActualRow),
-    job: run ? toJobSummary(run, raw.apply_counts) : undefined,
+    job: run ? toJobSummary(run, raw.apply_counts, raw.care_record_counts) : undefined,
     is_past_month: raw.is_past_month,
     selected_count: raw.selected_count,
     refreshing: isJobRunning(run?.refresh_job),
@@ -405,6 +467,7 @@ export const rawApplyStatusSchema = z.object({
   job: rawJobSchema.nullable(),
   running: z.boolean(),
   counts: applyCountsSchema,
+  care_record_counts: applyCountsSchema.default({}),
   last_apply: lastApplySchema,
   verify_result: verifySchema,
   rows: z.array(rawRowSchema),
@@ -416,6 +479,8 @@ export interface MonthlyActualApplyStatus {
   job: MonthlyActualJob | null;
   running: boolean;
   counts: MonthlyActualApplyCounts;
+  /** 記録書Ⅱの結果の件数。 */
+  record2_counts: MonthlyActualApplyCounts;
   /** 進み具合 (RPA の progress: processed・total・current_name など)。 */
   progress: Record<string, unknown> | null;
   verify_result: z.infer<typeof verifySchema> | null;
@@ -431,6 +496,7 @@ export function parseMonthlyActualApplyStatus(raw: unknown): MonthlyActualApplyS
     job: r.job,
     running: r.running,
     counts: r.counts,
+    record2_counts: r.care_record_counts,
     progress: r.job?.progress ?? null,
     verify_result: r.verify_result ?? null,
     rows: r.rows.map(toMonthlyActualRow),

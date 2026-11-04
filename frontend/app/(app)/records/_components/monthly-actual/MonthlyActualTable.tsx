@@ -5,6 +5,8 @@
  * - らく助の時刻は桃色、カイポケは青。差は分で、5 分を超えると赤。
  * - 「人が見る」（review）の行を「する」にするときは、画面の中で確認の一言を出す。
  * - カイポケに無い／カイポケだけの行は切り替えられない（カイポケで足す・確かめる案内）。
+ * - 記録書Ⅱの列：今の記録書Ⅱの時刻 → そろえる時刻。記録書Ⅱが無い行は扱わない。
+ *   結果は実績と記録書Ⅱを分けて出す（記録書Ⅱの理由は知らないコードもそのまま出す）。
  */
 
 import { useMemo, useState } from 'react';
@@ -18,12 +20,20 @@ import {
   diffMinutes,
   flagChips,
   isLockedStatus,
+  record2ReasonLabel,
   resultLabel,
   shortDate,
   timeRange,
 } from './monthlyActualFormat';
 
-type Filter = 'all' | 'selected' | 'apply' | 'review' | 'missing_in_kaipoke' | 'kaipoke_only';
+type Filter =
+  | 'all'
+  | 'selected'
+  | 'apply'
+  | 'k2_only'
+  | 'review'
+  | 'missing_in_kaipoke'
+  | 'kaipoke_only';
 
 const CHIP_TONE: Record<ChipTone, string> = {
   red: 'bg-error-bg text-error',
@@ -39,6 +49,36 @@ function Diff({ value }: { value: number | null }) {
     <span className={`tnum font-bold ${tone}`} data-big={Math.abs(value) > 5 ? 'true' : undefined}>
       {value > 0 ? '+' : ''}
       {value}
+    </span>
+  );
+}
+
+/** 記録書Ⅱの結果の言葉（実績の「反映した」に当たるのは「そろえた」）。 */
+function record2Result(status: string | null | undefined): { label: string; ok: boolean } | null {
+  if (status === 'success') return { label: 'そろえた', ok: true };
+  return resultLabel(status);
+}
+
+/** 記録書Ⅱの列：今の時刻 → そろえる時刻。 */
+function Record2Cell({ row }: { row: MonthlyActualRow }) {
+  if (!row.record2_start && !row.record2_end) {
+    return <span className="text-xs text-text-muted">記録書Ⅱなし</span>;
+  }
+  const now = timeRange(row.record2_start, row.record2_end);
+  if (!row.needs_record2) {
+    return (
+      <span className="tnum text-text-secondary" title="記録書Ⅱは送る時刻と同じです">
+        {now}
+        <span className="block text-xs text-text-muted">同じ</span>
+      </span>
+    );
+  }
+  return (
+    <span className="tnum" data-testid={`ma-record2-${row.id}`}>
+      <span className="text-info-strong">{now}</span>
+      <span className="block text-xs font-semibold text-brand-primary-hover">
+        → {timeRange(row.new_start, row.new_end)} にそろえる
+      </span>
     </span>
   );
 }
@@ -88,6 +128,7 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
     { key: 'all', label: 'すべて', n: diffRows.length },
     { key: 'selected', label: '「する」にした', n: selectedCount },
     { key: 'apply', label: '反映する', n: counts.apply },
+    { key: 'k2_only', label: '記録書Ⅱだけ', n: counts.k2_only },
     { key: 'review', label: '人が見る', n: counts.review },
     { key: 'missing_in_kaipoke', label: 'カイポケに無い', n: counts.missing_in_kaipoke },
     { key: 'kaipoke_only', label: 'カイポケだけ', n: counts.kaipoke_only },
@@ -98,13 +139,15 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
       <div className="flex flex-wrap gap-2" data-testid="ma-counts">
         <Stat label="一致（対象外）" value={counts.match} tone="text-success" />
         <Stat label="反映する" value={counts.apply} tone="text-error" />
+        <Stat label="記録書Ⅱだけ" value={counts.k2_only} tone="text-error" />
         <Stat label="人が見る" value={counts.review} tone="text-warning-strong" />
         <Stat label="カイポケに無い" value={counts.missing_in_kaipoke} tone="text-info-strong" />
         <Stat label="カイポケだけ" value={counts.kaipoke_only} tone="text-info-strong" />
       </div>
       <p className="text-xs text-text-muted" data-testid="ma-match-note">
         一致 {counts.match} 件は対象外です。下は差がある行です。「する」にした {selectedCount}{' '}
-        件だけが次へ進みます。
+        件だけが次へ進みます。記録書Ⅱがある行は、記録書Ⅱの「実際の訪問時間」も同じ時刻にそろえます（
+        {counts.record2} 件）。
       </p>
 
       <div className="flex flex-wrap gap-1.5" role="group" aria-label="判定で絞り込む">
@@ -136,6 +179,7 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
               <th className="px-2 py-2 font-medium">らく助の担当</th>
               <th className="px-2 py-2 font-medium">らく助（QR）</th>
               <th className="px-2 py-2 font-medium">カイポケの実績</th>
+              <th className="px-2 py-2 font-medium">記録書Ⅱ</th>
               <th className="px-2 py-2 font-medium">到着の差</th>
               <th className="px-2 py-2 font-medium">退出の差</th>
               <th className="px-2 py-2 font-medium">印</th>
@@ -145,7 +189,7 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
           <tbody>
             {shown.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-3 py-6 text-center text-text-muted">
+                <td colSpan={11} className="px-3 py-6 text-center text-text-muted">
                   この絞り込みの行はありません。
                 </td>
               </tr>
@@ -156,6 +200,13 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
                   (r.new_start && r.new_start !== r.rk_start) ||
                   (r.new_end && r.new_end !== r.rk_end);
                 const result = resultLabel(r.result_status);
+                const record2 = record2Result(r.record2_result_status);
+                const record2Note = [
+                  record2ReasonLabel(r.record2_result_reason),
+                  r.record2_result_message,
+                ]
+                  .filter(Boolean)
+                  .join(' / ');
                 return (
                   <tr
                     key={r.id}
@@ -256,11 +307,9 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
                     <td className="whitespace-nowrap px-2 py-2 tnum text-info-strong">
                       {timeRange(r.kp_start, r.kp_end)}
                       {r.kp_staff && <div className="text-xs text-text-muted">{r.kp_staff}</div>}
-                      {(r.record2_start || r.record2_end) && (
-                        <div className="text-xs text-text-muted">
-                          記録書Ⅱ {timeRange(r.record2_start, r.record2_end)}
-                        </div>
-                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2">
+                      <Record2Cell row={r} />
                     </td>
                     <td className="px-2 py-2">
                       <Diff
@@ -283,7 +332,8 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
                     </td>
                     <td className="px-2 py-2 text-xs">
                       {result && (
-                        <>
+                        <div data-testid={`ma-result-${r.id}`}>
+                          <span className="text-text-muted">実績：</span>
                           <span className={result.ok ? 'text-success' : 'font-bold text-error'}>
                             {result.label}
                           </span>
@@ -292,7 +342,16 @@ export function MonthlyActualTable({ counts, rows, onToggle, disabled }: Monthly
                               {r.result_message || r.result_reason}
                             </div>
                           )}
-                        </>
+                        </div>
+                      )}
+                      {record2 && (
+                        <div className="mt-1" data-testid={`ma-record2-result-${r.id}`}>
+                          <span className="text-text-muted">記録書Ⅱ：</span>
+                          <span className={record2.ok ? 'text-success' : 'font-bold text-error'}>
+                            {record2.label}
+                          </span>
+                          {record2Note && <div className="text-text-muted">{record2Note}</div>}
+                        </div>
                       )}
                     </td>
                   </tr>
