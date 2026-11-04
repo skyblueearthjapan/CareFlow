@@ -31,6 +31,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Text,
+    false,
     func,
     text,
     true,
@@ -57,6 +58,11 @@ class TaskItemType(Base, TimestampMixin):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
+    )
+    #: 最初の訪問で済まなかったら、その訪問の主担当が預かる (ほかの訪問へ持ち越さない)。
+    #: 正典 docs/plans/patient-tasks-hold-first-visitor-design-2026-11-04.md (mig 0107)。
+    hold_by_first_visitor: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
     )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),

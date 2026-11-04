@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>最初の看護師が預かる（モック）</title>
+<style>
+:root{
+  --pink:#e15a7f;--pink-d:#c4446a;--pink-l:#fde8ee;--pink-ll:#fff5f8;
+  --bg:#f6f2ef;--card:#fff;--ink:#2b2b2b;--mute:#727272;--line:#ece3de;
+  --ok:#2e7d32;--ok-l:#e8f5e9;--blue:#1565c0;--blue-l:#e3eefc;--gray-l:#f1efee;
+  --or2-bg:#fff4e0;--or2-fg:#b26a00;--or3-bg:#ffd9a8;--or3-fg:#8a4b00;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#f6f2ef}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans JP","Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;font-size:14px;line-height:1.6}
+button{font:inherit;cursor:pointer;color:inherit}
+.top{display:flex;align-items:center;gap:14px;padding:12px 20px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.top h1{font-size:16px;margin:0}
+.top .note{color:var(--mute);font-size:12px}
+.ctrl{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:12px 20px 0;background:#fff;border:1px solid var(--pink);border-radius:12px;padding:10px 14px}
+.ctrl .lbl{font-size:12px;color:var(--mute)}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.seg button{border:none;border-left:1px solid var(--line);background:#fff;padding:6px 12px;font-size:12px}
+.seg button:first-child{border-left:none}
+.seg button.on{background:var(--pink);color:#fff;font-weight:700}
+.explain{margin:10px 20px 0;background:var(--pink-ll);border:1px solid var(--pink-l);border-radius:10px;padding:10px 14px;font-size:13px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px 20px 40px}
+@media (max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.card h2{margin:0;font-size:14px;padding:10px 14px;border-bottom:1px solid var(--line);background:#fdf0f3}
+.card .b{padding:12px 14px}
+.wide{grid-column:1/-1}
+table{width:100%;border-collapse:collapse}
+th{background:#fdf0f3;text-align:left;font-size:12px;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+.tbl{overflow-x:auto}
+.pill{display:inline-block;border-radius:6px;padding:1px 7px;font-size:11px;white-space:nowrap;line-height:1.7}
+.n1{background:var(--gray-l);color:var(--mute)}
+.n2{background:var(--or2-bg);color:var(--or2-fg);font-weight:700}
+.n3{background:var(--or3-bg);color:var(--or3-fg);font-weight:700}
+.held{background:var(--blue-l);color:var(--blue);font-weight:700}
+.done{background:var(--ok-l);color:var(--ok);font-weight:700}
+.mini{border:1px solid var(--line);background:#fff;border-radius:6px;padding:3px 9px;font-size:12px}
+.mini.pk{background:var(--pink);border-color:var(--pink);color:#fff;font-weight:700}
+.sm{font-size:11px;color:var(--mute)}
+.flow{display:flex;gap:10px;flex-wrap:wrap;align-items:stretch}
+.v{flex:1;min-width:150px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff;position:relative}
+.v.past{background:#faf8f7}
+.v .d{font-weight:700}
+.v .who{font-size:12px;color:var(--mute)}
+.v .t{margin-top:6px;min-height:26px}
+.v.now{box-shadow:0 0 0 2px var(--pink)}
+.arrow{align-self:center;color:var(--mute)}
+.phones{display:flex;gap:14px;flex-wrap:wrap}
+.phone{width:270px;max-width:100%;border:8px solid #333;border-radius:26px;background:#fff;overflow:hidden}
+.phone .ph{background:var(--pink);color:#fff;font-weight:700;padding:8px 12px;font-size:13px}
+.phone .pb{padding:10px;min-height:260px;background:#fbf9f8}
+.band{border:1px solid #b9d3f5;background:var(--blue-l);border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:8px}
+.band b{color:var(--blue)}
+.band .row{display:flex;align-items:center;gap:6px;background:#fff;border-radius:6px;padding:6px 8px;margin-top:6px}
+.band .row .tx{flex:1;min-width:0}
+.vc{border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 10px;margin-bottom:8px;font-size:12px}
+.vc .tm{font-weight:700}
+.empty{color:var(--mute);font-size:12px;padding:6px 0}
+.sw{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.sw .nm{flex:1}
+.tog{width:40px;height:22px;border-radius:11px;background:#ccc;position:relative;border:none;padding:0}
+.tog::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.15s}
+.tog.on{background:var(--pink)}
+.tog.on::after{left:20px}
+.newb{font-size:10px;background:var(--pink);color:#fff;border-radius:4px;padding:0 4px;margin-left:4px}
+.stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.stat{flex:1;min-width:110px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px}
+.stat b{display:block;font-size:20px}
+.stat.bl b{color:var(--blue)}
+.stat.or b{color:#e07800}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>やることを「最初に訪問した看護師が預かる」— 動くモック</h1>
+  <span class="note">名前はすべて見本です。保存はしません。設計：docs/plans/patient-tasks-hold-first-visitor-design-2026-11-04.md</span>
+</div>
+
+<div class="ctrl">
+  <span class="lbl">「GAF 入力」の項目の印</span>
+  <div class="seg" id="markSeg">
+    <button data-v="0">印なし（今まで）</button>
+    <button data-v="1" class="on">印あり（最初の看護師が預かる）</button>
+  </div>
+  <span class="lbl" style="margin-left:12px">いつの様子を見るか</span>
+  <div class="seg" id="stepSeg">
+    <button data-v="0" class="on">12/1 朝（まだ訪問前）</button>
+    <button data-v="1">12/2 夕方（佐藤さんの訪問の後）</button>
+    <button data-v="2">12/5 夕方（鈴木さんの訪問の後）</button>
+    <button data-v="3">佐藤さんが完了した後</button>
+  </div>
+</div>
+<div class="explain" id="explain"></div>
+
+<div class="grid">
+  <div class="card wide">
+    <h2>見本の流れ：見本 花子 様の 12 月の訪問（GAF 入力・毎月 1 日から・期日なし）</h2>
+    <div class="b"><div class="flow" id="flow"></div></div>
+  </div>
+
+  <div class="card wide">
+    <h2>PC：タスク管理の一覧</h2>
+    <div class="b">
+      <div class="stats" id="stats"></div>
+      <div class="tbl"><table>
+        <thead><tr><th>日付</th><th>患者様</th><th>やること</th><th>期日</th><th>出す訪問</th><th>状態</th><th></th></tr></thead>
+        <tbody id="pcRow"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>スマホ：看護師のその日の画面</h2>
+    <div class="b"><div class="phones" id="phones"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>PC：項目の設定 <span class="newb">足す</span></h2>
+    <div class="b">
+      <div class="sw"><span class="nm">計画書サイン</span><span class="sm">預かる</span><button class="tog" disabled></button></div>
+      <div class="sw"><span class="nm">GAF 入力</span><span class="sm">預かる</span><button class="tog on" id="tog"></button></div>
+      <div class="sw"><span class="nm">上限負担額確認</span><span class="sm">預かる</span><button class="tog" disabled></button></div>
+      <p class="sm" style="margin-top:8px">「預かる」をオンにした項目は、最初の訪問で済まなかったとき、その訪問の主担当が預かります。ほかの看護師の訪問へは移りません。オフにすると、今までどおり次の訪問へ持ち越します。</p>
+    </div>
+  </div>
+</div>
+
+<script>
+let mark = 1, step = 0;
+const V = [
+  {d:'12/2（水）10:00', who:'佐藤（主担当）'},
+  {d:'12/5（土）14:00', who:'鈴木（主担当）'},
+  {d:'12/9（水）10:00', who:'佐藤（主担当）'},
+];
+const EXPLAIN = [
+  ['まだ訪問が来ていません。印のあり・なしで違いはありません。','12/2 の佐藤さんの訪問に「1 回目の訪問待ち」で出ます。'],
+  ['佐藤さんの訪問で済みませんでした。','<b>印なし</b>：次の 12/5 の鈴木さんの訪問へ移り「2 回目の訪問待ち」。<br><b>印あり</b>：佐藤さんが預かります。鈴木さんの訪問には出ません。佐藤さんのスマホの上に「預かっているやること」が出ます。'],
+  ['鈴木さんの訪問も終わりました。','<b>印なし</b>：12/9 の訪問へ移り「3 回目の訪問待ち」。<br><b>印あり</b>：佐藤さんが預かったまま。鈴木さんの訪問には出ていません。'],
+  ['佐藤さんがスマホの帯から「完了」を押しました。','<b>印あり</b>のとき、訪問がない日でも完了にできます。完了は 12/2 の訪問の分として残ります。'],
+];
+function pill(cls, t){return `<span class="pill ${cls}">${t}</span>`}
+function render(){
+  document.querySelectorAll('#markSeg button').forEach(b=>b.classList.toggle('on', +b.dataset.v===mark));
+  document.querySelectorAll('#stepSeg button').forEach(b=>b.classList.toggle('on', +b.dataset.v===step));
+  document.getElementById('tog').classList.toggle('on', !!mark);
+  const s = (mark===0 && step===3) ? 2 : step;
+  const ex = EXPLAIN[step];
+  document.getElementById('explain').innerHTML = (mark===0 && step===3)
+    ? '印なしのときは、訪問がない日に看護師は完了にできません（次の訪問で完了にします）。表示は「12/5 夕方」と同じです。'
+    : `<b>${ex[0]}</b> ${ex[1]}`;
+
+  // 訪問の流れ
+  const held = mark===1 && s>=1;
+  const doneNow = mark===1 && step===3;
+  let flow = '';
+  V.forEach((v,i)=>{
+    const past = (s>=1 && i===0) || (s>=2 && i===1);
+    let t = '';
+    if (doneNow) t = i===0 ? pill('done','完了（佐藤）') : '<span class="sm">出ない</span>';
+    else if (held) t = i===0 ? pill('held','佐藤さんが預かり中') : '<span class="sm">出ない</span>';
+    else {
+      const cur = s; // 印なし or まだ訪問前
+      if (i===cur) t = pill(['n1','n2','n3'][i], `${i+1} 回目の訪問待ち`);
+      else if (i<cur) t = '<span class="sm">済まず次へ</span>';
+      else t = '<span class="sm">まだ</span>';
+    }
+    flow += (i?'<span class="arrow">→</span>':'') + `<div class="v ${past?'past':''} ${(!held&&!doneNow&&i===s)?'now':''}"><div class="d">${v.d}</div><div class="who">${v.who}</div><div class="t">${t}</div></div>`;
+  });
+  document.getElementById('flow').innerHTML = flow;
+
+  // PC の一覧
+  let visit, state, btn = '<button class="mini pk">完了</button> <button class="mini">取り消す</button>';
+  if (doneNow){ visit = '12/2（水）10:00・佐藤'; state = pill('done','完了'); btn=''; }
+  else if (held){ visit = '<b>佐藤さんが預かり中</b><div class="sm">12/2（水）の訪問から</div>'; state = pill('held','預かり中'); }
+  else { visit = V[s].d + '・' + V[s].who.replace('（主担当）',''); state = pill(['n1','n2','n3'][s], `${s+1} 回目の訪問待ち`); }
+  document.getElementById('pcRow').innerHTML = `<tr><td class="nw">12/1（火）</td><td>見本 花子</td><td><b>GAF 入力</b><div class="sm">毎月のやること</div></td><td class="sm">なし</td><td>${visit}</td><td>${state}</td><td class="nw">${btn}</td></tr>`;
+  const heldN = held && !doneNow ? 1 : 0;
+  const w2 = (!held && !doneNow && s>=1) ? 1 : 0;
+  document.getElementById('stats').innerHTML =
+    `<div class="stat"><span>未完了</span><b>${doneNow?0:1}</b></div>`+
+    `<div class="stat"><span>期日を過ぎた</span><b>0</b></div>`+
+    `<div class="stat or"><span>2 回目以降の訪問待ち</span><b>${w2}</b></div>`+
+    (mark? `<div class="stat bl"><span>預かり中 <span class="newb">足す</span></span><b>${heldN}</b></div>`:'')+
+    `<div class="stat"><span>完了（直近 30 日）</span><b>${doneNow?1:0}</b></div>`;
+
+  // スマホ
+  const days = ['12/1（火）','12/2（水）','12/5（土）','12/7（月）'];
+  const day = days[step];
+  function phone(name, visits){
+    let band = '';
+    if (name==='佐藤' && held && !doneNow){
+      band = `<div class="band"><b>預かっているやること 1 件</b><div class="sm">前の訪問で済まなかった分です。訪問がない日でも完了にできます。</div>
+        <div class="row"><div class="tx"><b>GAF 入力</b><div class="sm">見本 花子 様・12/2 の訪問から</div></div><button class="mini pk">完了</button></div></div>`;
+    }
+    if (name==='佐藤' && doneNow){
+      band = `<div class="band"><b>預かっているやること 0 件</b><div class="sm">12/7 に完了にしました。</div></div>`;
+    }
+    const body = band + (visits.length ? visits.map(x=>`<div class="vc"><div class="tm">${x.tm}</div><div>見本 花子 様</div><div style="margin-top:4px">${x.tag}</div></div>`).join('') : '<div class="empty">この日の訪問はありません</div>');
+    return `<div class="phone"><div class="ph">${name}さん・${day}</div><div class="pb">${body}</div></div>`;
+  }
+  let satoV = [], suzukiV = [];
+  if (step===0){ /* 12/1 訪問なし */ }
+  if (step===1){ satoV=[{tm:'10:00〜（終わり）',tag: held? pill('held','預かり中') : pill('n1','やること 1 件（済まず）')}]; }
+  if (step===2){ suzukiV=[{tm:'14:00〜（終わり）',tag: held? '<span class="sm">やることなし</span>' : pill('n2','2 回目の訪問待ち')}]; }
+  document.getElementById('phones').innerHTML = phone('佐藤', satoV) + phone('鈴木', suzukiV);
+}
+document.getElementById('markSeg').onclick = e=>{const b=e.target.closest('button'); if(b){mark=+b.dataset.v; render();}};
+document.getElementById('stepSeg').onclick = e=>{const b=e.target.closest('button'); if(b){step=+b.dataset.v; render();}};
+document.getElementById('tog').onclick = ()=>{mark = mark?0:1; render();};
+render();
+</script>
+</body>
+</html>
