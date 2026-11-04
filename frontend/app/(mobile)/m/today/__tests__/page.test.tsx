@@ -96,6 +96,8 @@ vi.mock('@/lib/voice/queue', async (importOriginal) => {
 // 事務所からのやること (帯・カードの印)。既定は 0 件。
 vi.mock('@/lib/queries/tasks', () => ({
   useVisitTaskCounts: vi.fn(() => ({ data: { date: '2026-08-16', counts: {} } })),
+  useHeldTasks: vi.fn(() => ({ data: [] })),
+  useCompleteTask: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock('@/lib/queries/me', () => ({

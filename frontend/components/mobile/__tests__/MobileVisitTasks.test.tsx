@@ -15,6 +15,13 @@ vi.mock('@/lib/queries/tasks', () => ({
   useReopenTask: () => ({ mutate: reopenMutate, isPending: false }),
 }));
 
+let session: { user: { role: string; staffId: string | null } } = {
+  user: { role: 'staff', staffId: '00000000-0000-0000-0000-0000000000s1' },
+};
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({ data: session, status: 'authenticated' }),
+}));
+
 const toastInfo = vi.fn();
 const toastError = vi.fn();
 vi.mock('@/components/ui/sonner', () => ({
@@ -64,6 +71,57 @@ describe('MobileVisitTasks', () => {
     reopenMutate.mockReset();
     toastInfo.mockReset();
     toastError.mockReset();
+    session = { user: { role: 'staff', staffId: '00000000-0000-0000-0000-0000000000s1' } };
+  });
+
+  const HELD = {
+    staff_id: '00000000-0000-0000-0000-0000000000s1',
+    staff_name: '佐藤 花子',
+    staff_active: true,
+    visit_id: '00000000-0000-0000-0000-0000000000v1',
+    visit_date: '2026-11-02',
+    start_time: '10:00',
+  };
+
+  it('預かり中は「〇〇さんが預かり中」を出し、何回目は出さず、本人は訪問を指さずに完了にする', () => {
+    tasks = [makeTask({ visit_round: 2, held_by: HELD })];
+    render(<MobileVisitTasks visitId="v1" visitDate="2026-11-02" />);
+    const box = screen.getByTestId('mobile-task-t1');
+    expect(box.textContent).toContain('佐藤 花子さんが預かり中');
+    expect(box.textContent).not.toContain('回目の訪問待ち');
+    expect(box).not.toBeDisabled();
+    fireEvent.click(box);
+    expect(completeMutate).toHaveBeenCalledWith(
+      { taskId: 't1', visitId: null },
+      expect.any(Object),
+    );
+  });
+
+  it('預かり中は、ほかの職員には押せない (管理者は押せる)', () => {
+    session = { user: { role: 'staff', staffId: '00000000-0000-0000-0000-0000000000s2' } };
+    tasks = [makeTask({ held_by: HELD })];
+    const { rerender } = render(<MobileVisitTasks visitId="v1" />);
+    const box = screen.getByTestId('mobile-task-t1');
+    expect(box).toBeDisabled();
+    expect(screen.getByTestId('mobile-task-held-note-t1').textContent).toContain(
+      '預かっている人だけが完了にできます',
+    );
+    fireEvent.click(box);
+    expect(completeMutate).not.toHaveBeenCalled();
+
+    session = { user: { role: 'admin', staffId: null } };
+    rerender(<MobileVisitTasks visitId="v1" />);
+    expect(screen.getByTestId('mobile-task-t1')).not.toBeDisabled();
+    expect(screen.queryByTestId('mobile-task-held-note-t1')).toBeNull();
+  });
+
+  it('在籍していない人の預かりは「（在籍なし）」を添える', () => {
+    session = { user: { role: 'admin', staffId: null } };
+    tasks = [makeTask({ held_by: { ...HELD, staff_active: false } })];
+    render(<MobileVisitTasks visitId="v1" />);
+    expect(screen.getByTestId('mobile-task-t1').textContent).toContain(
+      '佐藤 花子さんが預かり中（在籍なし）',
+    );
   });
 
   it('やることが無ければ何も出さない', () => {

@@ -8,6 +8,8 @@
  * 下に「項目の設定」。期日と何回目の訪問待ちは patient-tasks-due-design-2026-11-04。
  * 期日の欄を押すと日付を選び直せる (管理者・完了／取消の行は押せない・§6-3)。
  * 出す訪問は BE が見るたびに決める (患者 + 日付以降の最初の訪問)。
+ * 「預かる」の項目は、最初の訪問で済まなければその訪問の主担当が預かる (預かり中・青の札・
+ * patient-tasks-hold-first-visitor-design-2026-11-04)。出す訪問の欄に預かっている人と日数を出す。
  *
  * 上のタブで「やることの一覧」と「毎月のやること」(繰り返しの設定・
  * patient-tasks-recurring-design-2026-11-02 §3-1) を切り替える。
@@ -30,6 +32,7 @@ import { Pill, RecurringMark, RoundPill } from '@/components/tasks/TaskPill';
 import {
   taskActionErrorMessage,
   taskDoneLabel,
+  heldSinceLabel,
   taskDueState,
   taskMdWd,
   taskTitle,
@@ -66,6 +69,7 @@ const STATUS_FILTERS: { key: TaskListStatus; label: string }[] = [
   { key: 'open', label: '未完了' },
   { key: 'overdue', label: '期日を過ぎた' },
   { key: 'waiting2plus', label: '2 回目以降' },
+  { key: 'held', label: '預かり中' },
   { key: 'done', label: '完了' },
   { key: 'all', label: 'すべて' },
 ];
@@ -102,7 +106,9 @@ export default function TasksPage() {
   const stats = {
     open: openAll.data?.length ?? 0,
     overdue: (openAll.data ?? []).filter((t) => t.overdue).length,
-    waiting2plus: (openAll.data ?? []).filter((t) => t.visit_round >= 2).length,
+    // 預かり中は「2 回目以降」に数えない (BE の waiting2plus と同じ)。
+    waiting2plus: (openAll.data ?? []).filter((t) => !t.held_by && t.visit_round >= 2).length,
+    held: (openAll.data ?? []).filter((t) => !!t.held_by).length,
     done: doneRecent.data?.length ?? 0,
   };
 
@@ -183,6 +189,7 @@ export default function TasksPage() {
               tone="carry"
               testId="tasks-stat-waiting2plus"
             />
+            <Stat label="預かり中" value={stats.held} tone="held" testId="tasks-stat-held" />
             <Stat
               label={`完了（直近 ${DONE_LOOKBACK_DAYS} 日）`}
               value={stats.done}
@@ -317,13 +324,15 @@ export default function TasksPage() {
             <RoundPill round={3} />
             <RoundPill round={4} />
             前の訪問で済まなかった（数が多いほど濃い）
+            <Pill tone="held">預かり中</Pill>
+            最初に訪問した看護師が預かっている
             <Pill tone="overStrong">期日を過ぎた</Pill>
             期日がある分だけ
           </p>
 
           <details className="rounded-lg border border-border-default bg-bg-base p-4">
             <summary className="cursor-pointer text-base font-bold text-text-primary">
-              項目の設定（事務所で足す・名前を変える・使わない・並び順）
+              項目の設定（事務所で足す・名前を変える・使わない・並び順・預かる）
             </summary>
             <div className="mt-3">
               <TaskItemTypesSettings />
@@ -345,7 +354,7 @@ function Stat({
 }: {
   label: string;
   value: number;
-  tone?: 'over' | 'ok' | 'carry';
+  tone?: 'over' | 'ok' | 'carry' | 'held';
   testId?: string;
 }) {
   return (
@@ -368,7 +377,9 @@ function Stat({
               ? 'text-success'
               : tone === 'carry' && value > 0
                 ? 'text-[#e07800]'
-                : 'text-text-primary',
+                : tone === 'held' && value > 0
+                  ? 'text-[#1565c0]'
+                  : 'text-text-primary',
         )}
       >
         {value}
@@ -386,7 +397,8 @@ function sortByUrgency(list: PatientTaskRead[], today: string): PatientTaskRead[
     if (t.status !== 'open') return 9;
     if (t.overdue) return 0;
     if (taskDueState(t.due_date, today)?.kind === 'today') return 1;
-    return t.visit_round >= 2 ? 2 : 3;
+    // 預かり中も「前の訪問で済まなかった」分なので、2 回目以降と同じ段に並べる。
+    return t.held_by || t.visit_round >= 2 ? 2 : 3;
   };
   return list.slice().sort((a, b) => {
     const r = rank(a) - rank(b);
@@ -538,7 +550,19 @@ function TaskTableRow({
         <DueCell task={t} today={today} busy={busy} onSetDue={onSetDue} />
       </td>
       <td className="whitespace-nowrap px-3 py-2">
-        {shownVisit ? (
+        {!done && t.held_by ? (
+          <div data-testid={`tasks-held-${t.id}`}>
+            <b>
+              {t.held_by.staff_name ?? '（名前なし）'}さんが預かり中
+              {!t.held_by.staff_active && (
+                <span className="font-normal text-text-muted">（在籍なし）</span>
+              )}
+            </b>
+            <div className="text-xs text-text-muted">
+              {heldSinceLabel(t.held_by.visit_date, today)}
+            </div>
+          </div>
+        ) : shownVisit ? (
           visitBriefLabel(shownVisit)
         ) : done ? (
           '—'
@@ -555,7 +579,13 @@ function TaskTableRow({
         ) : (
           <div className="flex flex-wrap items-center gap-1">
             {t.overdue && <Pill tone="overStrong">期日を過ぎた</Pill>}
-            <RoundPill round={t.visit_round} />
+            {t.held_by ? (
+              <span data-testid="task-held">
+                <Pill tone="held">預かり中</Pill>
+              </span>
+            ) : (
+              <RoundPill round={t.visit_round} />
+            )}
           </div>
         )}
       </td>

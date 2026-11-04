@@ -10,10 +10,16 @@
  *
  * `readOnly` (先の日の訪問・mobile-future-days) ではお願いの完了・戻すは押せない
  * (今日の訪問だけで押す)。伝言の「読みました」は先の日でも押せる (PO 2026-11-01)。
+ *
+ * 預かり中のやること (最初の訪問にだけ出る・held_by あり) は「〇〇さんが預かり中」の札を出し、
+ * 何回目の札は出さない。完了は預かっている本人か管理者だけ (訪問を指さずに完了にする・
+ * patient-tasks-hold-first-visitor-design §3)。
  */
 import { ClipboardList, MessageSquare } from 'lucide-react';
+import { useSession } from 'next-auth/react';
 
 import { toast } from '@/components/ui/sonner';
+import { isAdminRole } from '@/lib/rbac';
 import { cn } from '@/lib/utils';
 import { useCompleteTask, useReopenTask, useVisitTasks } from '@/lib/queries/tasks';
 import type { PatientTaskRead } from '@/lib/schemas/patient-task';
@@ -41,6 +47,15 @@ export function MobileVisitTasks({
   const complete = useCompleteTask();
   const reopen = useReopenTask();
   const busy = complete.isPending || reopen.isPending;
+  const { data: session } = useSession();
+  const isAdmin = isAdminRole(session?.user?.role);
+  const myStaffId = session?.user?.staffId ?? null;
+  /** 預かり中で、押せない人 (預かっている本人でも管理者でもない)。 */
+  const heldLocked = (t: PatientTaskRead) =>
+    t.status !== 'done' &&
+    !!t.held_by &&
+    !isAdmin &&
+    !(!!myStaffId && myStaffId === t.held_by.staff_id);
 
   if (isError || !data || data.length === 0) return null;
   const refDate = visitDate ?? taskTodayJst();
@@ -49,7 +64,8 @@ export function MobileVisitTasks({
 
   const doComplete = (t: PatientTaskRead, okText: string, failText: string) =>
     complete.mutate(
-      { taskId: t.id, visitId },
+      // 預かり中は訪問を指さずに完了にする (完了の訪問は BE が最初の訪問にする)。
+      { taskId: t.id, visitId: t.held_by ? null : visitId },
       {
         onSuccess: () => toast.success(okText),
         onError: (err) => toast.error(failText, { description: taskActionErrorMessage(err) }),
@@ -57,7 +73,7 @@ export function MobileVisitTasks({
     );
 
   const toggle = (t: PatientTaskRead) => {
-    if (busy || readOnly) return;
+    if (busy || readOnly || heldLocked(t)) return;
     if (t.status !== 'done') {
       doComplete(t, '完了にしました', '完了にできませんでした');
       return;
@@ -87,6 +103,7 @@ export function MobileVisitTasks({
           <ul className="m-0 list-none space-y-2 p-0">
             {requests.map((t) => {
               const done = t.status === 'done';
+              const locked = heldLocked(t);
               return (
                 <li key={t.id}>
                   <button
@@ -95,14 +112,14 @@ export function MobileVisitTasks({
                     aria-checked={done}
                     // ほかの人が完了にしたものは戻せない (押すと案内だけ出す)。
                     aria-disabled={done && !t.can_reopen ? true : undefined}
-                    disabled={busy || readOnly}
+                    disabled={busy || readOnly || locked}
                     onClick={() => toggle(t)}
                     className={cn(
                       'flex min-h-12 w-full items-start gap-3 rounded-md border px-3 py-2.5 text-left',
                       done
                         ? 'border-success bg-success-bg'
                         : 'border-border-default bg-bg-base active:bg-bg-muted',
-                      readOnly && 'cursor-not-allowed opacity-70',
+                      (readOnly || locked) && 'cursor-not-allowed opacity-70',
                     )}
                     data-testid={`mobile-task-${t.id}`}
                   >
@@ -144,6 +161,14 @@ export function MobileVisitTasks({
                           ? `完了 ${taskDoneLabel(t)}`
                           : `${taskMd(t.start_date)} から${t.due_date ? `・期日 ${taskMdWd(t.due_date)}` : ''}`}
                       </span>
+                      {locked && (
+                        <span
+                          className="mt-0.5 block text-xs text-text-muted"
+                          data-testid={`mobile-task-held-note-${t.id}`}
+                        >
+                          預かっている人だけが完了にできます
+                        </span>
+                      )}
                     </span>
                   </button>
                 </li>

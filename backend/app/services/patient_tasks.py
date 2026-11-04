@@ -14,6 +14,7 @@
     - 完了: 完了した訪問 (``done_visit_id``) にだけ出る。訪問を指さずに完了したもの
       (管理者が PC から) は、完了した日 (JST) の訪問に出る。
     - 取消: 出ない。
+    - 預かり中 (:func:`holders_now`): 預かった訪問 (最初の訪問) にだけ出す。
   訪問一覧から呼んでも N+1 にならないよう、やること・訪問・担当をまとめて引く。
 """
 
@@ -245,9 +246,11 @@ async def visit_staff_map(db: AsyncSession, visits: list[Visit]) -> dict[UUID, l
 
     asn_rows = (
         await db.execute(
-            select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id).where(
-                VisitStaffAssignment.visit_id.in_(visit_ids)
-            )
+            select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id)
+            .where(VisitStaffAssignment.visit_id.in_(visit_ids))
+            # 主担当が空の 2 名訪問で「最初の人」が呼ぶたびに入れ替わらないよう並びを決める
+            # (預かる人の決め方が毎回同じになるように・hold-first-visitor のレビュー中-2)。
+            .order_by(VisitStaffAssignment.created_at, VisitStaffAssignment.staff_id)
         )
     ).all()
     for vid, sid in asn_rows:
@@ -298,6 +301,123 @@ async def visit_staff_map(db: AsyncSession, visits: list[Visit]) -> dict[UUID, l
     }
 
 
+# ---------------------------------------------------------------------------
+# 最初に訪問した看護師が預かる (patient-tasks-hold-first-visitor-design-2026-11-04)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Holder:
+    """預かっている人と、預かった訪問 (= 最初の訪問)."""
+
+    staff_id: UUID
+    staff_name: str | None
+    #: 在籍 (削除されていない・status が active)。辞めた人の預かりを一覧で分かるように。
+    staff_active: bool
+    visit: Visit
+
+    def to_payload(self) -> dict:
+        return {
+            "staff_id": self.staff_id,
+            "staff_name": self.staff_name,
+            "staff_active": self.staff_active,
+            "visit_id": self.visit.id,
+            "visit_date": self.visit.visit_date,
+            "start_time": fmt_hhmm(self.visit.start_time),
+        }
+
+
+async def holders_now(
+    db: AsyncSession, tasks: list[PatientTask], now: datetime
+) -> dict[UUID, Holder]:
+    """やること id → いまの時刻から見た預かる人 (預かり中の未完了だけ).
+
+    印 (``hold_by_first_visitor``) の付いた項目の未完了のやることについて、日付以降の
+    出せる訪問のうち予定の終わりが過ぎたものを (日付 → 開始時刻 → id) の順に見て、
+    主担当 (:func:`visit_staff_map` の primary の最初の人) が決まる最初の訪問の主担当が
+    預かる。主担当なしの訪問は飛ばす。保存せず毎回決める (§3-2)。
+    問い合わせは項目 1 回・訪問 1 回・担当 (主担当なしを飛ばすたびに 1 組)・職員 1 回。
+    """
+    open_tasks = [t for t in tasks if task_status(t) == "open" and t.item_type_id is not None]
+    if not open_tasks:
+        return {}
+    hold_items = set(
+        (
+            await db.scalars(
+                select(TaskItemType.id).where(
+                    TaskItemType.id.in_({t.item_type_id for t in open_tasks}),
+                    TaskItemType.hold_by_first_visitor.is_(True),
+                )
+            )
+        ).all()
+    )
+    targets = [t for t in open_tasks if t.item_type_id in hold_items]
+    if not targets:
+        return {}
+
+    ended = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id.in_({t.patient_id for t in targets}),
+                Visit.visit_date >= min(t.start_date for t in targets),
+                eligible_visit_clause(),
+                _visit_ended_clause(now),
+            )
+        )
+    ).all()
+    by_patient: dict[UUID, list[Visit]] = defaultdict(list)
+    for v in ended:
+        by_patient[v.patient_id].append(v)
+    for vs in by_patient.values():
+        vs.sort(key=_visit_key)
+
+    candidates: dict[UUID, list[Visit]] = {}
+    for t in targets:
+        vs = by_patient.get(t.patient_id, [])
+        if vs:
+            candidates[t.id] = vs[bisect.bisect_left([v.visit_date for v in vs], t.start_date) :]
+    pos = dict.fromkeys(candidates, 0)
+    staff_by_visit: dict[UUID, list[StaffRef]] = {}
+    found: dict[UUID, tuple[StaffRef, Visit]] = {}
+    pending = {tid for tid, vs in candidates.items() if vs}
+    while pending:
+        need = {
+            candidates[tid][pos[tid]].id: candidates[tid][pos[tid]]
+            for tid in pending
+            if candidates[tid][pos[tid]].id not in staff_by_visit
+        }
+        if need:
+            staff_by_visit.update(await visit_staff_map(db, list(need.values())))
+        nxt: set[UUID] = set()
+        for tid in pending:
+            v = candidates[tid][pos[tid]]
+            primary = next((s for s in staff_by_visit.get(v.id, []) if s.role == "primary"), None)
+            if primary is not None:
+                found[tid] = (primary, v)
+            else:
+                pos[tid] += 1
+                if pos[tid] < len(candidates[tid]):
+                    nxt.add(tid)
+        pending = nxt
+    if not found:
+        return {}
+
+    active = set(
+        (
+            await db.scalars(
+                select(Staff.id).where(
+                    Staff.id.in_({s.staff_id for s, _ in found.values()}),
+                    Staff.deleted_at.is_(None),
+                    Staff.status == "active",
+                )
+            )
+        ).all()
+    )
+    return {
+        tid: Holder(s.staff_id, s.name, s.staff_id in active, v) for tid, (s, v) in found.items()
+    }
+
+
 def visit_brief(v: Visit, staff: list[StaffRef]) -> dict:
     return {
         "visit_id": v.id,
@@ -319,6 +439,8 @@ class VisitTaskEntry:
     carried_over: bool
     #: その訪問から見た何回目 (日付以降の出せる訪問のうち、この訪問より前の数 + 1)。
     visit_round: int = 1
+    #: 預かり中なら預かる人 (このときは最初の訪問にだけ出る)。
+    held_by: Holder | None = None
 
 
 def _done_shows_on(task: PatientTask, v: Visit) -> bool:
@@ -367,6 +489,8 @@ async def tasks_for_visits(
         return {}
 
     today = jst_today()
+    # 預かり中の未完了は、預かった訪問 (最初の訪問) にだけ出す (ほかの訪問へ持ち越さない)。
+    holders = await holders_now(db, [t for t in tasks if t.done_at is None], datetime.now(UTC))
     first_by_task: dict[UUID, tuple[date, time, str]] = {}
     # 今日より後の訪問には、max(日付, 今日) 以降の最初の訪問にだけ出す
     # (まだ来ていない先の訪問へ持ち越しで重ねて出さない)。
@@ -403,6 +527,12 @@ async def tasks_for_visits(
         entries: list[VisitTaskEntry] = []
         for t in tasks_by_patient.get(v.patient_id, []):
             if t.done_at is None:
+                held = holders.get(t.id)
+                if held is not None:
+                    if held.visit.id == v.id:
+                        # 預かり中は「持ち越し」ではない (札は預かり中・件数の持ち越しも立てない)。
+                        entries.append(VisitTaskEntry(t, False, _round(t, v), held_by=held))
+                    continue
                 if v.visit_date > today and next_by_task.get(t.id) != v.id:
                     continue
                 if t.start_date <= v.visit_date:
@@ -485,7 +615,12 @@ def task_sort_key(task: PatientTask, names: TaskNames) -> tuple:
 
 
 def serialize_task(
-    task: PatientTask, names: TaskNames, *, overdue: bool, visit_round: int = 1
+    task: PatientTask,
+    names: TaskNames,
+    *,
+    overdue: bool,
+    visit_round: int = 1,
+    held_by: Holder | None = None,
 ) -> dict:
     item = names.item_types.get(task.item_type_id) if task.item_type_id else None
     done_by_name = None
@@ -517,6 +652,7 @@ def serialize_task(
         "cancelled_at": task.cancelled_at,
         "recurring_rule_id": task.recurring_rule_id,
         "recurring_month": task.recurring_month,
+        "held_by": held_by.to_payload() if held_by is not None and task.done_at is None else None,
     }
 
 

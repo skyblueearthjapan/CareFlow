@@ -7,7 +7,8 @@
  *   GET   /api/v1/tasks                         (admin・status/staff_id/patient_id/date_from/date_to/done_from)
  *   POST  /api/v1/tasks                         (admin)
  *   GET   /api/v1/tasks/counts?date=YYYY-MM-DD  (admin・staff は自分の訪問だけ)
- *   POST  /api/v1/tasks/{id}/complete           (admin・その訪問の担当の職員)
+ *   GET   /api/v1/tasks/held                    (全員・ログインしている人が預かっている未完了)
+ *   POST  /api/v1/tasks/{id}/complete           (admin・その訪問の担当の職員・預かっている職員)
  *   POST  /api/v1/tasks/{id}/reopen             (admin・自分で完了にした職員)
  *   POST  /api/v1/tasks/{id}/cancel             (admin)
  *   PATCH /api/v1/tasks/{id}/due                (admin・期日を変える／なしに戻す)
@@ -75,6 +76,7 @@ export const tasksKeys = {
   counts: (date: string, staffId: string | null = null) =>
     ['tasks', 'counts', date, staffId] as const,
   visit: (visitId: string) => ['tasks', 'visit', visitId] as const,
+  held: () => ['tasks', 'held'] as const,
   itemTypes: (includeInactive: boolean) => ['task-item-types', includeInactive] as const,
 };
 
@@ -157,6 +159,20 @@ export function useVisitTasks(
   });
 }
 
+/**
+ * ログインしている人が預かっている未完了のやること (スマホの今日の画面の帯・
+ * patient-tasks-hold-first-visitor-design-2026-11-04 §3)。キーは ['tasks'] 配下なので、
+ * 完了などの変更で一緒に読み直す。
+ */
+export function useHeldTasks(options: { enabled?: boolean } = {}) {
+  const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
+  return useQuery<PatientTaskRead[]>({
+    queryKey: tasksKeys.held(),
+    queryFn: () => fetcher<PatientTaskRead[]>(`${TASKS}/held`, { accessToken, refreshToken }),
+    enabled: isAuthenticated && (options.enabled ?? true),
+  });
+}
+
 /** 項目の一覧。includeInactive は管理者の設定画面用 (職員には効かない)。 */
 export function useTaskItemTypes(options: { includeInactive?: boolean; enabled?: boolean } = {}) {
   const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
@@ -213,6 +229,8 @@ type CompleteOptions = UseMutationOptions<PatientTaskRead, Error, CompleteVars>;
 /**
  * 完了にする。職員はその訪問の id を渡す (省くと今日の自分の訪問から探す)。
  * 管理者は visitId を省くと訪問を指さずに完了になる。
+ * 預かり中のやることは、預かっている職員か管理者が visitId を省いて完了にできる
+ * (完了の訪問は最初の訪問になる)。
  */
 export function useCompleteTask(options: CompleteOptions = {}) {
   const invalidate = useInvalidateTasks();

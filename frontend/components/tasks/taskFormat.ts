@@ -72,6 +72,15 @@ export function taskDueState(due: string | null | undefined, ref: string): DueSt
   return { kind: 'left', days: d };
 }
 
+/**
+ * 預かってからの日数の 1 行 (`12/2（水）の訪問から・5 日`)。日数 = today − 最初の訪問の日。
+ * 当日は「今日から」(patient-tasks-hold-first-visitor-design §7-3)。
+ */
+export function heldSinceLabel(visitDate: string, today: string): string {
+  const days = Math.round((ymdToUtc(today).getTime() - ymdToUtc(visitDate).getTime()) / 86_400_000);
+  return `${taskMdWd(visitDate)}の訪問から・${days <= 0 ? '今日から' : `${days} 日`}`;
+}
+
 /** ISO 日時 → `11/2 09:31` (JST)。 */
 export function taskDateTime(iso: string | null | undefined): string {
   if (!iso) return '';

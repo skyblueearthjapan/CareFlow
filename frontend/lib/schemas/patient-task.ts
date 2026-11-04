@@ -12,6 +12,11 @@ export const taskItemTypeReadSchema = z.object({
   name: z.string(),
   sort_order: z.number().int(),
   is_active: z.boolean(),
+  /**
+   * 最初に訪問した看護師が預かる (patient-tasks-hold-first-visitor-design-2026-11-04 §3)。
+   * 最初の訪問で済まなかったら、その訪問の主担当が預かり、ほかの訪問へは移らない。
+   */
+  hold_by_first_visitor: z.boolean(),
 });
 export type TaskItemTypeRead = z.infer<typeof taskItemTypeReadSchema>;
 
@@ -19,6 +24,7 @@ export const taskItemTypeCreateSchema = z.object({
   name: z.string().trim().min(1).max(100),
   /** 省略すると最後に並ぶ。 */
   sort_order: z.number().int().optional(),
+  hold_by_first_visitor: z.boolean().optional(),
 });
 export type TaskItemTypeCreate = z.infer<typeof taskItemTypeCreateSchema>;
 
@@ -26,6 +32,7 @@ export const taskItemTypeUpdateSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   sort_order: z.number().int().optional(),
   is_active: z.boolean().optional(),
+  hold_by_first_visitor: z.boolean().optional(),
 });
 export type TaskItemTypeUpdate = z.infer<typeof taskItemTypeUpdateSchema>;
 
@@ -51,10 +58,27 @@ export const taskStatusSchema = z.enum(['open', 'done', 'cancelled']);
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 
 /**
- * 一覧の絞り込み: open = 未完了 / overdue = 期日を過ぎた / waiting2plus = 未完了で 2 回目以降の
- * 訪問待ち / done = 完了 / all = すべて (取消は除く)。
+ * 一覧の絞り込み: open = 未完了 (預かり中を含む) / overdue = 期日を過ぎた / waiting2plus = 未完了で
+ * 2 回目以降の訪問待ち (預かり中を除く) / held = 預かり中 / done = 完了 / all = すべて (取消は除く)。
  */
-export type TaskListStatus = 'open' | 'overdue' | 'waiting2plus' | 'done' | 'all';
+export type TaskListStatus = 'open' | 'overdue' | 'waiting2plus' | 'held' | 'done' | 'all';
+
+/**
+ * 預かっている看護師と、預かった訪問 (最初の訪問)。預かり中の未完了だけ入る
+ * (patient-tasks-hold-first-visitor-design-2026-11-04 §3)。
+ */
+export const taskHeldBySchema = z.object({
+  staff_id: z.string().uuid(),
+  staff_name: z.string().nullable(),
+  /** false = 在籍していない (辞めた・削除)。事務所が完了か取り消しをする。 */
+  staff_active: z.boolean(),
+  visit_id: z.string().uuid(),
+  /** YYYY-MM-DD */
+  visit_date: z.string(),
+  /** HH:MM */
+  start_time: z.string(),
+});
+export type TaskHeldBy = z.infer<typeof taskHeldBySchema>;
 
 export const patientTaskReadSchema = z.object({
   id: z.string().uuid(),
@@ -92,7 +116,9 @@ export const patientTaskReadSchema = z.object({
   recurring_rule_id: z.string().uuid().nullish(),
   /** 毎月の設定から作ったときだけ: 何月分か (その月の 1 日・YYYY-MM-DD)。 */
   recurring_month: z.string().nullish(),
-  /** 一覧・作成だけ: 未完了なら出す訪問 (今日以降・日付以降の最初の訪問)。無ければ null。 */
+  /** 預かり中の未完了だけ: 預かっている看護師と最初の訪問。それ以外は null。 */
+  held_by: taskHeldBySchema.nullish(),
+  /** 一覧・作成だけ: 未完了なら出す訪問 (今日以降・日付以降の最初の訪問)。無ければ・預かり中は null。 */
   next_visit: taskVisitBriefSchema.nullable(),
   /** 一覧だけ: 完了した訪問。 */
   done_visit: taskVisitBriefSchema.nullable(),

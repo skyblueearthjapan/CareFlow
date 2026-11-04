@@ -110,10 +110,19 @@ export function TaskItemTypesSettings() {
                   { onError: onError('切り替えられませんでした') },
                 )
               }
+              onToggleHold={(next) =>
+                update.mutate(
+                  { id: it.id, payload: { hold_by_first_visitor: next } },
+                  { onError: onError('切り替えられませんでした') },
+                )
+              }
             />
           ))}
         </ul>
       )}
+      <p className="m-0 text-xs text-text-muted" data-testid="task-item-types-hold-help">
+        「預かる」をオンにした項目は、最初の訪問で済まなかったとき、その訪問の主担当が預かります。ほかの看護師の訪問へは移りません。オフにすると、今までどおり次の訪問へ持ち越します。
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <input
           type="text"
@@ -143,6 +152,7 @@ function ItemRow({
   onMove,
   onRename,
   onToggleActive,
+  onToggleHold,
 }: {
   item: TaskItemTypeRead;
   first: boolean;
@@ -151,6 +161,7 @@ function ItemRow({
   onMove: (dir: -1 | 1) => void;
   onRename: (name: string) => void;
   onToggleActive: (next: boolean) => void;
+  onToggleHold: (next: boolean) => void;
 }) {
   const [name, setName] = useState(item.name);
   const changed = name.trim() !== item.name && name.trim().length > 0;
@@ -210,6 +221,17 @@ function ItemRow({
           aria-label={`${item.name} を使う`}
         />
         {item.is_active ? '使う' : '使わない'}
+      </label>
+      {/* 最初に訪問した看護師が預かる (patient-tasks-hold-first-visitor-design §2-a)。 */}
+      <label className="flex items-center gap-2 text-sm text-text-secondary">
+        <Switch
+          checked={item.hold_by_first_visitor}
+          disabled={busy}
+          onCheckedChange={onToggleHold}
+          aria-label={`${item.name} を最初に訪問した看護師が預かる`}
+          data-testid={`task-item-type-hold-${item.id}`}
+        />
+        預かる
       </label>
     </li>
   );

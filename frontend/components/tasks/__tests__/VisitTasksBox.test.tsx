@@ -21,6 +21,13 @@ vi.mock('@/lib/queries/tasks', () => ({
   }),
 }));
 
+let session: { user: { role: string; staffId: string | null } } = {
+  user: { role: 'admin', staffId: null },
+};
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({ data: session, status: 'authenticated' }),
+}));
+
 vi.mock('@/components/ui/sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -66,6 +73,60 @@ describe('VisitTasksBox', () => {
     reopenMutate.mockReset();
     cancelMutate.mockReset();
     createMutate.mockReset();
+    session = { user: { role: 'admin', staffId: null } };
+  });
+
+  const HELD = {
+    staff_id: '00000000-0000-0000-0000-0000000000s1',
+    staff_name: '佐藤 花子',
+    staff_active: true,
+    visit_id: '00000000-0000-0000-0000-0000000000v1',
+    visit_date: '2026-11-02',
+    start_time: '10:00',
+  };
+
+  it('預かり中は「〇〇さんが預かり中」を出して何回目は出さず、管理者は訪問を指さずに完了にする', () => {
+    tasks = [makeTask({ overdue: false, due_date: null, visit_round: 2, held_by: HELD })];
+    render(
+      <VisitTasksBox
+        visitId="v1"
+        visitDate="2026-11-02"
+        patientId={PATIENT}
+        patientName="岡本 翔"
+      />,
+    );
+    const row = screen.getByTestId('visit-task-t1');
+    expect(row.textContent).toContain('佐藤 花子さんが預かり中');
+    expect(row.textContent).not.toContain('回目の訪問待ち');
+    fireEvent.click(screen.getByRole('button', { name: '完了にする' }));
+    expect(completeMutate).toHaveBeenCalledWith(
+      { taskId: 't1', visitId: null },
+      expect.any(Object),
+    );
+  });
+
+  it('預かり中の完了は、預かっている本人でも管理者でもなければ出さない', () => {
+    session = { user: { role: 'staff', staffId: '00000000-0000-0000-0000-0000000000s2' } };
+    tasks = [makeTask({ held_by: HELD })];
+    const { rerender } = render(
+      <VisitTasksBox
+        visitId="v1"
+        visitDate="2026-11-02"
+        patientId={PATIENT}
+        patientName="岡本 翔"
+      />,
+    );
+    expect(screen.queryByRole('button', { name: '完了にする' })).toBeNull();
+    session = { user: { role: 'staff', staffId: HELD.staff_id } };
+    rerender(
+      <VisitTasksBox
+        visitId="v1"
+        visitDate="2026-11-02"
+        patientId={PATIENT}
+        patientName="岡本 翔"
+      />,
+    );
+    expect(screen.getByRole('button', { name: '完了にする' })).toBeInTheDocument();
   });
 
   it('期日を過ぎた・N 回目の訪問待ちの札と、付けた人を出し、その訪問で完了にする', () => {

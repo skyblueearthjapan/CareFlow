@@ -69,6 +69,31 @@ const OPEN = [
   makeTask({ id: 'b', due_date: '2026-11-03', overdue: true, visit_round: 2 }),
   makeTask({ id: 'c', due_date: '2026-11-04', visit_round: 1 }),
   makeTask({ id: 'd', due_date: '2026-11-10', visit_round: 3 }),
+  // 預かり中 (2 回目以降には数えない)。11/2 の訪問から 2 日。
+  makeTask({
+    id: 'h',
+    visit_round: 2,
+    held_by: {
+      staff_id: '00000000-0000-0000-0000-0000000000b1',
+      staff_name: '佐藤 花子',
+      staff_active: true,
+      visit_id: '00000000-0000-0000-0000-0000000000c1',
+      visit_date: '2026-11-02',
+      start_time: '10:00',
+    },
+  }),
+  // 在籍していない人の預かり・今日の訪問から。
+  makeTask({
+    id: 'g',
+    held_by: {
+      staff_id: '00000000-0000-0000-0000-0000000000b2',
+      staff_name: '鈴木 一郎',
+      staff_active: false,
+      visit_id: '00000000-0000-0000-0000-0000000000c2',
+      visit_date: '2026-11-04',
+      start_time: '14:00',
+    },
+  }),
 ];
 const DONE = [
   makeTask({
@@ -98,7 +123,7 @@ describe('TasksPage の期日と何回目の訪問待ち', () => {
 
   it('上の件数: 未完了・期日を過ぎた・2 回目以降の訪問待ち・完了', () => {
     render(<TasksPage />);
-    expect(screen.getByTestId('tasks-stat-open').textContent).toContain('4');
+    expect(screen.getByTestId('tasks-stat-open').textContent).toContain('6');
     expect(screen.getByTestId('tasks-stat-overdue').textContent).toContain('1');
     expect(screen.getByTestId('tasks-stat-waiting2plus').textContent).toContain('2');
     expect(screen.getByTestId('tasks-stat-done').textContent).toContain('1');
@@ -137,7 +162,7 @@ describe('TasksPage の期日と何回目の訪問待ち', () => {
     const ids = screen
       .getAllByTestId(/^tasks-row-/)
       .map((el) => el.getAttribute('data-testid')?.replace('tasks-row-', ''));
-    expect(ids).toEqual(['b', 'c', 'd', 'a']);
+    expect(ids).toEqual(['b', 'c', 'd', 'h', 'g', 'a']);
   });
 
   it('期日の欄を押すと日付を選べ、PATCH で期日を変える', () => {
@@ -174,5 +199,52 @@ describe('TasksPage の期日と何回目の訪問待ち', () => {
     expect(cell.tagName).not.toBe('BUTTON');
     expect(cell.textContent).toContain('11/5（木） まで');
     expect(cell.textContent).not.toContain('あと');
+  });
+});
+
+describe('TasksPage の預かり中', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-04T00:00:00Z'));
+    useTasksMock.mockImplementation((p: { status?: TaskListStatus }) => ({
+      data: p.status === 'done' ? DONE : OPEN,
+      isLoading: false,
+      isError: false,
+    }));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('上の件数に「預かり中」・2 回目以降は預かり中を除く', () => {
+    render(<TasksPage />);
+    const held = screen.getByTestId('tasks-stat-held').textContent ?? '';
+    expect(held).toContain('預かり中');
+    expect(held).toContain('2');
+    // b・d だけ (h は visit_round 2 でも預かり中なので数えない)
+    expect(screen.getByTestId('tasks-stat-waiting2plus').textContent).toContain('2');
+  });
+
+  it('絞り込みに「預かり中」があり、status=held で読む', () => {
+    render(<TasksPage />);
+    fireEvent.click(screen.getByRole('button', { name: '預かり中' }));
+    expect(useTasksMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'held' }));
+  });
+
+  it('出す訪問の欄に「〇〇さんが預かり中」と日数・状態は青の「預かり中」', () => {
+    render(<TasksPage />);
+    const cell = screen.getByTestId('tasks-held-h');
+    expect(cell.textContent).toContain('佐藤 花子さんが預かり中');
+    expect(cell.textContent).toContain('11/2（月）の訪問から・2 日');
+    const row = screen.getByTestId('tasks-row-h');
+    expect(within(row).getByTestId('task-held').textContent).toBe('預かり中');
+    expect(row.textContent).not.toContain('回目の訪問待ち');
+  });
+
+  it('在籍していない人は「（在籍なし）」・当日は「今日から」', () => {
+    render(<TasksPage />);
+    const cell = screen.getByTestId('tasks-held-g');
+    expect(cell.textContent).toContain('鈴木 一郎さんが預かり中（在籍なし）');
+    expect(cell.textContent).toContain('11/4（水）の訪問から・今日から');
   });
 });

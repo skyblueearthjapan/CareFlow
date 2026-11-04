@@ -9,8 +9,9 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 TaskStatus = Literal["open", "done", "cancelled"]
-#: waiting2plus = 未完了で 2 回目以降の訪問待ち (visit_round >= 2)。
-TaskListStatus = Literal["open", "overdue", "waiting2plus", "done", "all"]
+#: waiting2plus = 未完了で 2 回目以降の訪問待ち (visit_round >= 2・預かり中を除く)。
+#: held = 預かり中 (最初に訪問した看護師が預かっている未完了)。
+TaskListStatus = Literal["open", "overdue", "waiting2plus", "held", "done", "all"]
 
 
 # ---------------------------------------------------------------------------
@@ -23,6 +24,8 @@ class TaskItemTypeRead(BaseModel):
     name: str
     sort_order: int
     is_active: bool
+    #: 最初の訪問で済まなかったら、その訪問の主担当が預かる (ほかの訪問へ持ち越さない)。
+    hold_by_first_visitor: bool = False
 
 
 def _strip_name(v: str | None) -> str | None:
@@ -38,6 +41,7 @@ class TaskItemTypeCreate(BaseModel):
     name: str = Field(..., max_length=100)
     #: 省略すると最後に並べる。
     sort_order: int | None = None
+    hold_by_first_visitor: bool = False
 
     _name = field_validator("name")(_strip_name)
 
@@ -46,6 +50,7 @@ class TaskItemTypeUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     sort_order: int | None = None
     is_active: bool | None = None
+    hold_by_first_visitor: bool | None = None
 
     _name = field_validator("name")(_strip_name)
 
@@ -71,6 +76,19 @@ class TaskVisitBrief(BaseModel):
     start_time: str
     end_time: str
     staff: list[TaskStaffRef]
+
+
+class HeldBy(BaseModel):
+    """預かっている人と、預かった訪問 (= 日付以降で最初に終わった、主担当のいる訪問)."""
+
+    staff_id: UUID
+    staff_name: str | None
+    #: 在籍 (削除されていない・status が active)。
+    staff_active: bool
+    visit_id: UUID
+    visit_date: date
+    #: "HH:MM"
+    start_time: str
 
 
 class PatientTaskRead(BaseModel):
@@ -106,6 +124,8 @@ class PatientTaskRead(BaseModel):
     #: 毎月の設定から作ったときだけ: どの設定から・何月分か (その月の 1 日)。手で付けたものは null。
     recurring_rule_id: UUID | None = None
     recurring_month: date | None = None
+    #: 預かり中の未完了だけ: 預かっている人 (このとき一覧の next_visit は null)。
+    held_by: HeldBy | None = None
     #: 一覧・作成の読み出しだけ: 未完了なら出す訪問 (今日以降・日付以降の最初の訪問)。
     next_visit: TaskVisitBrief | None = None
     #: 一覧の読み出しだけ: 完了した訪問。

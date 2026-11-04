@@ -8,7 +8,8 @@
     GET   /api/v1/tasks                         — 管理者 (状態・看護師・患者・日付で絞る)
     POST  /api/v1/tasks                         — 管理者 (項目ごとに 1 件・担当へ通知)
     GET   /api/v1/tasks/counts?date=YYYY-MM-DD  — 管理者・職員 (職員は自分の訪問だけ)
-    POST  /api/v1/tasks/{id}/complete           — 管理者・その訪問の担当の職員
+    GET   /api/v1/tasks/held                    — 管理者・職員 (自分が預かっているやること)
+    POST  /api/v1/tasks/{id}/complete           — 管理者・その訪問の担当の職員 (預かり中は預かる人)
     POST  /api/v1/tasks/{id}/reopen             — 管理者・自分で完了にした職員
     POST  /api/v1/tasks/{id}/cancel             — 管理者
     PATCH /api/v1/tasks/{id}/due                — 管理者 (期日を変える・null で期日なし)
@@ -17,6 +18,7 @@
 職員の「自分の訪問」は ``visits.py`` の一覧と同じ規則 (主・2 人目・VSA・同行・コース担当)。
 出す訪問の決め方は ``app.services.patient_tasks`` の 1 か所にある。
 期日と「何回目の訪問待ち」は ``docs/plans/patient-tasks-due-design-2026-11-04.md`` (PO 2026-11-04)。
+預かり (最初に訪問した看護師が預かる) は ``docs/plans/patient-tasks-hold-first-visitor-design-2026-11-04.md``。
 """
 
 from __future__ import annotations
@@ -49,7 +51,9 @@ from app.schemas.patient_task import (
 )
 from app.services.patient_tasks import (
     JST,
+    Holder,
     eligible_visit_clause,
+    holders_now,
     is_overdue,
     jst_today,
     load_task_names,
@@ -91,8 +95,21 @@ DUE_BEFORE_START = "期日は日付（この日から）と同じ日か、後の
 
 def _item_read(row: TaskItemType) -> TaskItemTypeRead:
     return TaskItemTypeRead(
-        id=row.id, name=row.name, sort_order=row.sort_order, is_active=row.is_active
+        id=row.id,
+        name=row.name,
+        sort_order=row.sort_order,
+        is_active=row.is_active,
+        hold_by_first_visitor=row.hold_by_first_visitor,
     )
+
+
+def _item_audit(row: TaskItemType) -> dict:
+    return {
+        "name": row.name,
+        "sort_order": row.sort_order,
+        "is_active": row.is_active,
+        "hold_by_first_visitor": row.hold_by_first_visitor,
+    }
 
 
 async def _staff_sees_visit(db, staff_id: UUID | None, visit_id: UUID) -> bool:
@@ -113,10 +130,16 @@ async def _get_task(db, task_id: UUID) -> PatientTask:
 
 async def _read_one(db, task: PatientTask, user: User) -> dict:
     names = await load_task_names(db, [task])
-    rounds = await visit_rounds_now(db, [task], datetime.now(UTC))
+    now = datetime.now(UTC)
+    rounds = await visit_rounds_now(db, [task], now)
+    holders = await holders_now(db, [task], now)
     return {
         **serialize_task(
-            task, names, overdue=is_overdue(task, jst_today()), visit_round=rounds[task.id]
+            task,
+            names,
+            overdue=is_overdue(task, jst_today()),
+            visit_round=rounds[task.id],
+            held_by=holders.get(task.id),
         ),
         "can_reopen": _can_reopen(task, user),
     }
@@ -165,22 +188,35 @@ async def create_task_item_type(
         name=payload.name,
         sort_order=sort_order,
         is_active=True,
+        hold_by_first_visitor=payload.hold_by_first_visitor,
         created_by=user.id,
         created_at=now,
         updated_at=now,
     )
     db.add(row)
+    await db.flush()
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="task_item_type_create",
+            target_table="task_item_types",
+            target_id=str(row.id),
+            before=None,
+            after=_item_audit(row),
+        )
+    )
     await db.commit()
     return _item_read(row)
 
 
 @router.patch("/task-item-types/{item_type_id}", response_model=TaskItemTypeRead)
 async def update_task_item_type(
-    item_type_id: UUID, payload: TaskItemTypeUpdate, db: DbDep, _user: AdminUser
+    item_type_id: UUID, payload: TaskItemTypeUpdate, db: DbDep, user: AdminUser
 ) -> TaskItemTypeRead:
     row = await db.scalar(select(TaskItemType).where(TaskItemType.id == item_type_id))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    before = _item_audit(row)
     if payload.name is not None and payload.name != row.name:
         await _ensure_name_free(db, payload.name, exclude_id=row.id)
         row.name = payload.name
@@ -188,7 +224,23 @@ async def update_task_item_type(
         row.sort_order = payload.sort_order
     if payload.is_active is not None:
         row.is_active = payload.is_active
+    if payload.hold_by_first_visitor is not None:
+        row.hold_by_first_visitor = payload.hold_by_first_visitor
+    after = _item_audit(row)
+    changed = [k for k in after if after[k] != before[k]]
     row.updated_at = datetime.now(UTC)
+    if changed:
+        # 変わった欄だけ前後を残す (印を付けると今あるやることの動きも変わるため・§6)。
+        db.add(
+            AuditLog(
+                actor_user_id=user.id,
+                action="task_item_type_update",
+                target_table="task_item_types",
+                target_id=str(row.id),
+                before={k: before[k] for k in changed},
+                after={k: after[k] for k in changed},
+            )
+        )
     await db.commit()
     return _item_read(row)
 
@@ -226,7 +278,8 @@ async def list_tasks(
         stmt = stmt.where(PatientTask.done_at.is_(None))
     elif status_ == "overdue":
         stmt = stmt.where(overdue_clause(today))
-    elif status_ == "waiting2plus":
+    elif status_ in ("waiting2plus", "held"):
+        # 預かり中は下で決める (held = 預かり中だけ / waiting2plus = 預かり中を除く)。
         stmt = stmt.where(waiting2plus_clause(now))
     elif status_ == "done":
         stmt = stmt.where(PatientTask.done_at.is_not(None))
@@ -254,11 +307,17 @@ async def list_tasks(
             )
         )
     stmt = stmt.order_by(PatientTask.start_date, PatientTask.created_at, PatientTask.id)
-    if staff_id is None or status_ == "done":
+    if status_ not in ("waiting2plus", "held") and (staff_id is None or status_ == "done"):
         stmt = stmt.limit(limit)
     tasks = list((await db.scalars(stmt)).all())
 
-    next_by_task = await next_visits_for_tasks(db, tasks, today)
+    holders = await holders_now(db, tasks, now)
+    if status_ == "held":
+        tasks = [t for t in tasks if t.id in holders]
+    elif status_ == "waiting2plus":
+        tasks = [t for t in tasks if t.id not in holders]
+    # 預かり中は出す訪問がない (預かった人が訪問なしで完了にする)。
+    next_by_task = await next_visits_for_tasks(db, [t for t in tasks if t.id not in holders], today)
     done_visit_ids = {t.done_visit_id for t in tasks if t.done_visit_id is not None}
     done_visits: dict[UUID, Visit] = {}
     if done_visit_ids:
@@ -275,8 +334,12 @@ async def list_tasks(
     for t in tasks:
         nv = next_by_task.get(t.id)
         dv = done_visits.get(t.done_visit_id) if t.done_visit_id else None
+        held = holders.get(t.id)
         if staff_id is not None:
-            if task_status(t) == "done":
+            if held is not None:
+                if held.staff_id != staff_id:
+                    continue
+            elif task_status(t) == "done":
                 in_visit = dv is not None and any(
                     s.staff_id == staff_id for s in staff_by_visit.get(dv.id, [])
                 )
@@ -288,7 +351,13 @@ async def list_tasks(
                 continue
         out.append(
             {
-                **serialize_task(t, names, overdue=is_overdue(t, today), visit_round=rounds[t.id]),
+                **serialize_task(
+                    t,
+                    names,
+                    overdue=is_overdue(t, today),
+                    visit_round=rounds[t.id],
+                    held_by=held,
+                ),
                 "next_visit": visit_brief(nv, staff_by_visit.get(nv.id, [])) if nv else None,
                 "done_visit": visit_brief(dv, staff_by_visit.get(dv.id, [])) if dv else None,
                 "can_reopen": _can_reopen(t, user),
@@ -355,17 +424,25 @@ async def create_tasks(payload: PatientTaskCreate, db: DbDep, user: AdminUser) -
     await db.flush()
 
     today = jst_today()
-    next_by_task = await next_visits_for_tasks(db, tasks[:1], today)
-    visit = next_by_task.get(tasks[0].id)
-    staff = (await visit_staff_map(db, [visit])).get(visit.id, []) if visit else []
-    notified = await notify_task_assigned(
-        db,
-        tasks=tasks,
-        visit=visit,
-        staff=staff,
-        patient_name=patient.name,
-        item_names=[items[i].name for i in item_ids],
-    )
+    # 過去の日付で付けて最初の訪問がもう終わっている「預かる」項目は、作った時点で預かり中。
+    # ほかの看護師の次の訪問へ通知を送らず、返す値も預かり中にする (レビュー中-3・§7-2)。
+    holders = await holders_now(db, tasks, datetime.now(UTC))
+    notify_tasks = [t for t in tasks if t.id not in holders]
+    visit = None
+    staff: list = []
+    notified = 0
+    if notify_tasks:
+        next_by_task = await next_visits_for_tasks(db, notify_tasks[:1], today)
+        visit = next_by_task.get(notify_tasks[0].id)
+        staff = (await visit_staff_map(db, [visit])).get(visit.id, []) if visit else []
+        notified = await notify_task_assigned(
+            db,
+            tasks=notify_tasks,
+            visit=visit,
+            staff=staff,
+            patient_name=patient.name,
+            item_names=[items[t.item_type_id].name for t in notify_tasks if t.item_type_id],
+        )
     await db.commit()
 
     names = await load_task_names(db, tasks)
@@ -374,14 +451,66 @@ async def create_tasks(payload: PatientTaskCreate, db: DbDep, user: AdminUser) -
     return {
         "tasks": [
             {
-                **serialize_task(t, names, overdue=is_overdue(t, today), visit_round=rounds[t.id]),
-                "next_visit": brief,
+                **serialize_task(
+                    t,
+                    names,
+                    overdue=is_overdue(t, today),
+                    visit_round=rounds[t.id],
+                    held_by=holders.get(t.id),
+                ),
+                "next_visit": None if t.id in holders else brief,
             }
             for t in tasks
         ],
         "next_visit": brief,
         "notified_user_count": notified,
     }
+
+
+@router.get("/tasks/held", response_model=list[PatientTaskRead])
+async def list_held_tasks(db: DbDep, user: CurrentActiveUser) -> list[dict]:
+    """ログインしている人が預かっている未完了のやること (最初の訪問の日付・時刻順)."""
+    _ensure_admin_or_staff(user)
+    if user.staff_id is None:
+        return []
+    now = datetime.now(UTC)
+    tasks = list(
+        (
+            await db.scalars(
+                select(PatientTask)
+                .join(Patient, Patient.id == PatientTask.patient_id)
+                .join(TaskItemType, TaskItemType.id == PatientTask.item_type_id)
+                .where(
+                    Patient.deleted_at.is_(None),
+                    TaskItemType.hold_by_first_visitor.is_(True),
+                    waiting2plus_clause(now),
+                )
+            )
+        ).all()
+    )
+    holders = await holders_now(db, tasks, now)
+    mine = [t for t in tasks if t.id in holders and holders[t.id].staff_id == user.staff_id]
+    names = await load_task_names(db, mine)
+    rounds = await visit_rounds_now(db, mine, now)
+    today = jst_today()
+
+    def _key(t: PatientTask) -> tuple:
+        v = holders[t.id].visit
+        return (v.visit_date, v.start_time, str(v.id), task_sort_key(t, names))
+
+    return [
+        {
+            **serialize_task(
+                t,
+                names,
+                overdue=is_overdue(t, today),
+                visit_round=rounds[t.id],
+                held_by=holders[t.id],
+            ),
+            "can_reopen": _can_reopen(t, user),
+        }
+        for t in sorted(mine, key=_key)
+    ]
 
 
 @router.get("/tasks/counts", response_model=VisitTaskCounts)
@@ -437,7 +566,11 @@ async def list_visit_tasks(visit_id: UUID, db: DbDep, user: CurrentActiveUser) -
     return [
         {
             **serialize_task(
-                e.task, names, overdue=is_overdue(e.task, today), visit_round=e.visit_round
+                e.task,
+                names,
+                overdue=is_overdue(e.task, today),
+                visit_round=e.visit_round,
+                held_by=e.held_by,
             ),
             "carried_over": e.carried_over,
             "can_reopen": _can_reopen(e.task, user),
@@ -455,6 +588,8 @@ async def complete_task(
 ) -> dict:
     """完了にする。職員は、そのやることが出ている自分の訪問からだけ.
 
+    預かり中は、管理者か預かる人だけが訪問なしで完了にできる (完了の訪問 = 預かった訪問)。
+
     ``visit_id`` を省くと、管理者は訪問を指さずに完了 (完了した日の訪問に出る)、
     職員は今日の自分の訪問のうち、そのやることが出ているものを使う (無ければ 403)。
     2 名訪問は片方が完了すれば完了。
@@ -471,7 +606,21 @@ async def complete_task(
 
     visit_id = payload.visit_id if payload else None
     visit: Visit | None = None
-    if visit_id is not None:
+    held: Holder | None = (await holders_now(db, [task], datetime.now(UTC))).get(task.id)
+    if held is not None:
+        # 預かり中: 管理者か預かる人だけ。訪問は預かった訪問 (先の日の制限は関係しない)。
+        if not is_admin and user.staff_id != held.staff_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="預かっている人だけが完了にできます",
+            )
+        if visit_id is not None and visit_id != held.visit.id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="預かり中のやることです。今日の画面の「預かっているやること」から完了にしてください",
+            )
+        visit = held.visit
+    elif visit_id is not None:
         visit = await db.scalar(
             select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None))
         )

@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/sonner';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
+import { HeldTasksBand } from '@/components/mobile/HeldTasksBand';
 import { MobileEventChip, MobileOverrideBadge } from '@/components/mobile/MobileEventChip';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
@@ -475,6 +476,9 @@ function TodayContent() {
 
       {/* 事務所からのやること (patient-tasks-design §3)。今日の一覧の上に出す。
           今日以外は帯を出さない (件数は各カードの印で分かる)。 */}
+      {/* 預かっているやること (patient-tasks-hold-first-visitor-design §3)。今日の帯の上。
+          訪問がない日でも出して完了にできるよう、訪問の有無に関わらず今日だけ出す。 */}
+      {isViewToday && <HeldTasksBand />}
       {isViewToday && (
         <TodayTasksBand counts={taskCounts?.counts} visitIds={sorted.map((v) => v.id)} />
       )}

@@ -1,8 +1,8 @@
-/** やることの状態の小さな札 (伝言・完了・期日・期日を過ぎた・何回目の訪問待ち・毎月)。 */
+/** やることの状態の小さな札 (伝言・完了・期日・期日を過ぎた・何回目の訪問待ち・預かり中・毎月)。 */
 import type { ReactNode } from 'react';
 
 import { cn } from '@/lib/utils';
-import type { PatientTaskRead } from '@/lib/schemas/patient-task';
+import type { PatientTaskRead, TaskHeldBy } from '@/lib/schemas/patient-task';
 
 import { taskDueState, taskMd } from './taskFormat';
 
@@ -19,7 +19,8 @@ export type PillTone =
   | 'round1'
   | 'round2'
   | 'round3'
-  | 'round4';
+  | 'round4'
+  | 'held';
 
 export function Pill({ tone, children }: { tone: PillTone; children: ReactNode }) {
   const cls = {
@@ -38,6 +39,8 @@ export function Pill({ tone, children }: { tone: PillTone; children: ReactNode }
     round2: 'bg-[#fff4e0] text-[#b26a00]',
     round3: 'bg-[#ffd9a8] text-[#8a4b00]',
     round4: 'bg-[#e07800] text-white',
+    // 預かり中 (モックの .pill.held)。青の札。長く残っても色は変えない (PO 2026-11-04 §7-3)。
+    held: 'bg-[#e3eefc] text-[#1565c0]',
   }[tone];
   return (
     <span
@@ -78,10 +81,31 @@ export function RoundPill({ round }: { round: number }) {
 }
 
 /**
+ * 「〇〇さんが預かり中」(patient-tasks-hold-first-visitor-design §3)。名前が無いときは「預かり中」。
+ * 在籍していない人は「（在籍なし）」を添える。
+ */
+export function HeldPill({
+  heldBy,
+}: {
+  heldBy: Pick<TaskHeldBy, 'staff_name' | 'staff_active'> | null | undefined;
+}) {
+  if (!heldBy) return null;
+  return (
+    <span data-testid="task-held">
+      <Pill tone="held">
+        {heldBy.staff_name ? `${heldBy.staff_name}さんが預かり中` : '預かり中'}
+        {heldBy.staff_active ? '' : '（在籍なし）'}
+      </Pill>
+    </span>
+  );
+}
+
+/**
  * 訪問の詳細 (PC)・スマホで、未完了のやることに並べる札 (モック C)。
  * 並び = ［期日を過ぎた］伝言／期日／N 回目の訪問待ち／毎月。
  * 期日を過ぎたときだけ、赤い「期日を過ぎた」を先頭に出す (期日の札はその中に入れる)。
  * refDate = 期日を見る日 (訪問の日)。BE の overdue (今日から見て) が立っていても過ぎたにする。
+ * 預かり中 (held_by あり) は、何回目の訪問待ちの代わりに「〇〇さんが預かり中」を出す。
  */
 export function TaskOpenPills({
   task: t,
@@ -89,7 +113,7 @@ export function TaskOpenPills({
 }: {
   task: Pick<
     PatientTaskRead,
-    'is_message' | 'due_date' | 'overdue' | 'visit_round' | 'recurring_month'
+    'is_message' | 'due_date' | 'overdue' | 'visit_round' | 'recurring_month' | 'held_by'
   >;
   refDate: string;
 }) {
@@ -114,7 +138,7 @@ export function TaskOpenPills({
           )}
         </span>
       )}
-      <RoundPill round={t.visit_round} />
+      {t.held_by ? <HeldPill heldBy={t.held_by} /> : <RoundPill round={t.visit_round} />}
       <RecurringMark month={t.recurring_month} />
     </>
   );

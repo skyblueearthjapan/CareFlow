@@ -6,13 +6,18 @@
  * その訪問に出るやること (患者 + 日付で持ち、出す訪問は BE が決める) を並べ、
  * 完了にする／完了を戻す／取り消す ができる。下の「＋ やることを付ける」で
  * 項目 (いくつでも)・伝言・日付 (既定はその訪問の日) を選んで付ける。
+ *
+ * 預かり中のやること (最初の訪問にだけ出る・held_by あり) は「〇〇さんが預かり中」の札を出し、
+ * 完了は管理者か預かっている本人だけが押せる (patient-tasks-hold-first-visitor-design §3)。
  */
 import { useRef, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import { ClipboardList, Plus } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/sonner';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
+import { isAdminRole } from '@/lib/rbac';
 import {
   useCancelTask,
   useCompleteTask,
@@ -48,6 +53,9 @@ export function VisitTasksBox({ visitId, visitDate, patientId, patientName }: Vi
   const reopen = useReopenTask();
   const cancel = useCancelTask();
   const busy = complete.isPending || reopen.isPending || cancel.isPending;
+  const { data: session } = useSession();
+  const isAdmin = isAdminRole(session?.user?.role);
+  const myStaffId = session?.user?.staffId ?? null;
 
   const onError = (fallback: string) => (err: unknown) =>
     toast.error(fallback, { description: taskActionErrorMessage(err) });
@@ -78,9 +86,13 @@ export function VisitTasksBox({ visitId, visitDate, patientId, patientName }: Vi
               task={t}
               visitDate={visitDate}
               busy={busy}
+              canComplete={
+                !t.held_by || isAdmin || (!!myStaffId && myStaffId === t.held_by.staff_id)
+              }
               onComplete={() =>
                 complete.mutate(
-                  { taskId: t.id, visitId },
+                  // 預かり中は訪問を指さずに完了にする (完了の訪問は BE が最初の訪問にする)。
+                  { taskId: t.id, visitId: t.held_by ? null : visitId },
                   {
                     onSuccess: () => toast.success('完了にしました'),
                     onError: onError('完了にできませんでした'),
@@ -120,6 +132,7 @@ function TaskRow({
   task: t,
   visitDate,
   busy,
+  canComplete,
   onComplete,
   onReopen,
   onCancel,
@@ -128,6 +141,8 @@ function TaskRow({
   /** 期日を見る日 (その訪問の日)。 */
   visitDate: string;
   busy: boolean;
+  /** 預かり中は管理者か預かっている本人だけ。 */
+  canComplete: boolean;
   onComplete: () => void;
   onReopen: () => void;
   onCancel: () => void;
@@ -176,15 +191,17 @@ function TaskRow({
           )
         ) : (
           <>
-            <Button
-              type="button"
-              size="sm"
-              disabled={busy}
-              onClick={onComplete}
-              className="h-8 px-2 text-xs"
-            >
-              完了にする
-            </Button>
+            {canComplete && (
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy}
+                onClick={onComplete}
+                className="h-8 px-2 text-xs"
+              >
+                完了にする
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
