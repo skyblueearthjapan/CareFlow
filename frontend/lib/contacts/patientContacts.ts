@@ -217,9 +217,10 @@ export function setConsent(
   if (status !== 'ng' || !cur.is_notify_target) return { contacts: next, notice: null };
   const moved = withFallback(next, i);
   if (moved) return moved;
+  // 移す先が無い (全員 NG 回答) ときは、送る先 0 件のまま NG 回答を記録する (PO 11-05)。
   return {
-    contacts: [...list],
-    notice: 'ほかに送れる連絡先がないため、NG 回答にできません。先にほかの連絡先を足してください。',
+    contacts: next,
+    notice: 'NG 回答のため、この方にはお知らせを送りません（送る先はありません）。',
   };
 }
 

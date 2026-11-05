@@ -12,7 +12,7 @@ PO 了承済みの見本：`docs/mockups/contact-phone-email-mock-2026-11-05.htm
 - **連絡先が 1 件以上ある患者は、送る先が少なくとも 1 件**。0 件になったら自動で移す：NG 回答でない連絡先のうち、ご本人を先に、次に送れる手段（SMS かメール）がある連絡先、同じなら並び順。
 - 手段 `notify_channel`：`sms`／`email` だけ（「自動」「送らない」は無い）。選んだ手段が使えなければ、使える方へ落とす（`effective_channel`：携帯があれば sms、無くてメールがあれば email、どちらも無ければ none）。
 - 同意 `consent_status`：`unconfirmed`（未確認）／`confirmed`（確認済み）／`ng`（NG 回答）。**画面の文言に「断られた」を使わない**。方法を書く欄は無い。`consent_on`（日付）はサーバーが自動で入れる：状態が変わって confirmed/ng になった日（JST の今日）、unconfirmed に戻ったら null、変わらなければそのまま。
-- NG 回答の連絡先は `is_notify_target=false` に強制（その結果 0 件なら上の移し方で移す）。
+- NG 回答の連絡先は `is_notify_target=false` に強制（その結果 0 件なら上の移し方で移す）。移す先が無い（全員 NG 回答）ときは送る先 0 件のまま記録できる（PO 11-05：ご本人 1 件だけの方が断ったとき）。
 - 連絡先は**管理者だけ**が見て編集する。看護師（staff ロール）の API 応答・スマホには出さない。
 - スタッフ：電話 1 つ・連絡用メール 1 つ（ログイン用の users.email とは別）・`notify_channel`：`sms`／`email`／`none`（初期 none・今は使わない）。見られるのは管理者とご本人。
 

@@ -127,12 +127,12 @@ describe('setConsent', () => {
     expect(r.notice).toContain('2 件目（見本 由美）');
   });
 
-  it('ほかに移せないときは NG 回答にしない', () => {
+  it('ほかに移せないときも NG 回答にでき、送る先は 0 件になる', () => {
     const list = [{ ...SELF, is_notify_target: true }];
     const r = setConsent(list, 0, 'ng', '2026-11-05');
-    expect(r.contacts[0]!.consent_status).toBe('unconfirmed');
-    expect(r.contacts[0]!.is_notify_target).toBe(true);
-    expect(r.notice).toContain('NG 回答にできません');
+    expect(r.contacts[0]!.consent_status).toBe('ng');
+    expect(r.contacts[0]!.is_notify_target).toBe(false);
+    expect(r.notice).toContain('送る先はありません');
   });
 });
 
