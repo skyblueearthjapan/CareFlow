@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>連絡先の欄の見本</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+<style>
+/* 患者マスター・スタッフマスターに電話番号とメールアドレスを置く見本（2026-11-05）。お名前・番号はすべて見本 */
+:root{
+  --bg:#f6f3f4; --card:#ffffff; --fg:#2a2326; --sub:#6f6468; --line:#e8dfe2; --field:#fbf9fa;
+  --accent:#e15a7f; --accent-soft:#fdecf1; --ok:#2f8a5b; --ok-soft:#e8f5ee; --warn:#b7791f; --warn-soft:#fff6e5;
+  --info:#2563eb; --info-soft:#eaf1fe; --err:#c0392b; --err-soft:#fdeceb; --mute:#8a8085; --mute-soft:#f1eeef;
+  --font:"Noto Sans JP","Hiragino Sans","Yu Gothic UI",sans-serif;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:14px;line-height:1.6}
+.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 56px;display:grid;gap:16px}
+h1{font-size:20px;margin:0}
+.lead{margin:4px 0 0;color:var(--sub);max-width:80ch}
+.sample{display:inline-block;font-size:11px;background:var(--warn-soft);color:var(--warn);border-radius:4px;padding:1px 6px;margin-left:6px;vertical-align:2px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:5;border-bottom:1px solid var(--line)}
+.tabs button{font:inherit;font-size:13px;border:1px solid var(--line);background:#fff;color:var(--fg);border-radius:999px;padding:6px 14px;cursor:pointer}
+.tabs button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+section.view{display:none;gap:16px}
+section.view.on{display:grid}
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+@media (max-width:880px){.stage{grid-template-columns:minmax(0,1fr)}}
+.screen{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;gap:12px}
+.crumb{font-size:12px;color:var(--sub)}
+.page-title{font-size:18px;font-weight:700;margin:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;display:grid;gap:12px}
+.card h2{font-size:17px;margin:0;font-weight:700}
+.card.dim{opacity:.55}
+.card.dim h2::after{content:"（今までどおり）";font-size:12px;font-weight:400;color:var(--sub);margin-left:6px}
+.new{outline:2px dashed var(--accent);outline-offset:3px}
+.newtag{display:inline-block;font-size:11px;background:var(--accent);color:#fff;border-radius:4px;padding:0 6px;margin-left:8px;vertical-align:3px;font-weight:700}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:640px){.grid2{grid-template-columns:1fr}}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:13px}
+label.f>span.l{font-weight:500;color:var(--sub)}
+input[type=text],input[type=email],input[type=tel],select{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--field);border-radius:6px;padding:7px 10px;width:100%;color:var(--fg)}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+.hint{font-size:12px;color:var(--mute)}
+.contact{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:grid;gap:10px;background:#fff}
+.contact.main{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.chead{display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:space-between}
+.chead .who{font-weight:700}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:12px;border-radius:999px;padding:1px 9px;font-weight:500;white-space:nowrap}
+.p-ok{background:var(--ok-soft);color:var(--ok)}
+.p-info{background:var(--info-soft);color:var(--info)}
+.p-warn{background:var(--warn-soft);color:var(--warn)}
+.p-err{background:var(--err-soft);color:var(--err)}
+.p-mute{background:var(--mute-soft);color:var(--mute)}
+.p-acc{background:var(--accent-soft);color:var(--accent)}
+.judge{font-size:12px;min-height:22px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;width:fit-content;max-width:100%;flex-wrap:wrap}
+.seg button{font:inherit;font-size:13px;border:0;border-right:1px solid var(--line);background:#fff;padding:5px 12px;cursor:pointer;color:var(--fg)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.seg button:disabled{color:#c9bfc3;cursor:not-allowed;background:#faf8f9}
+.btn{font:inherit;font-size:13px;border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 12px;cursor:pointer;color:var(--fg)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+.btn.link{border:0;background:none;color:var(--accent);padding:2px 4px;text-decoration:underline}
+.side{display:grid;gap:12px}
+.note{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:13px}
+.note h3{margin:0 0 6px;font-size:14px}
+.note ul{margin:0;padding-left:18px}
+.note li{margin:2px 0}
+.note.q{border-color:var(--accent);background:var(--accent-soft)}
+table{border-collapse:collapse;width:100%;font-size:13px;background:#fff}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{background:#faf6f7;font-weight:500;color:var(--sub);white-space:nowrap}
+.tblwrap{overflow-x:auto}
+.mono{font-family:Consolas,"BIZ UDGothic",monospace;font-size:12.5px}
+.try{display:grid;gap:8px}
+.try .row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips button{font:inherit;font-size:12px;border:1px solid var(--line);background:#fff;border-radius:999px;padding:2px 10px;cursor:pointer}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px}
+.kv dt{color:var(--sub)}
+.kv dd{margin:0}
+.sum{display:flex;flex-wrap:wrap;gap:8px}
+.sum .box{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 14px;min-width:120px}
+.sum .box b{font-size:22px;display:block}
+.listrow td:first-child{white-space:nowrap}
+details{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+summary{cursor:pointer;font-weight:500}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>患者様・スタッフの連絡先（電話番号とメール）<span class="sample">見本</span></h1>
+    <p class="lead">予定のお知らせ（SMS・メール）に向けて、患者マスターとスタッフマスターに連絡先の欄を足す見本です。お名前と番号はすべて見本です。電話番号の欄は、打った番号から「携帯・固定電話・IP 電話」を自動で見分けます。上のボタンで画面を切り替えられます。</p>
+  </header>
+
+  <nav class="tabs" aria-label="画面の切り替え">
+    <button data-v="pform" aria-pressed="true">患者の編集</button>
+    <button data-v="pview" aria-pressed="false">患者の詳細・一覧</button>
+    <button data-v="imp" aria-pressed="false">Excel のシート</button>
+    <button data-v="sform" aria-pressed="false">スタッフの編集</button>
+    <button data-v="rule" aria-pressed="false">見分け方と記録のしかた</button>
+    <button data-v="ask" aria-pressed="false">決まったこと</button>
+  </nav>
+
+  <!-- ===== 患者の編集 ===== -->
+  <section class="view on" id="v-pform">
+    <div class="stage">
+      <div class="screen">
+        <div class="crumb">患者マスター ／ 見本 花子 様 ／ 編集</div>
+        <p class="page-title">見本 花子 様の編集</p>
+        <div class="card dim"><h2>基本情報</h2></div>
+        <div class="card dim"><h2>住所</h2></div>
+
+        <div class="card new">
+          <h2>連絡先<span class="newtag">新しく足す</span></h2>
+          <p class="hint" style="margin:0">予定のお知らせを送る先です。1 件目はご本人です。ご本人が携帯電話を持っていないときは、ご家族や施設の方を足してください。3 件まで登録できます。</p>
+          <div id="contacts" style="display:grid;gap:10px"></div>
+          <div><button class="btn" id="addContact" type="button">＋ 連絡先を足す</button></div>
+          <p class="hint" style="margin:0">ⓘ「お知らせを送る」は連絡先ごとに付けられ、2 件・3 件にも付けられます。少なくとも 1 件には必ず送ります。最後の 1 件を外すと、ほかの連絡先へ自動で移ります。付けない連絡先は、電話をかけるときの控えとして残ります。</p>
+          <p class="hint" style="margin:0">ⓘ 送り先が 2 件なら、SMS の料金も 2 通分（1 通 11 円）になります。</p>
+        </div>
+
+        <div class="card dim"><h2>保険・拠点</h2></div>
+        <div class="card dim"><h2>訪問条件</h2></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" type="button">取り消す</button><button class="btn pri" type="button">保存</button></div>
+      </div>
+
+      <aside class="side">
+        <div class="note">
+          <h3>電話番号を打ってみてください</h3>
+          <p style="margin:0 0 6px">ハイフン・空白・全角の数字・「+81」のどれで打っても、保存のときに数字だけにそろえます。種類は自動で決まり、手で選ぶ欄はありません。</p>
+          <div class="chips" id="sampleChips"></div>
+        </div>
+        <div class="note">
+          <h3>お知らせの手段は SMS かメール</h3>
+          <ul>
+            <li>携帯電話の番号があれば、SMS が先に選ばれます。</li>
+            <li>携帯がなくメールがあれば、メールになります。</li>
+            <li>どちらもないときは、赤い印が出ます。</li>
+          </ul>
+          <p style="margin:6px 0 0">送るのをやめるときは、手段ではなく「お知らせを送る」の四角を外します。</p>
+        </div>
+        <div class="note">
+          <h3>同意</h3>
+          <p style="margin:0">「未確認／確認済み／NG 回答」から選びます。選んだ日が自動で記録されます。KDDI の決まりで、受け取る方の同意が前提のためです。未確認のあいだは送らず、NG 回答の連絡先には四角を付けられません。</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===== 患者の詳細・一覧 ===== -->
+  <section class="view" id="v-pview">
+    <div class="stage">
+      <div class="screen">
+        <div class="crumb">患者マスター ／ 見本 花子 様</div>
+        <p class="page-title">見本 花子 様</p>
+        <div class="card new">
+          <h2>連絡先<span class="newtag">新しく足す</span></h2>
+          <div class="tblwrap"><table>
+            <tr><th>送り先</th><th>お名前</th><th>電話</th><th>メール</th><th>お知らせ</th></tr>
+            <tr><td><span class="pill p-acc">お知らせを送る</span><br>ご家族（長女）</td><td>見本 由美</td><td class="mono">090-1234-5678<br><span class="pill p-ok">携帯・SMS 可</span></td><td>—</td><td><span class="pill p-ok">SMS</span><br><span class="hint">同意 11/2 に確認</span></td></tr>
+            <tr><td><span class="pill p-acc">お知らせを送る</span><br>ご本人</td><td>本人（見本 花子 様）</td><td class="mono">080-2222-3333<br><span class="pill p-ok">携帯・SMS 可</span></td><td>—</td><td><span class="pill p-ok">SMS</span><br><span class="hint">同意 11/2 に確認</span></td></tr>
+            <tr><td>施設</td><td>〇〇ホーム 事務室</td><td class="mono">043-123-4567<br><span class="pill p-info">固定電話</span></td><td>—</td><td class="hint">控え</td></tr>
+          </table></div>
+        </div>
+        <div class="card">
+          <h2>患者マスターの一覧（列を 1 つ足す）</h2>
+          <div class="tblwrap"><table>
+            <tr><th>コード</th><th>氏名</th><th>状態</th><th>お知らせ<span class="newtag">新</span></th></tr>
+            <tr class="listrow"><td>P0012</td><td>見本 花子</td><td>稼働中</td><td><span class="pill p-ok">SMS 2 件</span></td></tr>
+            <tr class="listrow"><td>P0013</td><td>見本 一郎</td><td>稼働中</td><td><span class="pill p-info">メール</span></td></tr>
+            <tr class="listrow"><td>P0014</td><td>見本 和子</td><td>稼働中</td><td><span class="pill p-warn">同意を確認中</span></td></tr>
+            <tr class="listrow"><td>P0015</td><td>見本 次郎</td><td>稼働中</td><td><span class="pill p-err">送り先なし</span></td></tr>
+            <tr class="listrow"><td>P0016</td><td>見本 三郎</td><td>稼働中</td><td><span class="pill p-mute">NG 回答</span></td></tr>
+          </table></div>
+          <p class="hint" style="margin:0">「送り先なし」「同意を確認中」で絞り込めるようにし、準備の残りを事務所が数えられるようにします。</p>
+        </div>
+      </div>
+      <aside class="side">
+        <div class="note">
+          <h3>番号の見せ方</h3>
+          <ul>
+            <li>携帯・IP 電話は 3-4-4 で区切って見せます。</li>
+            <li>固定電話は、市外局番の長さが地域で違うため、入力されたハイフンの位置で見せます。ハイフンなしなら数字のまま見せます。</li>
+          </ul>
+        </div>
+        <div class="note">
+          <h3>見られる人</h3>
+          <p style="margin:0">連絡先は住所と同じく、管理者だけが見られる形を考えています（看護師のスマホには出しません）。</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===== Excel の取り込み ===== -->
+  <section class="view" id="v-imp">
+    <div class="stage">
+      <div class="screen">
+        <div class="crumb">患者マスター ／ Excel で書き出す・取り込む（今ある機能）</div>
+        <p class="page-title">患者マスターの Excel に「連絡先」のシートを足す</p>
+        <div class="card new">
+          <h2>シート「連絡先」<span class="newtag">新しく足す</span></h2>
+          <p class="hint" style="margin:0">今の「患者マスタ」「固定訪問パターン」のシートの隣に足します。書き出すと、全員分の「ご本人」の行が 1 行ずつ入った形で出てきます。事務所は電話番号とメールを埋めて、今までと同じ画面から取り込みます。取り込み用の別の Excel は作りません。</p>
+          <div class="tblwrap"><table>
+            <tr><th>patient_id<br><span class="hint">システム用・編集不要</span></th><th>patient_code</th><th>患者名<br><span class="hint">見るだけ</span></th><th>送り先</th><th>お名前・続柄や施設名</th><th>電話番号</th><th>メールアドレス</th><th>お知らせを送る</th><th>手段</th><th>同意</th><th>同意の日<br><span class="hint">自動・編集不要</span></th></tr>
+            <tr><td class="mono">3f2a…</td><td>P0012</td><td>見本 花子</td><td>ご本人</td><td class="hint">（自動で「本人」）</td><td class="mono">080-2222-3333</td><td></td><td>はい</td><td>SMS</td><td>確認済み</td><td>2026-11-02</td></tr>
+            <tr><td class="mono">3f2a…</td><td>P0012</td><td>見本 花子</td><td>ご家族</td><td>見本 由美／長女</td><td class="mono">090-1234-5678</td><td></td><td>はい</td><td>SMS</td><td>未確認</td><td></td></tr>
+            <tr><td class="mono">7c19…</td><td>P0013</td><td>見本 一郎</td><td>ご本人</td><td class="hint">（自動で「本人」）</td><td class="mono">043-444-5555</td><td>ichiro@example.jp</td><td>はい</td><td>メール</td><td>未確認</td><td></td></tr>
+            <tr><td class="mono">9b07…</td><td>P0014</td><td>見本 和子</td><td>ご本人</td><td class="hint">（自動で「本人」）</td><td></td><td></td><td>はい</td><td></td><td>未確認</td><td></td></tr>
+          </table></div>
+          <ul class="hint" style="margin:0;padding-left:18px">
+            <li>2 件目・3 件目は、同じ方の行をコピーして下に足し、送り先とお名前を書きかえます。</li>
+            <li>送り先・お知らせを送る・手段・同意は、Excel の選択肢（ドロップダウン）から選びます。</li>
+            <li>電話番号はハイフンがあってもなくてもかまいません。種類（携帯・固定電話など）は取り込みのときに自動で決めます。</li>
+            <li>同意を「確認済み」「NG 回答」に変えた行は、取り込んだ日が同意の日として自動で入ります。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>取り込みの前の確認（今の取り込み画面に出す）</h2>
+          <div class="tblwrap"><table>
+            <tr><th>行</th><th>患者</th><th>内容</th><th>結果</th></tr>
+            <tr><td>2</td><td>P0012 見本 花子</td><td class="mono">080-2222-3333 <span class="pill p-ok">携帯</span></td><td><span class="pill p-ok">取り込めます</span></td></tr>
+            <tr><td>6</td><td>P0014 見本 和子</td><td>電話もメールもありません</td><td><span class="pill p-warn">送り先なし（取り込みはできます）</span></td></tr>
+            <tr><td>9</td><td>P0020 見本 六子</td><td class="mono">090-123-456 <span class="pill p-err">桁が足りない</span></td><td><span class="pill p-err">この行は取り込みません</span></td></tr>
+            <tr><td>12</td><td>P0021 見本 七子</td><td>「お知らせを送る」が 1 件も「はい」になっていません</td><td><span class="pill p-info">ご本人の行を「はい」にして取り込みます</span></td></tr>
+            <tr><td>15</td><td>P0022 見本 八郎</td><td>「ご本人」の行が 2 つあります</td><td><span class="pill p-err">この方の連絡先は取り込みません</span></td></tr>
+          </table></div>
+        </div>
+      </div>
+      <aside class="side">
+        <div class="note">
+          <h3>患者様のつなぎ方</h3>
+          <p style="margin:0">今の患者マスターの Excel と同じく、patient_id の列でつなぎます。お名前で照らさないので、同じお名前の方や字の違いで取り違えません。</p>
+        </div>
+        <div class="note">
+          <h3>はじめの 1 回</h3>
+          <p style="margin:0">事務所が Excel を書き出し、「連絡先」のシートに全員分を入れて取り込みます。その後は、患者様の編集の画面で 1 人ずつ入れていただけます。</p>
+        </div>
+        <div class="note">
+          <h3>取り込みのときの上書き</h3>
+          <p style="margin:0">「連絡先」のシートに行がある方は、シートの中身で置きかえます。シートに 1 行もない方は、今の連絡先を変えません。</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===== スタッフの編集 ===== -->
+  <section class="view" id="v-sform">
+    <div class="stage">
+      <div class="screen">
+        <div class="crumb">スタッフ ／ 見本 看子 ／ 編集</div>
+        <p class="page-title">見本 看子 の編集</p>
+        <div class="card dim"><h2>基本情報</h2></div>
+        <div class="card new">
+          <h2>連絡先<span class="newtag">新しく足す</span></h2>
+          <div class="grid2">
+            <label class="f"><span class="l">電話番号</span><input type="tel" id="sPhone" value="080-9876-5432"><span class="judge" id="sJudge"></span></label>
+            <label class="f"><span class="l">メールアドレス（連絡用）</span><input type="email" id="sMail" value=""><span class="judge" id="sMailJudge"></span></label>
+          </div>
+          <div class="grid2">
+            <div class="f" style="display:flex;flex-direction:column;gap:4px;font-size:13px"><span style="font-weight:500;color:var(--sub)">らく助からのお知らせ</span>
+              <div class="seg" id="sNotify"><button type="button" data-k="sms">SMS</button><button type="button" data-k="mail">メール</button><button type="button" data-k="none" aria-pressed="true">受け取らない</button></div>
+              <span class="hint">今は使いません。休みの承認や急な代わりのお知らせを送るときのために、置いておくだけです。</span>
+            </div>
+          </div>
+          <p class="hint" style="margin:0">ⓘ ログインに使うメールアドレス（アカウントの欄）とは別です。連絡用のアドレスを入れます。</p>
+        </div>
+        <div class="card dim"><h2>勤務・資格</h2></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" type="button">取り消す</button><button class="btn pri" type="button">保存</button></div>
+      </div>
+      <aside class="side">
+        <div class="note">
+          <h3>スタッフは 1 件だけ</h3>
+          <p style="margin:0">スタッフはご本人の番号だけなので、送り先を分けず、電話 1 つとメール 1 つにします。見分け方は患者様と同じです。</p>
+        </div>
+        <div class="note">
+          <h3>見られる人</h3>
+          <p style="margin:0">管理者と、ご本人だけです。ほかのスタッフには見せません。</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===== 見分け方と記録のしかた ===== -->
+  <section class="view" id="v-rule">
+    <div class="card">
+      <h2>電話番号の見分け方（数字だけにそろえてから）</h2>
+      <div class="tblwrap"><table>
+        <tr><th>始まり</th><th>桁</th><th>種類</th><th>SMS</th><th>見せ方</th></tr>
+        <tr><td class="mono">090 / 080 / 070</td><td>11</td><td><span class="pill p-ok">携帯</span></td><td>送れる</td><td class="mono">090-1234-5678</td></tr>
+        <tr><td class="mono">060</td><td>11</td><td><span class="pill p-warn">携帯（新しい番号）</span></td><td>まだ使われていない（開始は延期・時期未定）。始まったら KDDI に確認</td><td class="mono">060-1234-5678</td></tr>
+        <tr><td class="mono">050</td><td>11</td><td><span class="pill p-mute">IP 電話</span></td><td>送れない</td><td class="mono">050-1234-5678</td></tr>
+        <tr><td class="mono">020</td><td>11</td><td><span class="pill p-mute">データ通信など</span></td><td>送れない</td><td class="mono">020-1234-5678</td></tr>
+        <tr><td class="mono">0120 / 0800</td><td>10・11</td><td><span class="pill p-mute">フリーダイヤル</span></td><td>送れない</td><td class="mono">0120-123-456</td></tr>
+        <tr><td class="mono">0 ＋ 上以外</td><td>10</td><td><span class="pill p-info">固定電話</span></td><td>送れない</td><td>入力されたハイフンの位置</td></tr>
+        <tr><td colspan="2">そのほか</td><td><span class="pill p-err">番号の形が違う</span></td><td>—</td><td>保存の前に知らせます</td></tr>
+      </table></div>
+      <p class="hint" style="margin:0">070 は以前の PHS の番号も含みますが、今は携帯電話と同じ扱いです。メールは、携帯会社のアドレス（docomo.ne.jp・ezweb.ne.jp・au.com・softbank.ne.jp・i.softbank.jp）なら「迷惑メールの設定で届かないことがあります」と添えます。</p>
+    </div>
+
+    <div class="card">
+      <h2>電話番号を打って試す</h2>
+      <div class="try">
+        <div class="row"><input type="text" id="tryIn" placeholder="例：０９０ー１２３４ー５６７８、+81 90 1234 5678、043-123-4567"><span></span></div>
+        <dl class="kv" id="tryOut"></dl>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>記録のしかた（DB）</h2>
+      <p style="margin:0">患者様は送り先が複数ありうるので、患者マスターに列を足すのではなく、連絡先の表を 1 つ新しく作ります。スタッフは 1 件だけなので、スタッフの表に列を足します。</p>
+      <div class="tblwrap"><table>
+        <tr><th>表・列</th><th>中身</th><th>例</th></tr>
+        <tr><td colspan="3"><b>patient_contacts</b>（新しい表・患者 1 人に 0〜3 件）</td></tr>
+        <tr><td class="mono">patient_id</td><td>どの患者様か</td><td></td></tr>
+        <tr><td class="mono">relation</td><td>送り先：本人／家族／施設／ケアマネ／その他（本人は患者 1 人に 1 件・お名前は自動）</td><td class="mono">family</td></tr>
+        <tr><td class="mono">name / relation_note</td><td>お名前、続柄や施設名</td><td>見本 由美／長女</td></tr>
+        <tr><td class="mono">phone</td><td>数字だけ（ハイフンなし）</td><td class="mono">09012345678</td></tr>
+        <tr><td class="mono">phone_display</td><td>入力されたハイフンの位置を残した見せ方</td><td class="mono">090-1234-5678</td></tr>
+        <tr><td class="mono">phone_kind</td><td>保存のときに自動で決めた種類</td><td class="mono">mobile / landline / ip / other</td></tr>
+        <tr><td class="mono">email</td><td>メールアドレス（小文字にそろえる）</td><td></td></tr>
+        <tr><td class="mono">is_notify_target</td><td>お知らせを送るか（連絡先ごと・複数に付けられる・患者 1 人に少なくとも 1 件）</td><td>はい</td></tr>
+        <tr><td class="mono">notify_channel</td><td>sms／email（携帯があれば sms から始まる）</td><td class="mono">sms</td></tr>
+        <tr><td class="mono">consent_status / consent_on</td><td>同意：未確認／確認済み／NG 回答、選んだ日（自動）</td><td>確認済み／11-02</td></tr>
+        <tr><td class="mono">source</td><td>手入力か、患者マスターの Excel の取り込みか</td><td>excel</td></tr>
+        <tr><td colspan="3"><b>staff</b>（今の表に列を足す）</td></tr>
+        <tr><td class="mono">phone / phone_display / phone_kind</td><td>患者様と同じ</td><td></td></tr>
+        <tr><td class="mono">contact_email</td><td>連絡用メール（ログイン用とは別）</td><td></td></tr>
+        <tr><td class="mono">notify_channel</td><td>sms／email／none（はじめは none）</td><td></td></tr>
+      </table></div>
+      <details><summary>変えた記録を残すか</summary><p style="margin:6px 0 0">連絡先を変えた人と日時は、今の操作の記録（監査ログ）に残します。番号そのものは記録に書かず、「電話を変えた」とだけ残します。</p></details>
+    </div>
+  </section>
+
+  <!-- ===== 決めていただくこと ===== -->
+  <section class="view" id="v-ask">
+    <div class="card">
+      <h2>決まったこと（11/5）</h2>
+      <div class="tblwrap"><table>
+        <tr><th>こと</th><th>決まり</th></tr>
+        <tr><td>患者様の連絡先の数</td><td>3 件まで。1 件目はご本人（お名前は自動で「本人」）。「お知らせを送る」は連絡先ごとで、2 件・3 件にも付けられる</td></tr>
+        <tr><td>送り先が 0 件にならない</td><td>少なくとも 1 件には必ず送る。最後の 1 件を外すと、ほかの連絡先へ自動で移す（ご本人を先に）</td></tr>
+        <tr><td>手段</td><td>SMS かメールの 2 つだけ。携帯の番号があれば SMS から始まる</td></tr>
+        <tr><td>同意</td><td>未確認／確認済み／NG 回答。日付は選んだ日が自動で入る。方法を書く欄はなし。未確認と NG 回答には送らない</td></tr>
+        <tr><td>見られる人</td><td>管理者だけ（看護師のスマホには出さない）</td></tr>
+        <tr><td>Excel</td><td>取り込み用の別の Excel は作らない。今の患者マスターの Excel（書き出し・取り込み）に「連絡先」のシートを足す</td></tr>
+        <tr><td>スタッフ</td><td>電話 1 つ・連絡用メール 1 つを足す。お知らせは「受け取らない」で置いておく</td></tr>
+        <tr><td>060 の番号</td><td>まだ使われていない（2026 年 7 月の開始が延期、時期は未定）。始まったときのために携帯として受け付け、SMS が届くかは KDDI の仕様書で確かめる</td></tr>
+      </table></div>
+      <p class="hint" style="margin:0">次は設計を書き、DB の変更（migration）・画面・Excel のシートを作ります。メールを送る仕組み（どこから送るか）は、別に設計します。</p>
+    </div>
+  </section>
+</div>
+
+<script>
+// ---- 画面の切り替え ----
+document.querySelectorAll('.tabs button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.tabs button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
+  document.querySelectorAll('section.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+b.dataset.v));
+}));
+
+// ---- 電話番号の見分け ----
+function toHalf(s){return s.replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/[ー－―‐−–]/g,'-').replace(/＋/g,'+').replace(/[（）()]/g,'').replace(/　/g,' ');}
+function judgePhone(raw){
+  const s=toHalf(raw||'').trim();
+  if(!s) return null;
+  let d=s.replace(/[^\d+]/g,'');
+  if(d.startsWith('+81')) d='0'+d.slice(3); else if(d.startsWith('81')&&d.length>=11&&!d.startsWith('0')) d='0'+d.slice(2);
+  d=d.replace(/\D/g,'');
+  const fmt344=x=>x.slice(0,3)+'-'+x.slice(3,7)+'-'+x.slice(7);
+  const kept=s.replace(/^\+81[-\s]?/,'0').replace(/\s+/g,'-').replace(/[^\d-]/g,'').replace(/-+/g,'-');
+  if(/^0[789]0\d{8}$/.test(d)) return {d,kind:'携帯',cls:'p-ok',sms:true,show:fmt344(d)};
+  if(/^060\d{8}$/.test(d)) return {d,kind:'携帯（060）',cls:'p-warn',sms:null,show:fmt344(d)};
+  if(/^050\d{8}$/.test(d)) return {d,kind:'IP 電話',cls:'p-mute',sms:false,show:fmt344(d)};
+  if(/^020\d{8}$/.test(d)) return {d,kind:'データ通信など',cls:'p-mute',sms:false,show:fmt344(d)};
+  if(/^(0120\d{6}|0800\d{7})$/.test(d)) return {d,kind:'フリーダイヤル',cls:'p-mute',sms:false,show:d.startsWith('0120')?d.slice(0,4)+'-'+d.slice(4,7)+'-'+d.slice(7):d.slice(0,4)+'-'+d.slice(4,7)+'-'+d.slice(7)};
+  if(/^0[1-9]\d{8}$/.test(d)) return {d,kind:'固定電話',cls:'p-info',sms:false,show:(kept.replace(/-/g,'')===d?kept:d)};
+  if(d.length<10) return {d,kind:'桁が足りない',cls:'p-err',err:true};
+  if(d.length>11) return {d,kind:'桁が多い',cls:'p-err',err:true};
+  return {d,kind:'番号の形が違う',cls:'p-err',err:true};
+}
+const CARRIER=/@(docomo\.ne\.jp|ezweb\.ne\.jp|au\.com|softbank\.ne\.jp|i\.softbank\.jp|ymobile\.ne\.jp)$/i;
+function judgeMail(raw){
+  const s=(raw||'').trim().toLowerCase();
+  if(!s) return null;
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return {ok:false,html:'<span class="pill p-err">メールの形が違う</span>'};
+  return {ok:true,html:'<span class="pill p-ok">メール可</span>'+(CARRIER.test(s)?' <span class="pill p-warn">携帯会社のアドレス：迷惑メールの設定で届かないことがあります</span>':'')};
+}
+function phoneHtml(j){
+  if(!j) return '';
+  if(j.err) return `<span class="pill ${j.cls}">${j.kind}</span><span class="hint">保存の前に確かめてください</span>`;
+  const sms=j.sms===true?'<span class="pill p-ok">SMS 可</span>':j.sms===false?'<span class="pill p-mute">SMS 不可</span>':'<span class="pill p-warn">SMS は確認中</span>';
+  return `<span class="pill ${j.cls}">${j.kind}</span>${sms}<span class="hint mono">保存：${j.d}　見せ方：${j.show}</span>`;
+}
+
+// ---- 患者の連絡先 ----
+const PATIENT='見本 花子';
+const TODAY='2026-11-05';
+const REL=[['self','ご本人'],['family','ご家族'],['facility','施設'],['cm','ケアマネ'],['other','その他']];
+const RELL=Object.fromEntries(REL);
+let contacts=[
+  {rel:'self',name:'',note:'',phone:'080-2222-3333',mail:'',target:true,chan:'sms',consent:'ok',consentOn:'2026-11-02'},
+  {rel:'family',name:'見本 由美',note:'長女',phone:'090-1234-5678',mail:'',target:true,chan:'sms',consent:'none',consentOn:''},
+  {rel:'facility',name:'〇〇ホーム 事務室',note:'',phone:'0431234567',mail:'',target:false,chan:'sms',consent:'none',consentOn:''},
+];
+let notice='';
+function means(c){
+  const j=judgePhone(c.phone), m=judgeMail(c.mail);
+  return {sms:!!(j&&j.sms!==false&&!j.err), mail:!!(m&&m.ok)};
+}
+function chanOf(c){
+  const ok=means(c);
+  if(c.chan==='sms'&&ok.sms) return 'sms';
+  if(c.chan==='mail'&&ok.mail) return 'mail';
+  return ok.sms?'sms':ok.mail?'mail':'none';
+}
+function label(i){const c=contacts[i];return `${i+1} 件目（${c.rel==='self'?'ご本人':(c.name||RELL[c.rel])}）`;}
+// 送る先が 1 件もなくなったら、ほかの連絡先へ移す（ご本人を先に）
+function ensureTarget(fromIdx){
+  if(contacts.some(c=>c.target)) return true;
+  const order=contacts.map((c,i)=>i).filter(i=>i!==fromIdx&&contacts[i].consent!=='ng')
+    .sort((x,y)=>(contacts[y].rel==='self')-(contacts[x].rel==='self')||(chanOf(contacts[y])!=='none')-(chanOf(contacts[x])!=='none'));
+  if(!order.length) return false;
+  contacts[order[0]].target=true;
+  notice=`お知らせは少なくとも 1 件に送るため、${label(order[0])}へ移しました。`;
+  return true;
+}
+function render(){
+  const box=document.getElementById('contacts');
+  box.innerHTML='';
+  const targets=contacts.map((c,i)=>c.target?label(i):null).filter(Boolean);
+  const sumEl=document.createElement('div');
+  sumEl.className='note';
+  sumEl.style.cssText='display:grid;gap:6px;background:var(--accent-soft);border-color:var(--accent)';
+  sumEl.innerHTML=`<div><b>お知らせを送る先：</b>${targets.join('・')||'なし'}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn" type="button" data-q="self">ご本人だけ</button>
+      ${contacts.length>=2?`<button class="btn" type="button" data-q="all">登録した全員に送る（${contacts.filter(c=>c.consent!=='ng').length} 件）</button>`:''}
+    </div>
+    ${notice?`<div class="pill p-info" style="white-space:normal;border-radius:6px;padding:4px 8px">ⓘ ${notice}</div>`:''}`;
+  sumEl.querySelectorAll('[data-q]').forEach(b=>b.addEventListener('click',()=>{
+    notice='';
+    if(b.dataset.q==='all') contacts.forEach(c=>{if(c.consent!=='ng')c.target=true;});
+    else {const si=contacts.findIndex(c=>c.rel==='self'); if(si<0){notice='ご本人の連絡先がありません。';} else contacts.forEach((c,i)=>c.target=(i===si));}
+    render();
+  }));
+  box.appendChild(sumEl);
+  contacts.forEach((c,i)=>{
+    const j=judgePhone(c.phone), m=judgeMail(c.mail), ok=means(c);
+    const chan=chanOf(c);
+    let status='';
+    if(c.target){
+      if(chan==='none') status='<span class="pill p-err">送れる番号・メールがありません</span>';
+      else if(c.consent!=='ok') status='<span class="pill p-warn">同意の確認待ち（まだ送りません）</span>';
+      else status=`<span class="pill p-ok">${chan==='sms'?'SMS':'メール'}で送ります</span>`;
+    } else if(c.consent==='ng') status='<span class="pill p-mute">NG 回答のため送りません</span>';
+    const self=c.rel==='self';
+    const el=document.createElement('div');
+    el.className='contact'+(c.target?' main':'');
+    el.innerHTML=`
+      <div class="chead">
+        <span class="who" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${i+1} 件目
+          <label style="display:inline-flex;gap:4px;align-items:center;font-weight:500;font-size:13px;cursor:pointer"><input type="checkbox" data-a="target" ${c.target?'checked':''} ${c.consent==='ng'?'disabled':''}> お知らせを送る</label></span>
+        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${status}
+          ${contacts.length>1?'<button class="btn link" data-a="del" type="button">外す</button>':''}</span>
+      </div>
+      <div class="grid2">
+        <label class="f"><span class="l">送り先</span><select data-f="rel">${REL.map(([v,l])=>`<option value="${v}" ${v===c.rel?'selected':''} ${v==='self'&&!self&&contacts.some(x=>x.rel==='self')?'disabled':''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span class="l">お名前・続柄や施設名</span>${self
+          ?`<input type="text" value="本人（${PATIENT} 様）" disabled><span class="hint">ご本人は自動で入ります</span>`
+          :`<span style="display:grid;grid-template-columns:1fr 1fr;gap:6px"><input type="text" data-f="name" value="${c.name}" placeholder="お名前"><input type="text" data-f="note" value="${c.note}" placeholder="例：長女、〇〇ホーム"></span>`}</label>
+        <label class="f"><span class="l">電話番号</span><input type="tel" data-f="phone" value="${c.phone}" placeholder="例：090-1234-5678"><span class="judge" data-j="phone">${phoneHtml(j)}</span></label>
+        <label class="f"><span class="l">メールアドレス</span><input type="email" data-f="mail" value="${c.mail}" placeholder="携帯電話がないときに"><span class="judge" data-j="mail">${m?m.html:''}</span></label>
+      </div>
+      <div class="grid2">
+        ${c.target?`<div style="display:flex;flex-direction:column;gap:4px;font-size:13px"><span style="font-weight:500;color:var(--sub)">お知らせの手段</span>
+          <div class="seg">
+            <button type="button" data-ch="sms" aria-pressed="${chan==='sms'}" ${ok.sms?'':'disabled'}>SMS</button>
+            <button type="button" data-ch="mail" aria-pressed="${chan==='mail'}" ${ok.mail?'':'disabled'}>メール</button>
+          </div><span class="hint">携帯の番号があれば SMS が先に選ばれます。</span></div>`:'<div></div>'}
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:13px"><span style="font-weight:500;color:var(--sub)">送ってよいかの同意</span>
+          <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select data-f="consent" style="width:auto"><option value="none" ${c.consent==='none'?'selected':''}>未確認</option><option value="ok" ${c.consent==='ok'?'selected':''}>確認済み</option><option value="ng" ${c.consent==='ng'?'selected':''}>NG 回答</option></select>
+            ${c.consent!=='none'&&c.consentOn?`<span class="hint">${+c.consentOn.slice(5,7)}/${+c.consentOn.slice(8)} に${c.consent==='ok'?'確認':'NG 回答'}（自動で記録）</span>`:''}
+          </span></div>
+      </div>
+    `;
+    el.querySelectorAll('[data-f]').forEach(inp=>{
+      const ev=inp.tagName==='SELECT'?'change':'input';
+      inp.addEventListener(ev,()=>{
+        c[inp.dataset.f]=inp.value;
+        if(inp.dataset.f==='phone'){ el.querySelector('[data-j=phone]').innerHTML=phoneHtml(judgePhone(c.phone)); clearTimeout(inp._t); inp._t=setTimeout(render,700); return;}
+        if(inp.dataset.f==='mail'){ const mm=judgeMail(c.mail); el.querySelector('[data-j=mail]').innerHTML=mm?mm.html:''; clearTimeout(inp._t); inp._t=setTimeout(render,700); return;}
+        notice='';
+        if(inp.dataset.f==='consent'){
+          c.consentOn=inp.value==='none'?'':TODAY;
+          if(inp.value==='ng'&&c.target){
+            c.target=false;
+            if(!ensureTarget(i)){c.target=true;c.consent='none';c.consentOn='';notice='ほかに送れる連絡先がないため、NG 回答にできません。先にほかの連絡先を足してください。';}
+          }
+        }
+        render();
+      });
+    });
+    el.querySelectorAll('[data-ch]').forEach(b=>b.addEventListener('click',()=>{c.chan=b.dataset.ch;notice='';render();}));
+    el.querySelectorAll('[data-a]').forEach(b=>b.addEventListener(b.dataset.a==='target'?'change':'click',()=>{
+      notice='';
+      if(b.dataset.a==='del'){
+        contacts.splice(i,1);
+        ensureTarget(-1);
+      } else {
+        c.target=b.checked;
+        if(!c.target&&!ensureTarget(i)){c.target=true;notice='お知らせは少なくとも 1 件に送ります。外すときは、先にほかの連絡先を足してください。';}
+      }
+      render();
+    }));
+    box.appendChild(el);
+  });
+  document.getElementById('addContact').disabled=contacts.length>=3;
+}
+document.getElementById('addContact').addEventListener('click',()=>{
+  if(contacts.length>=3) return;
+  const hasSelf=contacts.some(c=>c.rel==='self');
+  contacts.push({rel:hasSelf?'family':'self',name:'',note:'',phone:'',mail:'',target:contacts.length===0,chan:'sms',consent:'none',consentOn:''});
+  notice='';
+  render();
+});
+render();
+
+// 見本の番号
+const SAMPLES=['０９０－１２３４－５６７８','+81 80 1234 5678','043-123-4567','0312345678','050-1234-5678','0120-123-456','090-123-456','06012345678'];
+const chips=document.getElementById('sampleChips');
+SAMPLES.forEach(s=>{const b=document.createElement('button');b.type='button';b.textContent=s;b.addEventListener('click',()=>{
+  const t=contacts.find(c=>c.target)||contacts[0]; if(!t) return; t.phone=s; render();
+});chips.appendChild(b);});
+
+// 試す欄
+const tin=document.getElementById('tryIn'), tout=document.getElementById('tryOut');
+function tryRender(){
+  const j=judgePhone(tin.value);
+  if(!j){tout.innerHTML='';return;}
+  tout.innerHTML=`<dt>種類</dt><dd><span class="pill ${j.cls}">${j.kind}</span></dd>`+
+    (j.err?`<dt>保存</dt><dd>保存の前に知らせます</dd>`:`<dt>保存する形</dt><dd class="mono">${j.d}</dd><dt>見せ方</dt><dd class="mono">${j.show}</dd><dt>SMS</dt><dd>${j.sms===true?'送れる':j.sms===false?'送れない':'KDDI に確認'}</dd>`);
+}
+tin.addEventListener('input',tryRender);
+
+// スタッフ
+const sp=document.getElementById('sPhone'), sm=document.getElementById('sMail');
+const sRender=()=>{document.getElementById('sJudge').innerHTML=phoneHtml(judgePhone(sp.value));const m=judgeMail(sm.value);document.getElementById('sMailJudge').innerHTML=m?m.html:'';};
+sp.addEventListener('input',sRender); sm.addEventListener('input',sRender); sRender();
+document.querySelectorAll('#sNotify button').forEach(b=>b.addEventListener('click',()=>document.querySelectorAll('#sNotify button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'))));
+</script>
+</body>
+</html>
