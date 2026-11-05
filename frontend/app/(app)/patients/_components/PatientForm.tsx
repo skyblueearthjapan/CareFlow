@@ -4,6 +4,8 @@
  * - react-hook-form + zodResolver(patientFormSchema)
  * - Sections: 基本情報 / 住所 / 保険・拠点 / 訪問条件 / 週間パターン / 備考
  * - 住所は「保険証の住所」と「実際の訪問先」の 2 つ (設計 2026-10-22)。
+ * - 住所の下に「連絡先」カード (管理者だけ・contacts-phone-email-design-2026-11-05 §7)。
+ *   中身はページが持ち、患者の保存の後にページが PUT する。
  * - Re-used by `patients/new/page.tsx` and `patients/[id]/edit/page.tsx`.
  *
  * v2 (W1-BE1): backend は §4.1 の 16 項目のみ受け付ける。
@@ -25,6 +27,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
 import { PatientNgStaffSection } from '@/components/patients/PatientNgStaffSection';
+import { PatientContactsCard } from '@/components/patients/PatientContactsCard';
 import { SameAddressLinksSection } from '@/components/patients/SameAddressLinksSection';
 import { SpecialVisitWeekDialog } from '@/components/schedule/v2/SpecialVisitWeekDialog';
 import {
@@ -52,6 +55,7 @@ import { useGeocode } from '@/lib/queries/geocoding';
 import { googleMapsPlaceUrl } from '@/lib/maps';
 import type { OfficeResolveResponse } from '@/lib/schemas/office';
 import { toast } from '@/components/ui/sonner';
+import type { ContactDraft } from '@/lib/contacts/patientContacts';
 
 import { WeeklyPatternEditor } from './WeeklyPatternEditor';
 
@@ -94,6 +98,17 @@ interface PatientFormProps {
    * 編集画面が固定訪問の枠の欄に「先に患者を保存して」と添えるために使う。
    */
   onVisitFrequencyChange?: (visitFrequency: string | null) => void;
+  /**
+   * 連絡先 (管理者だけ)。渡したときだけ「住所」の下にカードを出す。
+   * 中身と保存はページが持つ (患者の保存が成功した後に PUT)。
+   */
+  contacts?: {
+    value: ContactDraft[];
+    onChange: (next: ContactDraft[]) => void;
+    errorMessage?: string | null;
+    onRetry?: () => void;
+    retrying?: boolean;
+  };
 }
 
 export function PatientForm({
@@ -107,6 +122,7 @@ export function PatientForm({
   formRef,
   patientId,
   onVisitFrequencyChange,
+  contacts,
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
     // `patientFormSchema` matches the structured/checkbox shape react-hook-form
@@ -544,6 +560,18 @@ export function PatientForm({
           <b>実際の訪問先</b>で計算します。
         </p>
       </Card>
+
+      {contacts ? (
+        <PatientContactsCard
+          value={contacts.value}
+          onChange={contacts.onChange}
+          patientName={watchedName ?? ''}
+          disabled={submitting}
+          errorMessage={contacts.errorMessage}
+          onRetry={contacts.onRetry}
+          retrying={contacts.retrying}
+        />
+      ) : null}
 
       <Card className="p-5 space-y-4">
         <h2 className="font-serif text-lg font-bold text-text-primary">保険・拠点</h2>

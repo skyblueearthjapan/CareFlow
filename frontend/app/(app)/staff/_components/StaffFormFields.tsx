@@ -11,11 +11,17 @@
  * ``areas`` / ``max_per_day`` / ``skill_level`` / ``assignment_volume``。
  *
  * W10-FE1: is_trainee フラグ追加。「メンター」ラベルを「同行スタッフ」に変更。
+ *
+ * 連絡先 (contacts-phone-email-design-2026-11-05 §7): 電話 1 つ・連絡用メール 1 つ・
+ * お知らせ SMS／メール／受け取らない (今は使わない)。見分けは患者様と同じ。
  */
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
+import { EmailJudge, PhoneJudge } from '@/components/patients/PatientContactsCard';
 import { Input } from '@/components/ui/input';
+import { classifyEmail, classifyPhone } from '@/lib/contacts/phone';
 import {
   STAFF_QUALIFICATION_VALUES,
+  type StaffNotifyChannel,
   type STAFF_ROLE_VALUES,
   type STAFF_SEX_VALUES,
   type STAFF_STATUS_VALUES,
@@ -40,7 +46,28 @@ export interface StaffFormState {
   /** K-1b カイポケ「職種」列。空文字 = 未設定 (backend には null で送る) */
   qualification: StaffQualification | '';
   note: string;
+  /** 連絡先の電話 (入力のまま。保存のときにサーバーが数字だけにそろえる)。 */
+  phone: string;
+  /** 連絡用メール (ログイン用とは別)。 */
+  contact_email: string;
+  notify_channel: StaffNotifyChannel;
 }
+
+/** 連絡先の形の誤り (保存の前に止める)。key は StaffFormState の欄名。 */
+export function staffContactErrors(form: StaffFormState): Record<string, string> {
+  const out: Record<string, string> = {};
+  const p = classifyPhone(form.phone);
+  if (p && !p.ok) out.phone = '電話番号の形が違います';
+  const e = classifyEmail(form.contact_email);
+  if (e && !e.ok) out.contact_email = 'メールアドレスの形が違います';
+  return out;
+}
+
+const NOTIFY_OPTIONS: ReadonlyArray<readonly [StaffNotifyChannel, string]> = [
+  ['sms', 'SMS'],
+  ['email', 'メール'],
+  ['none', '受け取らない'],
+];
 
 interface Option<T extends string> {
   value: T;
@@ -188,6 +215,69 @@ export function StaffFormFields({
           />
         </Field>
       </div>
+
+      <section
+        className="space-y-4 border-t border-border-default pt-4"
+        data-testid="staff-contacts-section"
+      >
+        <h3 className="font-serif text-base font-bold text-text-primary">連絡先</h3>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Field label="電話番号" error={errors.phone}>
+            <Input
+              type="tel"
+              value={form.phone}
+              onChange={(e) => set('phone', e.target.value)}
+              placeholder="例：090-1234-5678"
+              data-testid="staff-phone-input"
+            />
+            <div className="mt-1">
+              <PhoneJudge result={classifyPhone(form.phone)} />
+            </div>
+          </Field>
+          <Field label="メールアドレス（連絡用）" error={errors.contact_email}>
+            <Input
+              type="email"
+              value={form.contact_email}
+              onChange={(e) => set('contact_email', e.target.value)}
+              data-testid="staff-contact-email-input"
+            />
+            <div className="mt-1">
+              <EmailJudge raw={form.contact_email} />
+            </div>
+          </Field>
+          <Field
+            label="らく助からのお知らせ"
+            error={errors.notify_channel}
+            hint="今は使いません。休みの承認や急な代わりのお知らせを送るときのために、置いておくだけです。"
+          >
+            <div
+              role="group"
+              aria-label="らく助からのお知らせ"
+              className="inline-flex w-fit divide-x divide-border-default overflow-hidden rounded-md border border-border-default"
+            >
+              {NOTIFY_OPTIONS.map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={form.notify_channel === v}
+                  onClick={() => set('notify_channel', v)}
+                  className={`px-3 py-1.5 text-sm ${
+                    form.notify_channel === v
+                      ? 'bg-brand-primary/10 font-bold text-brand-primary'
+                      : 'bg-bg-base text-text-primary hover:bg-bg-muted'
+                  }`}
+                  data-testid={`staff-notify-${v}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Field>
+        </div>
+        <p className="text-xs text-text-muted">
+          ⓘ ログインに使うメールアドレス（アカウントの欄）とは別です。連絡用のアドレスを入れます。
+        </p>
+      </section>
     </div>
   );
 }

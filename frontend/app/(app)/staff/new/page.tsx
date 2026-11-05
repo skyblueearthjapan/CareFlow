@@ -32,7 +32,11 @@ import {
   type StaffCreate,
 } from '@/lib/schemas/staff';
 
-import { StaffFormFields, type StaffFormState } from '../_components/StaffFormFields';
+import {
+  StaffFormFields,
+  staffContactErrors,
+  type StaffFormState,
+} from '../_components/StaffFormFields';
 
 const EMPTY_FORM: StaffFormState = {
   code: '',
@@ -45,6 +49,9 @@ const EMPTY_FORM: StaffFormState = {
   is_trainee: false,
   qualification: '',
   note: '',
+  phone: '',
+  contact_email: '',
+  notify_channel: 'none',
 };
 
 function toPayload(form: StaffFormState): StaffCreate {
@@ -59,6 +66,9 @@ function toPayload(form: StaffFormState): StaffCreate {
     is_trainee: form.is_trainee,
     qualification: form.qualification === '' ? null : form.qualification,
     note: form.note.trim() || null,
+    phone: form.phone.trim() || null,
+    contact_email: form.contact_email.trim() || null,
+    notify_channel: form.notify_channel,
   };
 }
 
@@ -100,6 +110,11 @@ export default function StaffNewPage() {
         if (!fieldErrors[key]) fieldErrors[key] = issue.message;
       }
       setErrors(fieldErrors);
+      return;
+    }
+    const contactErrors = staffContactErrors(form);
+    if (Object.keys(contactErrors).length > 0) {
+      setErrors(contactErrors);
       return;
     }
     create.mutate(parsed.data);

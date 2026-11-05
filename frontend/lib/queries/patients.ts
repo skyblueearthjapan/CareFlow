@@ -75,6 +75,11 @@ export interface PatientsListParams {
    */
   sort?: 'code' | 'kana';
   /**
+   * id で絞る (一覧の「お知らせ」絞り込み・連絡先の設計 2026-11-05 §7)。
+   * include = この id だけ / exclude = この id を除く。検索と同じくクライアント側。
+   */
+  idFilter?: { mode: 'include' | 'exclude'; ids: readonly string[] } | null;
+  /**
    * 取得ゲート (default true)。`false` のときは fetch を抑止する。
    *
    * 現場ボード `/m` の提案シートでは「既存のお客様」モードのときだけ患者一覧
@@ -255,9 +260,14 @@ export function usePatients(
   const statusFilter = params.status && params.status !== 'all' ? params.status : '';
   const sort = params.sort ?? 'code';
   const gate = params.enabled ?? true;
+  const idFilter = params.idFilter ?? null;
+  const idFilterKey = idFilter ? `${idFilter.mode}:${[...idFilter.ids].sort().join(',')}` : '';
 
   return useQuery<PatientsListResult, Error>({
-    queryKey: [...PATIENTS_KEY, { page, limit, search, insurance, statusFilter, sort }],
+    queryKey: [
+      ...PATIENTS_KEY,
+      { page, limit, search, insurance, statusFilter, sort, idFilterKey },
+    ],
     enabled: status === 'authenticated' && gate,
     queryFn: async () => {
       // Fetch a generous window so the client-side search across pages
@@ -268,7 +278,11 @@ export function usePatients(
         { accessToken, refreshToken },
       );
       const truncated = all.length === PATIENT_LIST_HARD_CAP;
+      const idSet = idFilter ? new Set(idFilter.ids) : null;
       const filtered = all.filter((p) => {
+        if (idFilter && idSet) {
+          if (idFilter.mode === 'include' ? !idSet.has(p.id) : idSet.has(p.id)) return false;
+        }
         if (insurance) {
           // 旧 v1 値 (``医療保険`` / ``介護保険``) も v2 値に正規化して比較
           const norm = normalizePatientInsurance(p.insurance as string | null | undefined);

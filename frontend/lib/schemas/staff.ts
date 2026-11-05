@@ -49,6 +49,17 @@ export const STAFF_QUALIFICATION_VALUES = [
 ] as const;
 export type StaffQualification = (typeof STAFF_QUALIFICATION_VALUES)[number];
 
+/** スタッフのお知らせの手段 (連絡先の設計 2026-11-05・今は使わない・初期 none)。 */
+export const STAFF_NOTIFY_CHANNELS = ['sms', 'email', 'none'] as const;
+export type StaffNotifyChannel = (typeof STAFF_NOTIFY_CHANNELS)[number];
+
+/** 連絡先 (電話・連絡用メール)。ログイン用の users.email とは別。 */
+const staffContactFields = {
+  phone: z.string().max(40).nullable().optional(),
+  contact_email: z.string().max(255).nullable().optional(),
+  notify_channel: z.enum(STAFF_NOTIFY_CHANNELS).optional(),
+};
+
 export const staffBaseSchema = z.object({
   code: z.string().max(64).nullable().optional(),
   name: z.string().min(1, '氏名は必須です').max(120),
@@ -62,6 +73,7 @@ export const staffBaseSchema = z.object({
   /** K-1b カイポケ「職種」列 (看護師/准看護師…)。未設定 = null */
   qualification: z.enum(STAFF_QUALIFICATION_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
+  ...staffContactFields,
 });
 
 export const staffCreateSchema = staffBaseSchema;
@@ -79,6 +91,7 @@ export const staffUpdateSchema = z.object({
   /** K-1b カイポケ「職種」列。null で明示的にクリア */
   qualification: z.enum(STAFF_QUALIFICATION_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
+  ...staffContactFields,
 });
 
 export const staffReadSchema = staffBaseSchema.extend({
@@ -88,6 +101,12 @@ export const staffReadSchema = staffBaseSchema.extend({
   deleted_at: z.string().nullable().optional(),
   /** 常勤 / 非常勤 (mig 0099・読み出しだけ)。非常勤は必要休日数の対象外。 */
   employment_type: z.enum(['full_time', 'part_time']).optional(),
+  /** 連絡先 (管理者とご本人だけ値が入る・ほかは null)。 */
+  phone_display: z.string().nullable().optional(),
+  phone_kind: z.string().nullable().optional(),
+  sms_capable: z.boolean().nullable().optional(),
+  email_carrier: z.boolean().nullable().optional(),
+  notify_channel: z.enum(STAFF_NOTIFY_CHANNELS).nullable().optional(),
 });
 
 export type StaffCreate = z.infer<typeof staffCreateSchema>;

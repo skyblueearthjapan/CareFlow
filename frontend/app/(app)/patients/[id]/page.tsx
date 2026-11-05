@@ -3,6 +3,7 @@
  *
  * Sections: 基本情報 / 住所 / 保険 / 訪問条件 / 備考.
  * 住所は「保険証の住所」と「実際の訪問先」の 2 行 (設計 2026-10-22)。保険証の住所と札は管理者だけ。
+ * 連絡先の表は住所の下・管理者だけ (contacts-phone-email-design-2026-11-05 §7)。
  * Edit/Delete buttons gated by role (admin/manager edit, admin delete).
  */
 'use client';
@@ -54,6 +55,7 @@ import { formatSameAddressLinkNames } from '@/lib/schemas/g21';
 import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel';
 import { PatientQrManageDialog } from '@/components/patients/PatientQrManageDialog';
 import { LocationDriftNotice } from '@/components/patients/LocationDriftNotice';
+import { PatientContactsView } from '@/components/patients/PatientContactsView';
 import { usePatientLocationDrift } from '@/lib/queries/patientLocation';
 import { isAdminRole } from '@/lib/rbac';
 import { googleMapsPlaceUrl } from '@/lib/maps';
@@ -330,6 +332,8 @@ export default function PatientDetailPage() {
           />
         )}
       </Card>
+
+      {canEdit ? <PatientContactsView patientId={data.id} patientName={data.name} /> : null}
 
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">保険・拠点</h2>

@@ -5,6 +5,8 @@
  *          検索 (name/kana/code, 300ms debounce), 保険区分.
  * Pagination: limit=20, prev/next + page numbers.
  * Roles: 「+ 新規登録」 is admin/manager only.
+ * 連絡先 (管理者だけ・contacts-phone-email-design-2026-11-05 §7): 「お知らせ」列と
+ * 「送り先なし」「同意を確認中」の絞り込み。summary API を 1 回だけ呼ぶ。
  */
 'use client';
 
@@ -37,6 +39,9 @@ import { PatientsExcelButtons } from '@/components/patients/PatientsExcelButtons
 import { PatientKarteButtons } from '@/components/patients/PatientKarteButtons';
 import { PatientsReplaceAllButton } from '@/components/patients/PatientsReplaceAllButton';
 import { isAdminRole } from '@/lib/rbac';
+import { usePatientContactsSummary } from '@/lib/queries/patientContacts';
+import type { ContactSummaryItem } from '@/lib/schemas/patientContacts';
+import { ContactSummaryPill, contactSummaryKind } from '@/components/patients/PatientContactsView';
 
 const PAGE_SIZE = 20;
 
@@ -63,6 +68,9 @@ function initialStatusTab(): StatusTabValue {
 /** 並び順 (PO要望 2026-08-21): コード順 (既定) / あいうえお順 (kana昇順)。 */
 type SortOrder = 'code' | 'kana';
 
+/** 「お知らせ」の絞り込み (管理者だけ)。 */
+type NotifyFilter = '' | 'none' | 'pending';
+
 function initialSortOrder(): SortOrder {
   if (typeof window === 'undefined') return 'code';
   return new URLSearchParams(window.location.search).get('sort') === 'kana' ? 'kana' : 'code';
@@ -80,6 +88,30 @@ export default function PatientsPage() {
   const [statusTab, setStatusTab] = useState<StatusTabValue>(initialStatusTab);
   const [sortOrder, setSortOrder] = useState<SortOrder>(initialSortOrder);
   const [page, setPage] = useState(1);
+  const [notifyFilter, setNotifyFilter] = useState<NotifyFilter>('');
+
+  // 連絡先の要約 (管理者だけ・全員分を 1 回で)。
+  const { data: contactSummary } = usePatientContactsSummary(canCreate);
+  const summaryMap = useMemo(() => {
+    const m = new Map<string, ContactSummaryItem>();
+    for (const s of contactSummary ?? []) m.set(s.patient_id, s);
+    return m;
+  }, [contactSummary]);
+  const idFilter = useMemo(() => {
+    if (!canCreate || notifyFilter === '') return null;
+    if (!contactSummary) return { mode: 'include' as const, ids: [] };
+    if (notifyFilter === 'pending') {
+      return {
+        mode: 'include' as const,
+        ids: contactSummary.filter((s) => s.pending_consent > 0).map((s) => s.patient_id),
+      };
+    }
+    // 送り先なし: 要約が無い (連絡先 0 件) 方も入るので「送れる方を除く」で絞る。
+    return {
+      mode: 'exclude' as const,
+      ids: contactSummary.filter((s) => contactSummaryKind(s) !== 'none').map((s) => s.patient_id),
+    };
+  }, [canCreate, notifyFilter, contactSummary]);
 
   // タブ・並び順を URL (?status= / ?sort=) に同期 — ブックマーク・戻る・他画面からのリンクに対応。
   useEffect(() => {
@@ -108,6 +140,7 @@ export default function PatientsPage() {
     insurance: insurance || undefined,
     status: statusTab,
     sort: sortOrder,
+    idFilter,
   });
 
   // 拠点 id → 名前マップ (一覧で primary_office_id を拠点名表示するため)
@@ -229,7 +262,12 @@ export default function PatientsPage() {
       </div>
 
       <Card className="p-4">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px_auto]">
+        <div
+          className={cn(
+            'grid grid-cols-1 gap-3',
+            canCreate ? 'md:grid-cols-[1fr_220px_200px_auto]' : 'md:grid-cols-[1fr_220px_auto]',
+          )}
+        >
           <Input
             type="search"
             placeholder="氏名・カナ・コードで検索"
@@ -251,6 +289,22 @@ export default function PatientsPage() {
               </option>
             ))}
           </select>
+          {canCreate ? (
+            <select
+              value={notifyFilter}
+              aria-label="お知らせで絞り込み"
+              data-testid="patient-notify-filter"
+              onChange={(e) => {
+                setNotifyFilter(e.target.value as NotifyFilter);
+                setPage(1);
+              }}
+              className="flex h-10 w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-primary focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light"
+            >
+              <option value="">お知らせ: すべて</option>
+              <option value="none">送り先なし</option>
+              <option value="pending">同意を確認中</option>
+            </select>
+          ) : null}
           {/* 並び順トグル (PO要望 2026-08-21): コード順 / あいうえお順 (kana昇順)。 */}
           <div
             role="group"
@@ -336,6 +390,7 @@ export default function PatientsPage() {
                   <th className="px-3 py-2 font-medium">保険</th>
                   <th className="px-3 py-2 font-medium">主担当拠点</th>
                   <th className="px-3 py-2 font-medium">状態</th>
+                  {canCreate ? <th className="px-3 py-2 font-medium">お知らせ</th> : null}
                   <th className="px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>
@@ -400,6 +455,15 @@ export default function PatientsPage() {
                           </>
                         )}
                       </td>
+                      {canCreate ? (
+                        <td className="px-3 py-2">
+                          {contactSummary ? (
+                            <ContactSummaryPill summary={summaryMap.get(p.id)} />
+                          ) : (
+                            <span className="text-xs text-text-muted">--</span>
+                          )}
+                        </td>
+                      ) : null}
                       <td className="px-3 py-2">
                         <div className="flex gap-2">
                           <Link

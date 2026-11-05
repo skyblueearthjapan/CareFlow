@@ -124,6 +124,34 @@ vi.mock('@/lib/queries/patientLocation', () => ({
   useRevertPatientLocation: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
+// ─── Mock 連絡先 (管理者だけ・contacts-phone-email-design-2026-11-05) ─────────
+vi.mock('@/lib/queries/patientContacts', () => ({
+  usePatientContacts: vi.fn(() => ({
+    data: [
+      {
+        id: 'c-1',
+        sort_order: 0,
+        relation: 'self',
+        name: null,
+        relation_note: null,
+        phone: '08022223333',
+        phone_display: '080-2222-3333',
+        phone_kind: 'mobile',
+        sms_capable: true,
+        email: null,
+        email_carrier: null,
+        is_notify_target: true,
+        notify_channel: 'sms',
+        effective_channel: 'sms',
+        consent_status: 'confirmed',
+        consent_on: '2026-11-02',
+      },
+    ],
+    isLoading: false,
+    isError: false,
+  })),
+}));
+
 // ─── Mock toast ───────────────────────────────────────────────────────────────
 vi.mock('@/components/ui/sonner', () => ({
   toast: {
@@ -551,7 +579,6 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       });
       renderPage();
 
-      expect(screen.queryByRole('heading', { level: 2, name: '連絡先' })).not.toBeInTheDocument();
       const card = addressCard();
       expect(card).toHaveTextContent(`保険証の住所${INS}`);
       expect(card).toHaveTextContent('実際の訪問先保険証の住所と同じ');
@@ -612,6 +639,25 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       expect(card).toHaveTextContent(`実際の訪問先${VISIT}`);
       expect(screen.queryByTestId('badge-visit-separate')).not.toBeInTheDocument();
       expect(screen.queryByTestId('badge-insurance-missing')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('連絡先 (管理者だけ)', () => {
+    it('管理者: 住所の下に連絡先の表を出す', () => {
+      setupMocks({ role: 'admin' });
+      renderPage();
+      const view = screen.getByTestId('patient-contacts-view');
+      expect(view).toHaveTextContent('本人（テスト 患者 様）');
+      expect(view).toHaveTextContent('080-2222-3333');
+      expect(view).toHaveTextContent('携帯・SMS 可');
+      expect(view).toHaveTextContent('同意 11/2 に確認');
+    });
+
+    it('職員: 連絡先を出さない', () => {
+      setupMocks({ role: 'staff' });
+      renderPage();
+      expect(screen.queryByTestId('patient-contacts-view')).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { level: 2, name: '連絡先' })).not.toBeInTheDocument();
     });
   });
 });

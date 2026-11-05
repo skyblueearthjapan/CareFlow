@@ -1158,3 +1158,54 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     });
   });
 });
+
+describe('PatientForm — 連絡先カード (contacts-phone-email-design-2026-11-05 §7)', () => {
+  beforeEach(() => {
+    setupMocks();
+  });
+
+  it('contacts を渡さない (管理者以外) ときはカードを出さない', () => {
+    render(<PatientForm onSubmit={vi.fn()} />);
+    expect(screen.queryByTestId('patient-contacts-card')).not.toBeInTheDocument();
+  });
+
+  it('住所の下に出し、ご本人の名前はフォームの氏名を使う', () => {
+    const onChange = vi.fn();
+    render(
+      <PatientForm
+        onSubmit={vi.fn()}
+        defaultValues={{ ...emptyPatientFormValues, name: '見本 花子' }}
+        contacts={{
+          value: [
+            {
+              key: 'k1',
+              relation: 'self',
+              name: '',
+              relation_note: '',
+              phone: '',
+              email: '',
+              is_notify_target: true,
+              notify_channel: 'sms',
+              consent_status: 'unconfirmed',
+              consent_on: null,
+            },
+          ],
+          onChange,
+          errorMessage: '連絡先を保存できませんでした。',
+          onRetry: vi.fn(),
+        }}
+      />,
+    );
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    expect(headings.indexOf('連絡先')).toBe(headings.indexOf('住所') + 1);
+    expect((screen.getByTestId('contact-self-name-0') as HTMLInputElement).value).toBe(
+      '本人（見本 花子 様）',
+    );
+    expect(screen.getByTestId('contacts-error')).toHaveTextContent(
+      '連絡先を保存できませんでした。',
+    );
+    expect(screen.getByTestId('contacts-retry')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('contacts-add'));
+    expect(onChange).toHaveBeenCalled();
+  });
+});

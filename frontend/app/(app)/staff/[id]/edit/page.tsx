@@ -60,7 +60,11 @@ import {
 import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
 
 import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
-import { StaffFormFields, type StaffFormState } from '../../_components/StaffFormFields';
+import {
+  StaffFormFields,
+  staffContactErrors,
+  type StaffFormState,
+} from '../../_components/StaffFormFields';
 import { EventsCard } from '../_components/EventsCard';
 import { OverrideAddDialog } from '../_components/OverrideAddDialog';
 import { OverrideEditDialog } from '../_components/OverrideEditDialog';
@@ -100,6 +104,9 @@ function fromStaff(staff: StaffRead): StaffFormState {
     is_trainee: staff.is_trainee ?? false,
     qualification: staff.qualification ?? '',
     note: staff.note ?? '',
+    phone: staff.phone_display ?? staff.phone ?? '',
+    contact_email: staff.contact_email ?? '',
+    notify_channel: staff.notify_channel ?? 'none',
   };
 }
 
@@ -115,6 +122,9 @@ function toPayload(form: StaffFormState): StaffUpdate {
     is_trainee: form.is_trainee,
     qualification: form.qualification === '' ? null : form.qualification,
     note: form.note.trim() || null,
+    phone: form.phone.trim() || null,
+    contact_email: form.contact_email.trim() || null,
+    notify_channel: form.notify_channel,
   };
 }
 
@@ -252,6 +262,11 @@ export default function StaffEditPage() {
         if (!fieldErrors[key]) fieldErrors[key] = issue.message;
       }
       setErrors(fieldErrors);
+      return;
+    }
+    const contactErrors = staffContactErrors(form);
+    if (Object.keys(contactErrors).length > 0) {
+      setErrors(contactErrors);
       return;
     }
 

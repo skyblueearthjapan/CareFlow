@@ -5,6 +5,8 @@
  * Role gate: admin/manager only.
  *
  * W10-FE3: EditPageStickyBar を追加し、未保存変更を画面下部で通知する。
+ * 連絡先 (管理者だけ・contacts-phone-email-design-2026-11-05 §7): 患者の保存が成功した後に
+ * PUT。連絡先だけ失敗したら誤りを出して入力を残す (画面は移らない)。
  */
 'use client';
 
@@ -43,6 +45,7 @@ import {
 
 import { PatientForm, type PatientFormHandle } from '../../_components/PatientForm';
 import { PatientFixedVisitsPanel } from '../../_components/PatientFixedVisitsPanel';
+import { usePatientContactsEditor } from '@/components/patients/usePatientContactsEditor';
 import { isAdminRole } from '@/lib/rbac';
 
 export default function EditPatientPage() {
@@ -77,6 +80,8 @@ export default function EditPatientPage() {
 
   // sticky bar 用: フォームの isDirty 状態と外部操作ハンドル
   const [isFormDirty, setIsFormDirty] = useState(false);
+  const contacts = usePatientContactsEditor({ patientId: id, enabled: canEdit });
+  const anyDirty = isFormDirty || contacts.dirty;
   // 訪問頻度: フォームの保存前の頻度 (固定訪問の枠の欄の注意書き用)。
   const [formVisitFrequency, setFormVisitFrequency] = useState<string | null | undefined>(
     undefined,
@@ -84,11 +89,11 @@ export default function EditPatientPage() {
   const formHandleRef = useRef<PatientFormHandle>(null);
 
   const handleBeforeNavigate = useCallback(() => {
-    if (!isFormDirty) return true;
+    if (!anyDirty) return true;
     return window.confirm(
       '未保存の変更があります。移動するとこれらの変更は失われます。続行しますか？',
     );
-  }, [isFormDirty]);
+  }, [anyDirty]);
 
   const handleDelete = async () => {
     try {
@@ -108,22 +113,34 @@ export default function EditPatientPage() {
     initialStatus: patient?.status as string | null | undefined,
   });
 
-  const handleSubmit = useMemo(
-    () =>
-      statusGate.wrapSubmit(async (values: PatientFormValues, { omitStatus }) => {
-        setErrorMessage(null);
-        try {
-          await updateMutation.mutateAsync(omitStatus ? { ...values, __omitStatus: true } : values);
-          toast.success('患者情報を更新しました');
-          router.push(`/patients/${id}`);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : '不明なエラー';
-          setErrorMessage(msg);
-          toast.error(`更新に失敗しました: ${msg}`);
-        }
-      }),
-    [statusGate, updateMutation, router, id],
-  );
+  const handleSubmit = useMemo(() => {
+    const gated = statusGate.wrapSubmit(async (values: PatientFormValues, { omitStatus }) => {
+      setErrorMessage(null);
+      try {
+        await updateMutation.mutateAsync(omitStatus ? { ...values, __omitStatus: true } : values);
+        toast.success('患者情報を更新しました');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '不明なエラー';
+        setErrorMessage(msg);
+        toast.error(`更新に失敗しました: ${msg}`);
+        return;
+      }
+      // 連絡先は患者の保存の後。失敗したら画面に残す (入力を消さない)。
+      if (await contacts.saveTo(id)) router.push(`/patients/${id}`);
+    });
+    return async (values: PatientFormValues) => {
+      // 形の違う電話・メールは、患者の保存より先に止める (片方だけ保存しない)。
+      if (!contacts.validate()) {
+        toast.error('連絡先の電話番号・メールアドレスを確かめてください');
+        return;
+      }
+      await gated(values);
+    };
+  }, [statusGate, updateMutation, router, id, contacts]);
+
+  const retryContacts = async () => {
+    if (contacts.validate() && (await contacts.saveTo(id))) router.push(`/patients/${id}`);
+  };
 
   if (status === 'loading' || isLoading) {
     return (
@@ -208,7 +225,26 @@ export default function EditPatientPage() {
         formRef={formHandleRef}
         patientId={id}
         onVisitFrequencyChange={setFormVisitFrequency}
+        contacts={
+          contacts.enabled && contacts.loaded
+            ? {
+                value: contacts.drafts,
+                onChange: contacts.setDrafts,
+                errorMessage: contacts.error,
+                onRetry: contacts.failed ? () => void retryContacts() : undefined,
+                retrying: contacts.saving,
+              }
+            : undefined
+        }
       />
+      {contacts.enabled && contacts.loadError ? (
+        <Alert variant="destructive">
+          <AlertTitle>連絡先を読み込めませんでした</AlertTitle>
+          <AlertDescription>
+            画面を開き直してください。連絡先はこのまま保存しても変わりません。
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <PatientFixedVisitsPanel
         patientId={id}
@@ -222,10 +258,13 @@ export default function EditPatientPage() {
       <PatientStatusChangeDialog {...statusGate.dialogProps} />
 
       <EditPageStickyBar
-        isDirty={isFormDirty}
-        isSaving={updateMutation.isPending}
+        isDirty={anyDirty}
+        isSaving={updateMutation.isPending || contacts.saving}
         errorMessage={errorMessage ?? undefined}
-        onDiscard={() => formHandleRef.current?.resetForm()}
+        onDiscard={() => {
+          formHandleRef.current?.resetForm();
+          contacts.reset();
+        }}
         onSave={() => formHandleRef.current?.submitForm()}
       />
 
