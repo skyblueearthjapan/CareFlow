@@ -76,6 +76,18 @@ class Staff(Base, TimestampMixin):
     # 勤務表の 1 行目に出す役職 (任意。無ければ職種)。
     kinmu_title: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # 連絡先 (mig 0109・docs/plans/contacts-phone-email-design-2026-11-05.md §2・§4)。
+    # 見られるのは管理者とご本人だけ (API で null にする)。電話は数字だけ (digits)。
+    phone: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    phone_display: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    phone_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # 連絡用のメール (ログイン用の users.email とは別)。
+    contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # お知らせの手段 sms / email / none (今は使わない・初期 none)。
+    notify_channel: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="none", server_default="none"
+    )
+
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -100,6 +112,8 @@ class Staff(Base, TimestampMixin):
             "(admin_hours_per_day >= 0 AND admin_hours_per_day <= 24)",
             name="admin_hours_per_day",
         ),
+        # mig 0109 と同じ CHECK。
+        CheckConstraint("notify_channel IN ('sms','email','none')", name="notify_channel"),
         # W41 後続 cross-review HIGH#3: concurrent import で staff.code 重複が
         # silent に通る race を防ぐ partial UNIQUE INDEX. PostgreSQL では
         # ``deleted_at IS NULL AND code IS NOT NULL`` のみを対象にする

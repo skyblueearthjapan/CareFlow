@@ -30,12 +30,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
+from app.models.patient_contact import PatientContact
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff
 from app.services.office_labels import office_code_short_pairs, ordered_office_codes
 from app.services.patient_excel.schema import (
+    BOOL_JA_VALUES,
     COMMENT_AUTHOR,
+    CONTACT_CHANNEL_EN_TO_JA,
+    CONTACT_COL_INDEX,
+    CONTACT_COLUMNS,
+    CONTACT_CONSENT_EN_TO_JA,
+    CONTACT_PATIENT_ID_COMMENT_TEXT,
+    CONTACT_RELATION_EN_TO_JA,
     GRID_BLOCK_HEIGHT,
     GRID_COLS_PER_DAY,
     GRID_COURSE_ORDER,
@@ -62,6 +70,7 @@ from app.services.patient_excel.schema import (
     PFV_VISIT_WEEK_EN_TO_JA,
     SEX_EN_TO_JA,
     SEX_RESTRICTION_EN_TO_JA,
+    SHEET_CONTACTS,
     SHEET_PATIENTS,
     SHEET_PFV_EDIT,
     SHEET_PFV_GRID,
@@ -255,6 +264,93 @@ async def load_ng_staff_codes_by_patient(
             missing_code_count,
         )
     return {pid: ",".join(sorted(codes)) for pid, codes in codes_by_patient.items() if codes}
+
+
+async def load_contacts_by_patient(
+    db: AsyncSession,
+    patient_ids: Sequence[UUID],
+) -> dict[UUID, list[PatientContact]]:
+    """患者 ID → 連絡先 (sort_order 順) を 1 クエリで読む (連絡先シート用)."""
+    if not patient_ids:
+        return {}
+    rows = (
+        await db.scalars(
+            select(PatientContact)
+            .where(PatientContact.patient_id.in_(list(patient_ids)))
+            .order_by(PatientContact.patient_id, PatientContact.sort_order)
+        )
+    ).all()
+    out: dict[UUID, list[PatientContact]] = {}
+    for c in rows:
+        out.setdefault(c.patient_id, []).append(c)
+    return out
+
+
+def _write_contacts_sheet(
+    wb: Workbook,
+    patients: Sequence[Patient],
+    contacts_by_patient: dict[UUID, list[PatientContact]],
+) -> None:
+    """「連絡先」シート (設計 §6). 連絡先が無い方はご本人の空の行を 1 行 (お知らせを送る=はい)."""
+    ws: Worksheet = wb.create_sheet(title=SHEET_CONTACTS)
+    _set_header_row(ws, CONTACT_COLUMNS)
+    _attach_dropdowns(ws, CONTACT_COLUMNS)
+    _attach_header_comment(ws, "patient_id", CONTACT_COLUMNS, text=CONTACT_PATIENT_ID_COMMENT_TEXT)
+    yes, no = BOOL_JA_VALUES
+
+    def col(key: str) -> int:
+        return CONTACT_COL_INDEX[key] + 1
+
+    # 電話番号は文字として扱う (数値になると先頭の 0 が消える)。行を塗ると max_row が
+    # 伸びるので、列の書式で付け、データ行は書くときに付ける。
+    ws.column_dimensions[get_column_letter(col("phone"))].number_format = "@"
+
+    row_idx = 2
+    for patient in patients:
+        contacts = contacts_by_patient.get(patient.id) or []
+        base = {
+            "patient_id": str(patient.id),
+            "patient_code": patient.code,
+            "patient_name": patient.name,
+        }
+        if not contacts:
+            values = {
+                **base,
+                "relation": CONTACT_RELATION_EN_TO_JA["self"],
+                "is_notify_target": yes,
+                "notify_channel": CONTACT_CHANNEL_EN_TO_JA["sms"],
+                "consent_status": CONTACT_CONSENT_EN_TO_JA["unconfirmed"],
+            }
+            rows = [values]
+        else:
+            rows = [
+                {
+                    **base,
+                    "relation": CONTACT_RELATION_EN_TO_JA.get(c.relation, c.relation),
+                    "name": c.name,
+                    "relation_note": c.relation_note,
+                    "phone": c.phone_display or c.phone,
+                    "email": c.email,
+                    "is_notify_target": yes if c.is_notify_target else no,
+                    "notify_channel": CONTACT_CHANNEL_EN_TO_JA.get(
+                        c.notify_channel, c.notify_channel
+                    ),
+                    "consent_status": CONTACT_CONSENT_EN_TO_JA.get(
+                        c.consent_status, c.consent_status
+                    ),
+                    "consent_on": c.consent_on.isoformat() if c.consent_on else None,
+                }
+                for c in contacts
+            ]
+        for values in rows:
+            for key, value in values.items():
+                if value is not None:
+                    ws.cell(row=row_idx, column=col(key), value=value)
+            ws.cell(row=row_idx, column=col("phone")).number_format = "@"
+            row_idx += 1
+    data_rows = row_idx - 2
+    for key in ("patient_id", "patient_name", "consent_on"):
+        _shade_id_column_data_rows(ws, key, CONTACT_COLUMNS, data_row_count=data_rows)
 
 
 def _write_patient_row(
@@ -745,6 +841,7 @@ def build_workbook(
     course_templates: Sequence[CourseTemplate],
     crossoffice_warnings_out: list[str] | None = None,
     ng_staff_codes_by_patient: dict[UUID, str] | None = None,
+    contacts_by_patient: dict[UUID, list[PatientContact]] | None = None,
 ) -> Workbook:
     """テンプレート + データ込みのワークブックを構築する.
 
@@ -860,6 +957,9 @@ def build_workbook(
         offices=offices,
         course_templates=course_templates,
     )
+
+    # ---- 連絡先シート (mig 0109・設計 §6) ----
+    _write_contacts_sheet(wb, patients, contacts_by_patient or {})
 
     return wb
 

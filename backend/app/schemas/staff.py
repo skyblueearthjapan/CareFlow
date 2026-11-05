@@ -19,7 +19,15 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.services.contacts import (
+    ContactValueError,
+    classify_email,
+    classify_phone,
+    is_carrier_email,
+    sms_capable_for_kind,
+)
 
 # ---------------------------------------------------------------------------
 # 列挙値 (§4.2 / Wave 0-C `app.schemas.v2.staff` と同一定義)
@@ -48,6 +56,24 @@ QualificationV2 = Literal["看護師", "准看護師", "理学療法士", "作�
 EmploymentTypeV2 = Literal["full_time", "part_time"]
 # 勤務表の勤務形態の区分。
 WorkFormV2 = Literal["A", "B", "C", "D"]
+# お知らせの手段 (mig 0109・docs/plans/contacts-phone-email-design-2026-11-05.md §2)。今は使わない。
+StaffNotifyChannelV2 = Literal["sms", "email", "none"]
+
+
+def _check_phone(v: str | None) -> str | None:
+    """電話番号の形を確かめる (保存の形への変換は API がする)."""
+    try:
+        classify_phone(v)
+    except ContactValueError as exc:
+        raise ValueError(f"電話番号：{exc.message}") from exc
+    return v
+
+
+def _check_email(v: str | None) -> str | None:
+    try:
+        return classify_email(v)
+    except ContactValueError as exc:
+        raise ValueError(f"連絡用メール：{exc.message}") from exc
 
 
 class StaffBase(BaseModel):
@@ -99,6 +125,23 @@ class StaffBase(BaseModel):
 class StaffCreate(StaffBase):
     """POST /api/v1/staff リクエスト (W1-BE2)."""
 
+    # 連絡先 (mig 0109)。phone は生の入力 (API で digits・表示・種類に分ける)。
+    phone: str | None = Field(default=None, max_length=40, description="電話番号 (生の入力)")
+    contact_email: str | None = Field(
+        default=None, max_length=255, description="連絡用メール (ログイン用とは別)"
+    )
+    notify_channel: StaffNotifyChannelV2 = Field(default="none", description="お知らせの手段")
+
+    @field_validator("phone")
+    @classmethod
+    def _valid_phone(cls, v: str | None) -> str | None:
+        return _check_phone(v)
+
+    @field_validator("contact_email")
+    @classmethod
+    def _valid_email(cls, v: str | None) -> str | None:
+        return _check_email(v)
+
 
 class StaffUpdate(BaseModel):
     """PATCH /api/v1/staff/{id} リクエスト (W1-BE2). 全フィールド optional."""
@@ -119,6 +162,27 @@ class StaffUpdate(BaseModel):
     work_form: WorkFormV2 | None = None
     admin_hours_per_day: float | None = Field(default=None, ge=0, le=24)
     kinmu_title: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, max_length=40)
+    contact_email: str | None = Field(default=None, max_length=255)
+    notify_channel: StaffNotifyChannelV2 | None = None
+
+    @field_validator("phone")
+    @classmethod
+    def _valid_phone(cls, v: str | None) -> str | None:
+        return _check_phone(v)
+
+    @field_validator("contact_email")
+    @classmethod
+    def _valid_email(cls, v: str | None) -> str | None:
+        return _check_email(v)
+
+    @field_validator("notify_channel")
+    @classmethod
+    def _notify_channel_not_null(cls, v: StaffNotifyChannelV2 | None) -> StaffNotifyChannelV2:
+        # 省略は「変えない」。明示の null は DB の NOT NULL で 500 になるので 422 にする。
+        if v is None:
+            raise ValueError("notify_channel は sms・email・none のどれかを指定してください")
+        return v
 
     @field_validator("employment_type")
     @classmethod
@@ -148,3 +212,33 @@ class StaffRead(StaffBase):
     # (GET/LIST は from_attributes の解決で既定 0)。FE 表示配線は Phase E。
     purged_accompaniment_links: int = 0
     purged_accompaniment_defaults: int = 0
+    # 連絡先 (mig 0109)。管理者かご本人 (users.staff_id が一致) でないときは API が null にする。
+    phone: str | None = None
+    phone_display: str | None = None
+    phone_kind: str | None = None
+    sms_capable: bool | None = None
+    contact_email: str | None = None
+    email_carrier: bool | None = None
+    notify_channel: str | None = None
+
+    @model_validator(mode="after")
+    def _derive_contact_flags(self) -> StaffRead:
+        self.sms_capable = sms_capable_for_kind(self.phone_kind)
+        self.email_carrier = is_carrier_email(self.contact_email)
+        return self
+
+    def masked_contacts(self) -> StaffRead:
+        """連絡先を null にした写し (管理者・ご本人以外に返すとき)."""
+        return self.model_copy(update=dict.fromkeys(STAFF_CONTACT_READ_FIELDS))
+
+
+#: 管理者・ご本人以外には null で返す欄。
+STAFF_CONTACT_READ_FIELDS: tuple[str, ...] = (
+    "phone",
+    "phone_display",
+    "phone_kind",
+    "sms_capable",
+    "contact_email",
+    "email_carrier",
+    "notify_channel",
+)

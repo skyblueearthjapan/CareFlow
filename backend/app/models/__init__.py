@@ -35,6 +35,7 @@ from app.models.office import Office, OfficeCity
 from app.models.office_area_prompt_dismissal import OfficeAreaPromptDismissal
 from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient, PatientAllowedOffice
+from app.models.patient_contact import PatientContact
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.patient_same_address_link import PatientSameAddressLink
@@ -109,6 +110,7 @@ __all__ = [
     "OfficeFeatureFlag",
     "Patient",
     "PatientAllowedOffice",
+    "PatientContact",
     "PatientFixedVisit",
     "PatientNgStaff",
     "PatientSameAddressLink",

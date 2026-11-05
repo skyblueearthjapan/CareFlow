@@ -21,6 +21,8 @@ import logging
 import unicodedata
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import date, datetime, time
 from io import BytesIO
 from typing import Any
@@ -33,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
+from app.models.patient_contact import PatientContact
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.patient_same_address_link import PatientSameAddressLink
@@ -42,6 +45,16 @@ from app.schemas.v2.patient_excel import (
     PatientExcelImportRow,
     PatientExcelImportSummary,
     PfvExcelImportRow,
+)
+from app.services.contacts import (
+    MAX_PATIENT_CONTACTS,
+    ContactRow,
+    ContactValueError,
+    build_contact_row,
+    contacts_equal,
+    normalize_patient_contacts,
+    previous_from_models,
+    replace_patient_contacts,
 )
 from app.services.office_assigner import PreloadedOfficeCities, load_office_cities_index
 from app.services.office_labels import office_code_short_pairs
@@ -53,6 +66,10 @@ from app.services.patient_address import (
     visit_coords_needed,
 )
 from app.services.patient_excel.schema import (
+    CONTACT_CHANNEL_JA_TO_EN,
+    CONTACT_COL_INDEX,
+    CONTACT_CONSENT_JA_TO_EN,
+    CONTACT_RELATION_JA_TO_EN,
     INSURANCE_JA_TO_EN,
     INSURANCE_VALUES,
     LEGACY_PFV_COLUMNS,
@@ -73,6 +90,7 @@ from app.services.patient_excel.schema import (
     SEX_RESTRICTION_NONE_JA,
     SEX_RESTRICTION_VALUES,
     SEX_VALUES,
+    SHEET_CONTACTS,
     SHEET_PATIENTS,
     SHEET_PFV,
     SHEET_PFV_EDIT,
@@ -3193,3 +3211,338 @@ async def apply_changes(
             if obj is not None:
                 await db.delete(obj)
     await db.flush()
+
+
+# ---------------------------------------------------------------------------
+# 連絡先シート (mig 0109・docs/plans/contacts-phone-email-design-2026-11-05.md §6)
+# ---------------------------------------------------------------------------
+# * シートが無いファイル (古い形) は連絡先に触らない (``parse_contacts_sheet`` が None)。
+# * ``patient_id`` でつなぐ。空なら ``patient_code`` (同じ取り込みで作る患者か、今の患者)。
+# * 電話・メール・お名前・続柄が全部空の行は飛ばす。飛ばした後に行が無い方は今の連絡先を
+#   変えない (Excel では消さない)。行がある方は ``normalize_patient_contacts`` を通して置きかえ。
+# * 同意の日: 同じ方の今の連絡先で電話かメールが同じものの状態が同じなら引き継ぎ、
+#   それ以外で confirmed / ng なら今日 (JST)。
+# * 行の誤りは取り込みの preview の誤りの一覧 (patient_rows の error) に出し、その方の
+#   連絡先は取り込まない。
+
+
+@dataclass
+class ContactSheetOp:
+    """1 人分の連絡先の置きかえ."""
+
+    patient_id: UUID
+    patient_code: str | None
+    rows: list[ContactRow]
+    row_number: int
+    old_count: int
+    notices: list[str] = dataclass_field(default_factory=list)
+
+
+@dataclass
+class ContactSheetPlan:
+    ops: list[ContactSheetOp] = dataclass_field(default_factory=list)
+    error_rows: list[PatientExcelImportRow] = dataclass_field(default_factory=list)
+
+
+def _contact_cell(row: tuple[Any, ...], key: str) -> Any:
+    idx = CONTACT_COL_INDEX[key]
+    return row[idx] if idx < len(row) else None
+
+
+def _read_contact_phone(value: Any) -> str | None:
+    """電話のセル. 数値になっていたら先頭の 0 を補う (Excel が 0 を落とすため)."""
+    if _is_blank(value):
+        return None
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, int):
+        s = str(value)
+        return s if s.startswith("0") else "0" + s
+    return str(value).strip()
+
+
+def _read_contact_enum(value: Any, ja_to_en: dict[str, str], *, default: str | None) -> str:
+    """日本語 (ドロップダウンの値) か英語の値を英語にする. 空は default."""
+    if _is_blank(value):
+        if default is None:
+            raise ValueError("が空です")
+        return default
+    raw = unicodedata.normalize("NFKC", str(value)).strip()
+    squeezed = "".join(raw.split())
+    for ja, en in ja_to_en.items():
+        if squeezed == "".join(unicodedata.normalize("NFKC", ja).split()) or raw.lower() == en:
+            return en
+    raise ValueError(f"の「{raw}」は選べる値ではありません")
+
+
+def _match_existing_ids(
+    rows: list[ContactRow], existing: Sequence[PatientContact]
+) -> list[ContactRow]:
+    """電話かメールが同じ今の連絡先の id を引き継ぐ (同意の日を引き継ぐため)."""
+    used: set[UUID] = set()
+    for r in rows:
+        for c in existing:
+            if c.id in used:
+                continue
+            if (r.phone and r.phone == c.phone) or (r.email and r.email == c.email):
+                r.id = c.id
+                used.add(c.id)
+                break
+    return rows
+
+
+async def parse_contacts_sheet(
+    db: AsyncSession,
+    *,
+    file_bytes: bytes,
+    patient_rows: Sequence[PatientExcelImportRow],
+    skip_patient_ids: set[UUID] | None = None,
+) -> ContactSheetPlan | None:
+    """「連絡先」シートを読んで、置きかえの計画と誤りの行を返す. シートが無ければ None.
+
+    ``patient_rows`` は患者シートの結果 (同じ取り込みで作る患者・削除する患者を知るため)。
+    ``skip_patient_ids`` の患者 (完全置換で消える患者など) の行は黙って飛ばす。
+    """
+    wb = load_workbook(BytesIO(file_bytes), data_only=True)
+    if SHEET_CONTACTS not in wb.sheetnames:
+        return None
+    ws = wb[SHEET_CONTACTS]
+
+    alive = (
+        await db.execute(select(Patient.id, Patient.code).where(Patient.deleted_at.is_(None)))
+    ).all()
+    alive_ids = {pid for pid, _ in alive}
+    alive_by_code = {code: pid for pid, code in alive if code}
+    skip_ids = set(skip_patient_ids or ())
+    # 同じ取り込みで作る・戻す患者 (新しい行も patient_id を先に決めてある)。
+    importing_ids: set[UUID] = set()
+    importing_by_code: dict[str, UUID] = {}
+    for pr in patient_rows:
+        if pr.operation == "delete" and pr.patient_id is not None:
+            skip_ids.add(pr.patient_id)
+        elif pr.operation in ("new", "update", "noop") and pr.patient_id is not None:
+            importing_ids.add(pr.patient_id)
+            if pr.patient_code:
+                importing_by_code[pr.patient_code] = pr.patient_id
+
+    plan = ContactSheetPlan()
+    # patient_id → [(行番号, ContactRow)]
+    grouped: dict[UUID, list[tuple[int, ContactRow]]] = {}
+    codes: dict[UUID, str | None] = {}
+    errored: set[UUID] = set()
+
+    def add_error(
+        r_idx: int, key: UUID | None, pid: UUID | None, code: str | None, msg: str
+    ) -> None:
+        if key is not None:
+            errored.add(key)
+        plan.error_rows.append(
+            PatientExcelImportRow(
+                row_number=r_idx,
+                patient_id=pid,
+                patient_code=code,
+                operation="error",
+                error_message=(
+                    f"「{SHEET_CONTACTS}」シート {r_idx} 行目: {msg}"
+                    "（この方の連絡先は取り込みません）"
+                ),
+            )
+        )
+
+    for r_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        if _row_is_empty(row):
+            continue
+        code = _read_str(_contact_cell(row, "patient_code"))
+        try:
+            pid = _read_uuid(_contact_cell(row, "patient_id"))
+        except ValueError:
+            add_error(r_idx, None, None, code, "patient_id の形が違います")
+            continue
+
+        if pid is None and code is not None:
+            pid = importing_by_code.get(code) or alive_by_code.get(code)
+            if pid is None:
+                add_error(
+                    r_idx,
+                    None,
+                    None,
+                    code,
+                    "患者が見つかりません（patient_code を確かめてください）",
+                )
+                continue
+        if pid is None:
+            add_error(r_idx, None, None, code, "patient_id か patient_code を入れてください")
+            continue
+        if pid in skip_ids:
+            continue
+        if pid not in alive_ids and pid not in importing_ids:
+            add_error(r_idx, None, pid, code, "知らない patient_id です")
+            continue
+        key = pid
+        codes.setdefault(pid, code)
+
+        name = _read_str(_contact_cell(row, "name"))
+        note = _read_str(_contact_cell(row, "relation_note"))
+        phone_raw = _read_contact_phone(_contact_cell(row, "phone"))
+        email_raw = _read_str(_contact_cell(row, "email"))
+        if not any((name, note, phone_raw, email_raw)):
+            continue  # 中身の無い行 (書き出しのご本人の空の行など) は飛ばす。
+
+        try:
+            relation = _read_contact_enum(
+                _contact_cell(row, "relation"), CONTACT_RELATION_JA_TO_EN, default=None
+            )
+        except ValueError as exc:
+            add_error(r_idx, key, pid, code, f"送り先{exc}")
+            continue
+        try:
+            channel = _read_contact_enum(
+                _contact_cell(row, "notify_channel"), CONTACT_CHANNEL_JA_TO_EN, default="sms"
+            )
+        except ValueError as exc:
+            add_error(r_idx, key, pid, code, f"手段{exc}")
+            continue
+        try:
+            consent = _read_contact_enum(
+                _contact_cell(row, "consent_status"),
+                CONTACT_CONSENT_JA_TO_EN,
+                default="unconfirmed",
+            )
+        except ValueError as exc:
+            add_error(r_idx, key, pid, code, f"同意{exc}")
+            continue
+        try:
+            target = _read_bool(_contact_cell(row, "is_notify_target")) or False
+        except ValueError:
+            add_error(r_idx, key, pid, code, "お知らせを送るは「はい」か「いいえ」にしてください")
+            continue
+        try:
+            contact = build_contact_row(
+                relation=relation,
+                name=name,
+                relation_note=note,
+                phone=phone_raw,
+                email=email_raw,
+                is_notify_target=target,
+                notify_channel=channel,
+                consent_status=consent,
+            )
+        except ContactValueError as exc:
+            label = "メールアドレス" if exc.kind == "email" else "電話番号"
+            add_error(r_idx, key, pid, code, f"{label}：{exc.message}")
+            continue
+        grouped.setdefault(key, []).append((r_idx, contact))
+
+    existing_by_patient: dict[UUID, list[PatientContact]] = {}
+    if grouped:
+        for c in (
+            await db.scalars(
+                select(PatientContact)
+                .where(PatientContact.patient_id.in_(list(grouped)))
+                .order_by(PatientContact.patient_id, PatientContact.sort_order)
+            )
+        ).all():
+            existing_by_patient.setdefault(c.patient_id, []).append(c)
+
+    for pid, items in grouped.items():
+        if pid in errored:
+            continue
+        key = pid
+        code = codes.get(pid)
+        rows = [c for _, c in items]
+        if len(rows) > MAX_PATIENT_CONTACTS:
+            add_error(
+                items[MAX_PATIENT_CONTACTS][0],
+                key,
+                pid,
+                code,
+                f"連絡先は 1 人 {MAX_PATIENT_CONTACTS} 件までです",
+            )
+            continue
+        self_rows = [n for n, r in items if r.relation == "self"]
+        if len(self_rows) > 1:
+            add_error(self_rows[1], key, pid, code, "ご本人の連絡先は 1 件までです")
+            continue
+        existing = existing_by_patient.get(pid, [])
+        rows = _match_existing_ids(rows, existing)
+        result = normalize_patient_contacts(rows, previous_from_models(existing))
+        if contacts_equal(existing, result.rows):
+            continue
+        plan.ops.append(
+            ContactSheetOp(
+                patient_id=pid,
+                patient_code=code,
+                rows=result.rows,
+                row_number=items[0][0],
+                old_count=len(existing),
+                notices=result.notices,
+            )
+        )
+    return plan
+
+
+def merge_contact_plan_into_rows(
+    plan: ContactSheetPlan, patient_rows: list[PatientExcelImportRow]
+) -> tuple[int, int, int]:
+    """連絡先の計画を preview の患者の行に載せる.
+
+    * 置きかえる方の患者の行に ``contacts`` の差分 (件数だけ・番号は出さない) を足す。
+      その行が noop なら update にする (連絡先だけ変えたときも反映できるように)。
+    * 患者シートに行が無い方は、連絡先シートの行番号で update の行を足す。
+    * 誤りの行を足す。
+
+    戻り値: (足した誤りの行の数, noop から update にした数, 足した update の行の数)。
+    呼び出し側が summary をそろえる。
+    """
+    noop_to_update = 0
+    added_updates = 0
+    for op in plan.ops:
+        change_list = [
+            PatientExcelChange(
+                field="contacts",
+                old_value=f"{op.old_count} 件",
+                new_value=f"{len(op.rows)} 件",
+            )
+        ]
+        if op.notices:
+            change_list.append(
+                PatientExcelChange(field="contacts_notice", new_value=" / ".join(op.notices))
+            )
+        target: PatientExcelImportRow | None = None
+        for pr in patient_rows:
+            if pr.operation == "error":
+                continue
+            if pr.patient_id == op.patient_id:
+                target = pr
+                break
+        if target is None:
+            patient_rows.append(
+                PatientExcelImportRow(
+                    row_number=op.row_number,
+                    patient_id=op.patient_id,
+                    patient_code=op.patient_code,
+                    operation="update",
+                    changes=change_list,
+                )
+            )
+            added_updates += 1
+            continue
+        target.changes.extend(change_list)
+        if target.operation == "noop":
+            target.operation = "update"
+            noop_to_update += 1
+    patient_rows.extend(plan.error_rows)
+    return len(plan.error_rows), noop_to_update, added_updates
+
+
+async def apply_contact_plan(db: AsyncSession, plan: ContactSheetPlan | None) -> int:
+    """連絡先の計画を DB に反映する (患者の反映の後・commit は呼び出し側). 反映した人数を返す."""
+    if plan is None:
+        return 0
+    # 患者の反映 (新しい患者の INSERT) を先に DB へ出す。
+    await db.flush()
+    for op in plan.ops:
+        await replace_patient_contacts(db, op.patient_id, op.rows, source="excel")
+    return len(plan.ops)

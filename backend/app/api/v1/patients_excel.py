@@ -32,12 +32,16 @@ from app.schemas.v2.patient_excel import (
 )
 from app.services.patient_excel.exporter import (
     build_workbook,
+    load_contacts_by_patient,
     load_ng_staff_codes_by_patient,
     workbook_to_bytes,
 )
 from app.services.patient_excel.importer import (
     apply_changes,
+    apply_contact_plan,
+    merge_contact_plan_into_rows,
     parse_and_diff,
+    parse_contacts_sheet,
     unknown_office_code_message,
 )
 from app.services.patient_excel.karte import (
@@ -151,6 +155,7 @@ async def export_all(
         course_templates=list(course_templates),
         crossoffice_warnings_out=crossoffice_warnings,
         ng_staff_codes_by_patient=ng_staff_codes_by_patient,
+        contacts_by_patient=await load_contacts_by_patient(db, [p.id for p in patients]),
     )
     content = workbook_to_bytes(wb)
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -197,6 +202,8 @@ async def import_excel(
             db,
             file_bytes=content,
         )
+        # 連絡先シート (設計 §6)。シートが無い古い形は None (連絡先に触らない)。
+        contact_plan = await parse_contacts_sheet(db, file_bytes=content, patient_rows=patient_rows)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -207,6 +214,13 @@ async def import_excel(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Excel ファイルの読み込みに失敗しました: {type(exc).__name__}: {exc}",
         ) from exc
+    if contact_plan is not None:
+        errors, noop_to_update, added_updates = merge_contact_plan_into_rows(
+            contact_plan, patient_rows
+        )
+        summary.patients_error += errors
+        summary.patients_noop -= noop_to_update
+        summary.patients_update += noop_to_update + added_updates
 
     transaction_applied = False
     if not dry_run:
@@ -214,7 +228,8 @@ async def import_excel(
         # patient_ops / pfv_ops は parse_and_diff の段階で error 行を除外済み
         # (error は op=None を返すので *_ops に積まれない).
         # 有効な op が 0 件 (全 error or 全 noop) の場合は commit せず False を返す.
-        if not patient_ops and not pfv_ops:
+        has_contact_ops = contact_plan is not None and bool(contact_plan.ops)
+        if not patient_ops and not pfv_ops and not has_contact_ops:
             return PatientExcelImportResponse(
                 summary=summary,
                 patient_rows=patient_rows,
@@ -223,6 +238,7 @@ async def import_excel(
             )
         try:
             await apply_changes(db, patient_ops=patient_ops, pfv_ops=pfv_ops)
+            await apply_contact_plan(db, contact_plan)
             await db.commit()
             transaction_applied = True
         except IntegrityError as exc:
@@ -298,6 +314,13 @@ async def replace_all_endpoint(
             pfv_ops,
             patients_to_soft_delete_preview,
         ) = await parse_and_diff_replace_all(db, file_bytes=content)
+        # 連絡先シート (設計 §6)。消える患者の行は飛ばす。誤りが 1 件でもあれば全体を止める。
+        contact_plan = await parse_contacts_sheet(
+            db,
+            file_bytes=content,
+            patient_rows=patient_rows,
+            skip_patient_ids={UUID(p["patient_id"]) for p in patients_to_soft_delete_preview},
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -308,6 +331,13 @@ async def replace_all_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Excel ファイルの読み込みに失敗しました: {type(exc).__name__}: {exc}",
         ) from exc
+
+    if contact_plan is not None:
+        errors, noop_to_update, added_updates = merge_contact_plan_into_rows(
+            contact_plan, patient_rows
+        )
+        summary.patients_error += errors
+        summary.patients_to_update += noop_to_update + added_updates
 
     transaction_applied = False
     if not dry_run:
@@ -331,6 +361,7 @@ async def replace_all_endpoint(
                 pfv_ops=pfv_ops,
                 patient_ids_to_soft_delete=patient_ids_to_soft_delete,
             )
+            await apply_contact_plan(db, contact_plan)
             await db.commit()
             transaction_applied = True
         except IntegrityError as exc:

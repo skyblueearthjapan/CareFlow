@@ -37,6 +37,7 @@ from app.api.v1 import (
     office_feature_flags,
     offices,
     op_log,
+    patient_contacts,
     patient_fixed_visits,
     patient_location,
     patient_ng_staff,
@@ -113,6 +114,9 @@ api_router.include_router(patient_location.router, prefix="/patients", tags=["pa
 # patient_fixed_visits / patient_qr と同方針で patients.router の **前** に登録し、
 # /patients/{id}/ng-staff が /patients/{id} の catch-all に吸われないようにする。
 api_router.include_router(patient_ng_staff.router, prefix="/patients", tags=["patient-ng-staff"])
+# 患者様の連絡先 (contacts-phone-email-design-2026-11-05 §5)。/patients/contacts/summary が
+# /patients/{patient_id} に吸われないよう、patients.router の **前** に登録する。
+api_router.include_router(patient_contacts.router, prefix="/patients", tags=["patient-contacts"])
 api_router.include_router(patients.router, prefix="/patients", tags=["patients"])
 # 今週 visits → 固定枠 (PFV) 個別反映 sub-resource.
 # POST /patients/{patient_id}/sync-week-visits-to-fixed

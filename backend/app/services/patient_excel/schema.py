@@ -1083,3 +1083,75 @@ PFV_PATIENT_ID_COMMENT_TEXT: Final = (
     "同 import 内の新規患者と自動で紐付きます。"
 )
 COMMENT_AUTHOR: Final = "システム"
+
+
+# ---------------------------------------------------------------------------
+# 連絡先シート (mig 0109・docs/plans/contacts-phone-email-design-2026-11-05.md §6)
+# ---------------------------------------------------------------------------
+# 1 行 = 連絡先 1 件 (患者 1 人に 0〜3 行)。シートが無いファイル (古い形) は連絡先に触らない。
+
+SHEET_CONTACTS: Final = "連絡先"
+
+CONTACT_RELATION_EN_TO_JA: Final[dict[str, str]] = {
+    "self": "ご本人",
+    "family": "ご家族",
+    "facility": "施設",
+    "care_manager": "ケアマネ",
+    "other": "その他",
+}
+CONTACT_RELATION_JA_VALUES: Final[tuple[str, ...]] = tuple(CONTACT_RELATION_EN_TO_JA.values())
+CONTACT_RELATION_JA_TO_EN: Final[dict[str, str]] = {
+    ja: en for en, ja in CONTACT_RELATION_EN_TO_JA.items()
+}
+CONTACT_CHANNEL_EN_TO_JA: Final[dict[str, str]] = {"sms": "SMS", "email": "メール"}
+CONTACT_CHANNEL_JA_VALUES: Final[tuple[str, ...]] = tuple(CONTACT_CHANNEL_EN_TO_JA.values())
+CONTACT_CHANNEL_JA_TO_EN: Final[dict[str, str]] = {
+    ja: en for en, ja in CONTACT_CHANNEL_EN_TO_JA.items()
+}
+CONTACT_CONSENT_EN_TO_JA: Final[dict[str, str]] = {
+    "unconfirmed": "未確認",
+    "confirmed": "確認済み",
+    "ng": "NG 回答",
+}
+CONTACT_CONSENT_JA_VALUES: Final[tuple[str, ...]] = tuple(CONTACT_CONSENT_EN_TO_JA.values())
+CONTACT_CONSENT_JA_TO_EN: Final[dict[str, str]] = {
+    ja: en for en, ja in CONTACT_CONSENT_EN_TO_JA.items()
+}
+
+CONTACT_COLUMNS: Final[list[dict[str, object]]] = [
+    {
+        "key": "patient_id",
+        "header": "patient_id (※システム用・編集不要)",
+        "width": 38,
+        "dropdown": None,
+    },
+    {"key": "patient_code", "header": "patient_code", "width": 14, "dropdown": None},
+    {"key": "patient_name", "header": "患者名", "width": 18, "dropdown": None},
+    {"key": "relation", "header": "送り先", "width": 12, "dropdown": CONTACT_RELATION_JA_VALUES},
+    {"key": "name", "header": "お名前", "width": 18, "dropdown": None},
+    {"key": "relation_note", "header": "続柄・施設名", "width": 18, "dropdown": None},
+    {"key": "phone", "header": "電話番号", "width": 16, "dropdown": None},
+    {"key": "email", "header": "メールアドレス", "width": 28, "dropdown": None},
+    {
+        "key": "is_notify_target",
+        "header": "お知らせを送る",
+        "width": 14,
+        "dropdown": BOOL_JA_VALUES,
+    },
+    {"key": "notify_channel", "header": "手段", "width": 10, "dropdown": CONTACT_CHANNEL_JA_VALUES},
+    {"key": "consent_status", "header": "同意", "width": 12, "dropdown": CONTACT_CONSENT_JA_VALUES},
+    {
+        "key": "consent_on",
+        "header": "同意の日 (※自動・編集不要)",
+        "width": 16,
+        "dropdown": None,
+    },
+]
+CONTACT_COL_INDEX: Final[dict[str, int]] = {
+    str(col["key"]): i for i, col in enumerate(CONTACT_COLUMNS)
+}
+CONTACT_PATIENT_ID_COMMENT_TEXT: Final = (
+    "システム用・編集不要。\n"
+    "この列が空の行は patient_code で患者につなぎます (同じ取り込みで新しく作る患者も可)。\n"
+    "患者名の列は見るためだけです (取り込みでは読みません)。"
+)

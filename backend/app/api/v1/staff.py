@@ -28,6 +28,7 @@ from app.models.staff import Staff
 from app.models.user import User, normalize_user_role
 from app.schemas.staff import StaffCreate, StaffRead, StaffUpdate
 from app.services.accompaniment import delete_future_accompaniments
+from app.services.contacts import classify_phone
 from app.services.manager_course_sync import sync_manager_course_templates
 
 router = APIRouter()
@@ -64,6 +65,24 @@ async def _purge_future_accompaniments(
         monday=monday,
         include_defaults=include_defaults,
     )
+
+
+def _phone_columns(raw: str | None) -> dict[str, str | None]:
+    """生の電話番号を保存の 3 列 (digits・表示・種類) にする (形は schema で確かめ済み)."""
+    info = classify_phone(raw)
+    return {
+        "phone": info.digits if info else None,
+        "phone_display": info.display if info else None,
+        "phone_kind": info.kind if info else None,
+    }
+
+
+def _to_read(staff: Staff, user: User) -> StaffRead:
+    """連絡先は管理者かご本人 (users.staff_id が一致) だけに返す (設計 §5)."""
+    read = StaffRead.model_validate(staff, from_attributes=True)
+    if normalize_user_role(user.role) == "admin" or user.staff_id == staff.id:
+        return read
+    return read.masked_contacts()
 
 
 async def _commit_or_409(db) -> None:
@@ -103,7 +122,7 @@ async def list_staff(
             ),
         ),
     ] = None,
-) -> list[Staff]:
+) -> list[StaffRead]:
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
@@ -137,7 +156,7 @@ async def list_staff(
         .offset(offset)
     )
     rows = (await db.scalars(stmt)).all()
-    return list(rows)
+    return [_to_read(row, user) for row in rows]
 
 
 @router.get("/{staff_id}", response_model=StaffRead, summary="Get staff by id")
@@ -145,7 +164,7 @@ async def get_staff(
     staff_id: UUID,
     db: DbDep,
     user: CurrentActiveUser,
-) -> Staff:
+) -> StaffRead:
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
@@ -156,7 +175,7 @@ async def get_staff(
     staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return staff
+    return _to_read(staff, user)
 
 
 @router.post(
@@ -171,6 +190,7 @@ async def create_staff(
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Staff:
     data = payload.model_dump()
+    data.update(_phone_columns(data.pop("phone", None)))
     # コード空欄 = 自動採番 (S + ゼロ埋め3桁・staff_code.py)。手入力はそのまま尊重。
     if not (data.get("code") or "").strip():
         from app.services.staff_code import generate_next_staff_code
@@ -205,7 +225,10 @@ async def update_staff(
     prev_role = staff.role
     prev_status = staff.status
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    if "phone" in updates:
+        updates.update(_phone_columns(updates.pop("phone")))
+    for field, value in updates.items():
         setattr(staff, field, value)
     await db.flush()
 
