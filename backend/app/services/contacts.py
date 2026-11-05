@@ -70,6 +70,8 @@ def today_jst() -> date:
 # ハイフンに見える文字 (NFKC の後に残るもの)。frontend の HYPHEN_LIKE と同じ。
 _HYPHEN_LIKE = re.compile("[‐-―−ーｰ﹣－]")
 _PLUS81 = re.compile(r"^\+81[\s-]*")
+# BOM と幅の無い文字 (Excel・コピーで混ざる)。前後を削る前に除く。frontend の ZERO_WIDTH と同じ。
+_ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ class ContactValueError(ValueError):
 
 
 def _normalize_phone_input(raw: str) -> str:
-    s = unicodedata.normalize("NFKC", raw)
+    s = _ZERO_WIDTH.sub("", unicodedata.normalize("NFKC", raw))
     s = _HYPHEN_LIKE.sub("-", s).strip()
     return _PLUS81.sub("0", s)
 
@@ -109,23 +111,24 @@ def classify_phone(raw: str | None) -> PhoneInfo | None:
     s = _normalize_phone_input(str(raw))
     if s == "":
         return None
-    digits = re.sub(r"\D", "", s)
+    # 数字は ASCII の 0-9 だけ (ほかの文字の数字は frontend と同じく数えない)。
+    digits = re.sub(r"[^0-9]", "", s)
 
     # 0800 + 7 桁 (11 桁) は 080 の携帯と同じ並びになるので、フリーダイヤルを先に見る
     # (0800 はフリーダイヤルの番号で、携帯の 080 番号は 0800 で始まらない)。
-    if re.fullmatch(r"0120\d{6}|0800\d{7}", digits):
+    if re.fullmatch(r"0120[0-9]{6}|0800[0-9]{7}", digits):
         return PhoneInfo(digits, "freedial", False, f"{digits[:4]}-{digits[4:7]}-{digits[7:]}")
-    if re.fullmatch(r"0[789]0\d{8}", digits):
+    if re.fullmatch(r"0[789]0[0-9]{8}", digits):
         return PhoneInfo(digits, "mobile", True, _format_344(digits))
-    if re.fullmatch(r"060\d{8}", digits):
+    if re.fullmatch(r"060[0-9]{8}", digits):
         return PhoneInfo(digits, "mobile_new", None, _format_344(digits))
-    if re.fullmatch(r"050\d{8}", digits):
+    if re.fullmatch(r"050[0-9]{8}", digits):
         return PhoneInfo(digits, "ip", False, _format_344(digits))
-    if re.fullmatch(r"020\d{8}", digits):
+    if re.fullmatch(r"020[0-9]{8}", digits):
         return PhoneInfo(digits, "data", False, _format_344(digits))
-    if re.fullmatch(r"0[1-9]\d{8}", digits):
+    if re.fullmatch(r"0[1-9][0-9]{8}", digits):
         # 固定電話: 入力にハイフンがあればその位置 (区切りを除いた並びが digits と一致するとき)。
-        kept = re.sub(r"[^\d-]", "", s)
+        kept = re.sub(r"[^0-9-]", "", s)
         kept = re.sub(r"-+", "-", kept).strip("-")
         display = kept if "-" in kept and kept.replace("-", "") == digits else digits
         return PhoneInfo(digits, "landline", False, display)
@@ -176,7 +179,7 @@ def classify_email(raw: str | None) -> str | None:
     """メールを小文字・前後空白除去で返す. 空は None. 形が違えば :class:`ContactValueError`."""
     if raw is None:
         return None
-    s = str(raw).strip().lower()
+    s = _ZERO_WIDTH.sub("", str(raw)).strip().lower()
     if s == "":
         return None
     if not _EMAIL_RE.match(s):
@@ -268,12 +271,14 @@ def build_contact_row(
     email_n = classify_email(email)
     name_n = (name or "").strip() or None
     note_n = (relation_note or "").strip() or None
+    is_self = relation == "self"
     return ContactRow(
         id=id,
         relation=relation,
         # ご本人はお名前を持たない (画面は「本人（〇〇 様）」と自動で出す)。
-        name=None if relation == "self" else name_n,
-        relation_note=note_n,
+        # 続柄・施設名もご本人は持たない (画面の draftToWrite と同じ)。
+        name=None if is_self else name_n,
+        relation_note=None if is_self else note_n,
         phone=info.digits if info else None,
         phone_display=info.display if info else None,
         phone_kind=info.kind if info else None,
@@ -378,6 +383,24 @@ COMPARED_FIELDS: tuple[str, ...] = (
 )
 
 
+def db_error_label(exc: BaseException) -> str:
+    """DB の例外を、型の名前と制約名だけにする (ログ・画面へ番号・メールを出さないため).
+
+    ``str(exc)`` は SQL と値 (電話・メール) を含むので使わない。
+    """
+    name = type(exc).__name__
+    orig = getattr(exc, "orig", None)
+    constraint = None
+    for src in (orig, getattr(orig, "__cause__", None)):
+        if src is None:
+            continue
+        diag = getattr(src, "diag", None)
+        constraint = getattr(src, "constraint_name", None) or getattr(diag, "constraint_name", None)
+        if constraint:
+            break
+    return f"{name} ({constraint})" if constraint else name
+
+
 async def load_patient_contacts(db: AsyncSession, patient_id: uuid.UUID) -> list[PatientContact]:
     return list(
         (
@@ -385,6 +408,8 @@ async def load_patient_contacts(db: AsyncSession, patient_id: uuid.UUID) -> list
                 select(PatientContact)
                 .where(PatientContact.patient_id == patient_id)
                 .order_by(PatientContact.sort_order)
+                # 同じ session に古い値 (別の session が書いた後) が残っていても、DB の値で読み直す。
+                .execution_options(populate_existing=True)
             )
         ).all()
     )

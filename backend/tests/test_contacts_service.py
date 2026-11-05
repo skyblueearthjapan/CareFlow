@@ -18,6 +18,7 @@ from app.services.contacts import (
     build_contact_row,
     classify_email,
     classify_phone,
+    db_error_label,
     effective_channel,
     is_carrier_email,
     normalize_patient_contacts,
@@ -68,6 +69,21 @@ def test_classify_phone_table(raw, digits, kind, sms, display) -> None:
     )
 
 
+def test_classify_phone_bom_and_zero_width() -> None:
+    # BOM・幅の無い文字は除く (frontend の試験と同じ例)。
+    info = classify_phone("\ufeff+81 90-1234-5678")
+    assert info is not None and (info.digits, info.kind) == ("09012345678", "mobile")
+    info = classify_phone("090\u200b-1234-5678\u2060")
+    assert info is not None and info.digits == "09012345678"
+
+
+def test_classify_phone_non_ascii_digits_are_not_digits() -> None:
+    # アラビア・インドの数字は NFKC でも 0-9 にならない。frontend と同じく数えない。
+    with pytest.raises(ContactValueError) as exc:
+        classify_phone("090" + "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667")
+    assert exc.value.kind == "too_short"
+
+
 def test_freedial_0800_is_checked_before_mobile() -> None:
     # 0800 + 7 桁は 080 の携帯と同じ 11 桁。0800 はフリーダイヤルなので先に当てる。
     info = classify_phone("0800-000-0000")
@@ -115,6 +131,8 @@ def test_classify_email() -> None:
     assert classify_email("  Taro@Example.COM ") == "taro@example.com"
     assert classify_email("") is None
     assert classify_email(None) is None
+    assert classify_email("\ufeffTaro@Example.com\u200b") == "taro@example.com"
+    assert classify_email("\ufeff") is None
     for bad in ("taro", "taro@", "taro@example", "ta ro@example.com"):
         with pytest.raises(ContactValueError) as exc:
             classify_email(bad)
@@ -152,7 +170,7 @@ def test_build_contact_row_self_has_no_name() -> None:
     row = build_contact_row(
         relation="self",
         name="見本 太郎",
-        relation_note=None,
+        relation_note="本人の携帯",
         phone="090-0000-0000",
         email=None,
         is_notify_target=True,
@@ -160,6 +178,7 @@ def test_build_contact_row_self_has_no_name() -> None:
         consent_status="unconfirmed",
     )
     assert row.name is None
+    assert row.relation_note is None
     assert row.phone == "09000000000"
     assert row.phone_display == "090-0000-0000"
 
@@ -270,3 +289,19 @@ def test_normalize_does_not_mutate_input() -> None:
     rows = [_row("self", consent_status="ng", is_notify_target=True)]
     normalize_patient_contacts(rows, {}, today=TODAY)
     assert rows[0].is_notify_target is True
+
+
+def test_db_error_label_has_no_values() -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    class _OrigError(Exception):
+        constraint_name = "uq_patient_contacts_self"
+
+    exc = IntegrityError(
+        "INSERT INTO patient_contacts (phone, email) VALUES (?, ?)",
+        ("09000000000", "a@example.com"),
+        _OrigError("duplicate 09000000000"),
+    )
+    label = db_error_label(exc)
+    assert label == "IntegrityError (uq_patient_contacts_self)"
+    assert db_error_label(ValueError("a@example.com")) == "ValueError"

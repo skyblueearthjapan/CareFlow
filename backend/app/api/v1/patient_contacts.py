@@ -14,12 +14,14 @@ PUT /patients/{patient_id}/contacts   → 全部置きかえ (+ 自動で移し�
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.audit_log import AuditLog
@@ -38,6 +40,7 @@ from app.services.contacts import (
     ContactValueError,
     build_contact_row,
     changed_field_names,
+    db_error_label,
     effective_channel,
     is_carrier_email,
     load_patient_contacts,
@@ -46,6 +49,8 @@ from app.services.contacts import (
     replace_patient_contacts,
     sms_capable_for_kind,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -196,20 +201,29 @@ async def put_patient_contacts(
     changed = changed_field_names(existing, result.rows)
     before_count = len(existing)
 
-    saved = await replace_patient_contacts(
-        db, patient_id, result.rows, source="manual", existing=existing
-    )
-    db.add(
-        AuditLog(
-            actor_user_id=actor.id,
-            action=ACTION_CONTACTS_UPDATE,
-            target_table="patient_contacts",
-            target_id=str(patient_id),
-            # 番号・メールそのものは書かない (件数と変わった欄名だけ)。
-            before={"count": before_count},
-            after={"count": len(saved), "changed_fields": changed},
+    try:
+        saved = await replace_patient_contacts(
+            db, patient_id, result.rows, source="manual", existing=existing
         )
-    )
-    await db.commit()
+        db.add(
+            AuditLog(
+                actor_user_id=actor.id,
+                action=ACTION_CONTACTS_UPDATE,
+                target_table="patient_contacts",
+                target_id=str(patient_id),
+                # 番号・メールそのものは書かない (件数と変わった欄名だけ)。
+                before={"count": before_count},
+                after={"count": len(saved), "changed_fields": changed},
+            )
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        # 同時に保存されたなど。例外の文には番号・メールが入るので、型と制約名だけを残す。
+        await db.rollback()
+        logger.warning("patient_contacts put IntegrityError: %s", db_error_label(exc))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="連絡先を保存できませんでした（同時に保存された可能性があります）。もう一度保存してください",
+        ) from None
     contacts = await load_patient_contacts(db, patient_id)
     return ContactList(contacts=[contact_to_read(c) for c in contacts], notices=result.notices)

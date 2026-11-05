@@ -144,6 +144,8 @@ async def test_import_replaces_and_roundtrip_is_noop(client, db) -> None:
             {
                 **_base(p),
                 "relation": "ご本人",
+                # ご本人の続柄は画面と同じく持たない (保存しない)。
+                "relation_note": "本人の携帯",
                 "phone": "090-0000-0000",
                 "is_notify_target": "いいえ",
                 "notify_channel": "SMS",
@@ -181,6 +183,7 @@ async def test_import_replaces_and_roundtrip_is_noop(client, db) -> None:
     saved = await _contacts(db, p)
     assert [c.relation for c in saved] == ["self", "family"]
     assert saved[0].phone == "09000000000" and saved[0].phone_kind == "mobile"
+    assert saved[0].relation_note is None
     assert saved[0].consent_status == "confirmed" and saved[0].consent_on is not None
     assert saved[1].email == "hanako@example.com" and saved[1].is_notify_target is True
     assert {c.source for c in saved} == {"excel"}

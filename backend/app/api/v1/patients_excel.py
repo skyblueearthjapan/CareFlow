@@ -30,6 +30,7 @@ from app.schemas.v2.patient_excel import (
     PatientExcelImportResponse,
     PatientExcelReplaceAllResponse,
 )
+from app.services.contacts import db_error_label
 from app.services.patient_excel.exporter import (
     build_workbook,
     load_contacts_by_patient,
@@ -245,7 +246,7 @@ async def import_excel(
             # 同時 import で patient_code が衝突するなど、DB 制約違反.
             # 生 IntegrityError を user に晒さず日本語メッセージで 409 を返す.
             await db.rollback()
-            logger.warning("patients_excel import IntegrityError: %s", exc)
+            logger.warning("patients_excel import IntegrityError: %s", db_error_label(exc))
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -257,7 +258,7 @@ async def import_excel(
             await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"DB 反映時にエラーが発生しました: {type(exc).__name__}: {exc}",
+                detail=f"DB 反映時にエラーが発生しました: {db_error_label(exc)}",
             ) from exc
 
     return PatientExcelImportResponse(
@@ -366,7 +367,7 @@ async def replace_all_endpoint(
             transaction_applied = True
         except IntegrityError as exc:
             await db.rollback()
-            logger.warning("patients_excel replace_all IntegrityError: %s", exc)
+            logger.warning("patients_excel replace_all IntegrityError: %s", db_error_label(exc))
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -378,7 +379,7 @@ async def replace_all_endpoint(
             await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"DB 反映時にエラーが発生しました: {type(exc).__name__}: {exc}",
+                detail=f"DB 反映時にエラーが発生しました: {db_error_label(exc)}",
             ) from exc
 
     return PatientExcelReplaceAllResponse(
@@ -569,7 +570,7 @@ async def import_karte(
             transaction_applied = True
         except IntegrityError as exc:
             await db.rollback()
-            logger.warning("patients_excel karte import IntegrityError: %s", exc)
+            logger.warning("patients_excel karte import IntegrityError: %s", db_error_label(exc))
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -581,7 +582,7 @@ async def import_karte(
             await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"DB 反映時にエラーが発生しました: {type(exc).__name__}: {exc}",
+                detail=f"DB 反映時にエラーが発生しました: {db_error_label(exc)}",
             ) from exc
 
     return PatientExcelImportResponse(

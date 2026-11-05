@@ -26,9 +26,13 @@ export type PhoneResult =
 /** ハイフンに見える文字 (NFKC の後に残るもの)。 */
 const HYPHEN_LIKE = /[‐-―−ーｰ﹣－]/g;
 
+/** BOM と幅の無い文字 (Excel・コピーで混ざる)。前後を削る前に除く。backend の _ZERO_WIDTH と同じ。 */
+const ZERO_WIDTH = /[\u200b\u200c\u200d\u2060\ufeff]/g;
+
 function normalizeInput(raw: string): string {
   return raw
     .normalize('NFKC')
+    .replace(ZERO_WIDTH, '')
     .replace(HYPHEN_LIKE, '-')
     .trim()
     .replace(/^\+81[\s-]*/, '0');
@@ -43,11 +47,12 @@ export function classifyPhone(raw: string | null | undefined): PhoneResult | nul
   if (raw == null) return null;
   const s = normalizeInput(raw);
   if (s === '') return null;
-  const digits = s.replace(/\D/g, '');
+  // 数字は ASCII の 0-9 だけ (backend と同じ)。
+  const digits = s.replace(/[^0-9]/g, '');
   if (digits === '') return { ok: false, digits, error: 'bad_format' };
 
   // 0800+7 桁は 080 の携帯と同じ 11 桁なので、フリーダイヤルを先に見る (backend と同じ順)。
-  if (/^(0120\d{6}|0800\d{7})$/.test(digits)) {
+  if (/^(0120[0-9]{6}|0800[0-9]{7})$/.test(digits)) {
     return {
       ok: true,
       digits,
@@ -56,22 +61,22 @@ export function classifyPhone(raw: string | null | undefined): PhoneResult | nul
       display: `${digits.slice(0, 4)}-${digits.slice(4, 7)}-${digits.slice(7)}`,
     };
   }
-  if (/^0[789]0\d{8}$/.test(digits)) {
+  if (/^0[789]0[0-9]{8}$/.test(digits)) {
     return { ok: true, digits, kind: 'mobile', smsCapable: true, display: format344(digits) };
   }
-  if (/^060\d{8}$/.test(digits)) {
+  if (/^060[0-9]{8}$/.test(digits)) {
     return { ok: true, digits, kind: 'mobile_new', smsCapable: null, display: format344(digits) };
   }
-  if (/^050\d{8}$/.test(digits)) {
+  if (/^050[0-9]{8}$/.test(digits)) {
     return { ok: true, digits, kind: 'ip', smsCapable: false, display: format344(digits) };
   }
-  if (/^020\d{8}$/.test(digits)) {
+  if (/^020[0-9]{8}$/.test(digits)) {
     return { ok: true, digits, kind: 'data', smsCapable: false, display: format344(digits) };
   }
-  if (/^0[1-9]\d{8}$/.test(digits)) {
+  if (/^0[1-9][0-9]{8}$/.test(digits)) {
     // 固定電話: 入力にハイフンがあればその位置 (区切りを除いた並びが digits と一致するとき)。
     const kept = s
-      .replace(/[^\d-]/g, '')
+      .replace(/[^0-9-]/g, '')
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '');
     const display = kept.includes('-') && kept.replace(/-/g, '') === digits ? kept : digits;
@@ -113,7 +118,7 @@ export type EmailResult = { ok: true; email: string; carrier: boolean } | { ok: 
 /** メールの見分け。空文字・null は null (メールなし)。 */
 export function classifyEmail(raw: string | null | undefined): EmailResult | null {
   if (raw == null) return null;
-  const s = raw.trim().toLowerCase();
+  const s = raw.replace(ZERO_WIDTH, '').trim().toLowerCase();
   if (s === '') return null;
   if (!EMAIL_RE.test(s)) return { ok: false };
   return { ok: true, email: s, carrier: CARRIER_RE.test(s) };

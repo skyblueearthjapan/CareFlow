@@ -46,6 +46,27 @@ describe('classifyPhone', () => {
     expect(classifyPhone(raw)).toMatchObject({ ok: false, error });
   });
 
+  it('BOM・幅の無い文字は除く (backend と同じ例)', () => {
+    expect(classifyPhone('\ufeff+81 90-1234-5678')).toMatchObject({
+      ok: true,
+      digits: '09012345678',
+      kind: 'mobile',
+    });
+    expect(classifyPhone('090\u200b-1234-5678\u2060')).toMatchObject({
+      ok: true,
+      digits: '09012345678',
+    });
+  });
+
+  it('アラビア・インドの数字は数えない (backend と同じく誤り)', () => {
+    expect(classifyPhone('090' + '\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667')).toMatchObject(
+      {
+        ok: false,
+        error: 'too_short',
+      },
+    );
+  });
+
   it('空・null は番号なし', () => {
     expect(classifyPhone('')).toBeNull();
     expect(classifyPhone('   ')).toBeNull();
@@ -64,6 +85,14 @@ describe('classifyPhone', () => {
 });
 
 describe('classifyEmail', () => {
+  it('BOM・幅の無い文字は除く (backend と同じ例)', () => {
+    expect(classifyEmail('﻿Taro@Example.com​')).toEqual({
+      ok: true,
+      email: 'taro@example.com',
+      carrier: false,
+    });
+    expect(classifyEmail('﻿')).toBeNull();
+  });
   it('小文字・前後の空白を除く', () => {
     expect(classifyEmail('  Hanako@Example.JP ')).toEqual({
       ok: true,

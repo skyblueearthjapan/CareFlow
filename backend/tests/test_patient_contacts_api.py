@@ -122,20 +122,44 @@ async def test_put_and_get_contacts(client, db) -> None:
 async def test_put_keeps_consent_on_by_id_and_moves_target(client, db) -> None:
     admin = await _make_user(db, email="c-admin2@example.com", role="admin")
     patient = await _make_patient(db, code="C-2")
-    res = await client.put(
-        _url(patient),
-        headers=_bearer(admin),
-        json={
-            "contacts": [{**SELF, "is_notify_target": False}, {**FAMILY, "is_notify_target": True}]
-        },
+    # 同意の日が昔の連絡先を、この試験の session で直に作る。
+    # (前は 1 回目の PUT の後にこの session で consent_on を書きかえていたが、試験の DB は
+    #  接続 1 本を共有するため、前の要求の後片づけの ROLLBACK と重なって書きかえが消えることがあった。)
+    self_id, fam_id = uuid.uuid4(), uuid.uuid4()
+    db.add_all(
+        [
+            PatientContact(
+                id=self_id,
+                patient_id=patient.id,
+                sort_order=0,
+                relation="self",
+                phone="09000000000",
+                phone_display="090-0000-0000",
+                phone_kind="mobile",
+                is_notify_target=False,
+                notify_channel="sms",
+                consent_status="unconfirmed",
+            ),
+            PatientContact(
+                id=fam_id,
+                patient_id=patient.id,
+                sort_order=1,
+                relation="family",
+                name="見本 花子",
+                relation_note="長女",
+                phone="0430000000",
+                phone_display="043-000-0000",
+                phone_kind="landline",
+                email="hanako@example.com",
+                is_notify_target=True,
+                notify_channel="email",
+                consent_status="confirmed",
+                consent_on=date(2026, 10, 1),
+            ),
+        ]
     )
-    assert res.status_code == 200, res.text
-    first = res.json()["contacts"]
-
-    # 同意の日を昔の日にしておき、id を付けて送ると引き継ぐ。
-    row = await db.get(PatientContact, uuid.UUID(first[1]["id"]))
-    row.consent_on = date(2026, 10, 1)
     await db.commit()
+    first = [{"id": str(self_id)}, {"id": str(fam_id)}]
 
     # 家族を外す (送る先 0 件) → ご本人へ移る。
     res = await client.put(
@@ -222,6 +246,24 @@ async def test_put_422(client, db, contacts, needle) -> None:
         .where(PatientContact.patient_id == patient.id)
     )
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_put_integrity_error_409_without_values(client, db, monkeypatch, caplog) -> None:
+    from app.api.v1 import patient_contacts as api
+
+    async def _boom(*_args, **_kwargs):
+        raise sa.exc.IntegrityError(
+            "INSERT INTO patient_contacts (phone) VALUES (?)", ("09000000000",), Exception("dup")
+        )
+
+    monkeypatch.setattr(api, "replace_patient_contacts", _boom)
+    admin = await _make_user(db, email="c-admin9@example.com", role="admin")
+    patient = await _make_patient(db, code="C-9")
+    res = await client.put(_url(patient), headers=_bearer(admin), json={"contacts": [SELF]})
+    assert res.status_code == 409, res.text
+    assert "09000000000" not in res.text and "INSERT" not in res.text
+    assert "09000000000" not in caplog.text and "INSERT" not in caplog.text
 
 
 @pytest.mark.asyncio
