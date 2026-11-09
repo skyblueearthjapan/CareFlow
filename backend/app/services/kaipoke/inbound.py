@@ -863,6 +863,12 @@ async def apply_inbound_items(
     move_release_by_add: dict[uuid.UUID, Visit] = {}
     # 移せなかったときの delete 側の文言 (打刻済みのため取り消していません)。
     move_delete_fallback: dict[uuid.UUID, str] = {}
+    # この実行の delete で取り消す、打刻の無い通常の予定 (visit id → delete の item id)。
+    # 移す先の枠に居ても、取り消し済みの枠と同じく退かしてよい (2026-11-09 レビュー:
+    # delete(13:00) + delete(14:00 打刻済み) + add(13:00) で 13:00 が復活し二重になった)。
+    same_run_delete_item_of: dict[uuid.UUID, uuid.UUID] = {}
+    # add が先に退かした枠の delete の item id (並びは delete が先なので通常は来ない保険)。
+    move_released_delete_items: set[uuid.UUID] = set()
     unplanned_deletes: list[tuple[CorrectionSheetItem, Visit]] = []
     for it in items:
         if it.action != "delete" or it.patient_id is None:
@@ -886,6 +892,8 @@ async def apply_inbound_items(
                 f"{td.month}/{td.day} {(it.before or {}).get('start_time') or ''} は"
                 f"{CHECKED_IN_KEEP_DETAIL}"
             )
+        elif uv.id not in checked_in_ids:
+            same_run_delete_item_of.setdefault(uv.id, it.id)
     if unplanned_deletes:
         candidates: list[
             tuple[int, int, CorrectionSheetItem, CorrectionSheetItem, Visit, Visit | None]
@@ -910,12 +918,16 @@ async def apply_inbound_items(
                     continue
                 release: Visit | None = None
                 if occupant is not None and occupant.id != uv.id:
-                    # 打刻済みの予定の移動に限り、枠に居るのが「取り消し済みで打刻の
-                    # 無い予定」なら、それを論理削除して移す (11/9 川上様の 13:00)。
+                    # 打刻済みの予定の移動に限り、枠に居るのが「取り消し済み (または
+                    # この実行の delete で取り消す) で打刻の無い予定」なら、それを論理
+                    # 削除して移す (11/9 川上様の 13:00)。
                     # らく助側の意思による取消 (⇧送信前) と旧形式の 2 名体制は退かさない。
                     if (
                         uv.id in move_visit_ids
-                        and occupant.status == VISIT_STATUS_CANCELLED
+                        and (
+                            occupant.status == VISIT_STATUS_CANCELLED
+                            or occupant.id in same_run_delete_item_of
+                        )
                         and occupant.id not in checked_in_ids
                         and occupant.source not in VISIT_SOURCES_LOCAL_CANCEL
                         and occupant.visit_group_id is None
@@ -1349,7 +1361,9 @@ async def apply_inbound_items(
                             if move_release is not None:
                                 # 取消行を論理削除して UNIQUE 枠を空ける。移動より**先に**
                                 # flush する (同じ flush に載せると UPDATE の順序次第で
-                                # 一意制約に当たる)。
+                                # 一意制約に当たる)。この実行の delete で取り消す枠は、
+                                # delete が先に済んでいれば cancelled のはず (念のため)。
+                                move_release.status = VISIT_STATUS_CANCELLED
                                 move_release.deleted_at = now
                                 _stamp_note(
                                     move_release,
@@ -1399,6 +1413,18 @@ async def apply_inbound_items(
                                 _remember_accompaniment(promote.id, accompaniment_sid2)
                             await db.flush()
                     except IntegrityError:
+                        # savepoint の巻き戻しで promote / move_release は期限切れになる。
+                        # async では期限切れ属性の遅延ロードが MissingGreenlet になるため
+                        # 読み直す (_cycle_close と同じ)。行ごと消えていれば索引から外す。
+                        for obj in (promote, move_release):
+                            if obj is None:
+                                continue
+                            try:
+                                await db.refresh(obj)
+                            except SQLAlchemyError:
+                                for key in [k for k, vv in index.items() if vv is obj]:
+                                    index.pop(key, None)
+                                db.expunge(obj)
                         _finish(
                             "failed",
                             "打刻済みの予定の移動で衝突しました（差分を取り直してください）"
@@ -1408,6 +1434,10 @@ async def apply_inbound_items(
                         )
                         continue
                     item.visit_id = promote.id
+                if move_release is not None:
+                    released_del = same_run_delete_item_of.get(move_release.id)
+                    if released_del is not None:
+                        move_released_delete_items.add(released_del)
                 for key in [
                     k
                     for k, vv in index.items()
@@ -1543,6 +1573,15 @@ async def apply_inbound_items(
             continue
 
         # --- 対象 visit の特定 ----------------------------------------------
+        if item.id in move_released_delete_items:
+            # 打刻済みの予定の移動先として、add が先にこの枠を取り消して整理した。
+            # 索引ではもう移した予定がこの時刻に居るので、引き直さずに終える。
+            _finish(
+                "cancelled",
+                f"{target_date.month}/{target_date.day} {before.get('start_time') or ''} をキャンセル",
+                target_date,
+            )
+            continue
         if item.patient_id is None:
             _finish("failed", "利用者名を CareFlow 患者に解決できませんでした", target_date)
             continue

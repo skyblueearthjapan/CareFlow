@@ -1274,3 +1274,106 @@ async def test_smart_checked_in_time_change_moves_visit(client, db, stub_kaipoke
     assert (visit.start_time, visit.status) == (time(13, 0), "completed")
     visits = await _patient_visits_on(db, seeded["patient"].id, TUE)
     assert sorted(v.start_time for v in visits) == [time(10, 0), time(13, 0)]
+
+
+# --- レビュー対応 (2026-11-09): 同じ取込で取り消す枠へ移す -------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_checked_in_move_releases_slot_deleted_in_same_run(db, dry_run: bool) -> None:
+    """13:00 (打刻なし) の delete + 14:00 (打刻済み) の delete + 13:00 の add → 二重にしない。"""
+    seeded = await _seed_week(db)
+    frame = await _add_visit(db, seeded, TUE, time(13, 0), time(13, 35))
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, frame, "13:00", "13:35"),
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, "13:00", "13:35"),
+        ],
+    )
+
+    summary = await _run(db, items, dry_run=dry_run)
+
+    assert (summary.added, summary.failed) == (0, 0), [r.detail for r in summary.results]
+    assert (summary.cancelled, summary.updated, summary.skipped) == (1, 1, 1)
+    by_item = {r.item_id: r for r in summary.results}
+    del13, del14, add_r = (by_item[str(it.id)] for it in items)
+    assert del13.outcome == "cancelled"
+    assert del14.outcome == "skipped" and "移しました" in del14.detail
+    assert add_r.outcome == "updated" and add_r.reason == "checked_in_moved"
+    assert "取り消し済みの枠を整理" in add_r.detail
+    await db.flush()
+    await db.refresh(frame)
+    await db.refresh(visit)
+    if dry_run:
+        assert (frame.status, frame.deleted_at) == ("planned", None)
+        assert visit.start_time == time(14, 0)
+        return
+    assert frame.status == "cancelled" and frame.deleted_at is not None
+    assert (visit.start_time, visit.status) == (time(13, 0), "completed")
+    visits = await _patient_visits_on(db, seeded["patient"].id, TUE)
+    assert sorted((v.start_time, v.status) for v in visits) == [
+        (time(10, 0), "planned"),
+        (time(13, 0), "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_checked_in_move_keeps_locally_cancelled_slot(db) -> None:
+    """移す先がらく助側の取消 (今週だけ取消) → 退かさず組まない (⇧送信前の意思を守る)。"""
+    seeded = await _seed_week(db)
+    frame = await _add_visit(db, seeded, TUE, time(13, 0), time(13, 35), status="cancelled")
+    frame.source = "manual_cancel"
+    await db.commit()
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, frame, "13:00", "13:35"),
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, "13:00", "13:35"),
+        ],
+    )
+
+    summary = await _run(db, items)
+
+    by_item = {r.item_id: r for r in summary.results}
+    _del13, del14, add_r = (by_item[str(it.id)] for it in items)
+    assert (del14.outcome, del14.reason) == ("failed", "checked_in")
+    assert add_r.outcome == "failed" and "らく助側で取消済み" in add_r.detail
+    await db.flush()
+    await db.refresh(frame)
+    await db.refresh(visit)
+    assert frame.deleted_at is None and frame.source == "manual_cancel"
+    assert visit.start_time == time(14, 0)
+
+
+@pytest.mark.asyncio
+async def test_checked_in_move_skips_grouped_visit(db) -> None:
+    """打刻済みでも visit_group_id の付いた旧形式の 2 名体制は移さない (要確認で人に渡す)。"""
+    import uuid
+
+    seeded = await _seed_week(db)
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    visit.visit_group_id = uuid.uuid4()
+    await db.commit()
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, "13:00", "13:35"),
+        ],
+    )
+
+    summary = await _run(db, items)
+
+    del_r = next(r for r in summary.results if r.action == "delete")
+    add_r = next(r for r in summary.results if r.action == "add")
+    assert (del_r.outcome, del_r.reason) == ("failed", "checked_in")
+    assert add_r.outcome == "added" and add_r.reason != "checked_in_moved"
+    await db.flush()
+    await db.refresh(visit)
+    assert visit.start_time == time(14, 0)
