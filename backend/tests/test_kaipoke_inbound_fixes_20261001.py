@@ -1010,3 +1010,267 @@ def test_engine_inbound_same_slot_before_service_match() -> None:
         ("delete", "09:00", ""),
         ("edit", "14:00", "09:00"),
     ]
+
+
+# --- 打刻済みの予定の時刻がカイポケで変わったとき (2026-11-09) -----------------------
+# docs/plans/inbound-checked-in-time-move-design-2026-11-09.md §5。
+# 11/9 の形: らく助は 14:00〜14:35 (准看) に打刻済み・カイポケは 13:00〜13:35 (正看)。
+# 区分が違うので diff は delete(14:00) + add(13:00) に割れる。
+
+
+TUE = date(2026, 7, 7)
+
+
+async def _seed_checked_in(db, seeded, start: time, end: time, *, status="completed") -> Visit:
+    """打刻の付いた通常の予定 (予定外ではない)。"""
+    v = await _add_visit(db, seeded, TUE, start, end, status=status)
+    await _checkin(db, v, seeded["staff"].id)
+    return v
+
+
+def test_engine_inbound_splits_checked_in_time_and_grade_change() -> None:
+    """時刻も区分も違う組は delete + add に割れる (diff engine は変えない・前提の確認)。"""
+    from app.services.diff.engine import compare_schedules_from_content
+
+    rakusuke = _csv(_row(TUE, time(14, 0), time(14, 35), STAFF_NAME, "精神基本療養費Ⅰ・准看"))
+    kaipoke = _csv(_row(TUE, time(13, 0), time(13, 35), STAFF_NAME, "精神基本療養費Ⅰ・正看"))
+    cs = compare_schedules_from_content(
+        rakusuke,
+        kaipoke,
+        target_week_start=6,
+        target_week_end=12,
+        normalize_names=True,
+        flag_grade_change=False,
+        prefer_same_slot=True,
+    )
+    assert sorted((c.action, c.start_time_from, c.start_time_to) for c in cs) == [
+        ("add", "", "13:00"),
+        ("delete", "14:00", ""),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_checked_in_delete_add_moves_visit(db, dry_run: bool) -> None:
+    """打刻済み 14:00 の delete と 13:00 の add → 1 件のまま 13:00 へ移す (打刻・完了は残す)。"""
+    seeded = await _seed_week(db)
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    visit.note = "看護師のメモ"
+    await db.commit()
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, "13:00", "13:35"),
+        ],
+    )
+
+    summary = await _run(db, items, dry_run=dry_run)
+
+    assert (summary.added, summary.cancelled, summary.failed) == (0, 0, 0), [
+        r.detail for r in summary.results
+    ]
+    assert (summary.updated, summary.skipped) == (1, 1)
+    assert {r.reason for r in summary.results} == {"checked_in_moved"}
+    add_r = next(r for r in summary.results if r.action == "add")
+    del_r = next(r for r in summary.results if r.action == "delete")
+    assert add_r.outcome == "updated" and "打刻済みの予定（14:00）" in add_r.detail
+    assert del_r.outcome == "skipped" and "移しました" in del_r.detail
+    await db.flush()
+    visits = await _patient_visits_on(db, seeded["patient"].id, TUE)
+    if dry_run:
+        assert sorted(v.start_time for v in visits) == [time(10, 0), time(14, 0)]
+        return
+    assert sorted(v.start_time for v in visits) == [time(10, 0), time(13, 0)]  # 二重にしない
+    await db.refresh(visit)
+    assert (visit.start_time, visit.end_time) == (time(13, 0), time(13, 35))
+    assert visit.status == "completed"
+    assert visit.is_unplanned is False
+    assert visit.course_id is not None
+    assert "看護師のメモ" in visit.note and "カイポケの時刻に合わせて移動" in visit.note
+    checkins = (
+        await db.scalars(select(VisitCheckin).where(VisitCheckin.visit_id == visit.id))
+    ).all()
+    assert len(checkins) == 1  # 打刻はそのまま付いている
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_checked_in_move_releases_cancelled_frame(db, dry_run: bool) -> None:
+    """移す先に取り消し済みで打刻の無い 13:00 → それを論理削除して移す (復活させない)。"""
+    seeded = await _seed_week(db)
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    frame = await _add_visit(db, seeded, TUE, time(13, 0), time(13, 35), status="cancelled")
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, "13:00", "13:35"),
+        ],
+    )
+
+    summary = await _run(db, items, dry_run=dry_run)
+
+    assert (summary.added, summary.failed, summary.updated, summary.skipped) == (0, 0, 1, 1), [
+        r.detail for r in summary.results
+    ]
+    add_r = next(r for r in summary.results if r.action == "add")
+    assert "取り消し済みの枠を整理" in add_r.detail
+    await db.flush()
+    await db.refresh(frame)
+    await db.refresh(visit)
+    if dry_run:
+        assert frame.deleted_at is None and frame.status == "cancelled"
+        assert visit.start_time == time(14, 0)
+        return
+    assert frame.deleted_at is not None and frame.status == "cancelled"
+    assert (visit.start_time, visit.status) == (time(13, 0), "completed")
+    visits = await _patient_visits_on(db, seeded["patient"].id, TUE)
+    assert sorted((v.start_time, v.status) for v in visits) == [
+        (time(10, 0), "planned"),
+        (time(13, 0), "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_checked_in_move_not_paired_when_slot_has_active_visit(db) -> None:
+    """移す先に有効な別の予定がある → 組まない (今のまま: delete は要確認・add は失敗)。"""
+    seeded = await _seed_week(db)
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    other = await _add_visit(db, seeded, TUE, time(13, 0), time(13, 35))
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, "13:00", "13:35"),
+        ],
+    )
+
+    summary = await _run(db, items)
+
+    del_r = next(r for r in summary.results if r.action == "delete")
+    add_r = next(r for r in summary.results if r.action == "add")
+    assert (del_r.outcome, del_r.reason) == ("failed", "checked_in")
+    assert "打刻済みのため取り消していません" in del_r.detail
+    assert add_r.outcome == "failed" and "同時刻の予定が既にあります" in add_r.detail
+    await db.flush()
+    await db.refresh(visit)
+    await db.refresh(other)
+    assert visit.start_time == time(14, 0)
+    assert other.status == "planned" and other.deleted_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("add_start", "add_end", "staff"),
+    [
+        ("13:00", "13:35", "佐藤　次郎"),  # 担当が違う
+        ("12:55", "13:30", STAFF_NAME),  # 差が 60 分を超える
+    ],
+)
+async def test_checked_in_move_not_paired(db, add_start: str, add_end: str, staff: str) -> None:
+    """担当が違う・差が 60 分を超える → 組まない (add は追加・delete は要確認)。"""
+    from tests.test_kaipoke_inbound import _seed_second_staff
+
+    seeded = await _seed_week(db)
+    await _seed_second_staff(db, seeded["office"])
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, add_start, add_end, staff=staff),
+        ],
+    )
+
+    summary = await _run(db, items)
+
+    del_r = next(r for r in summary.results if r.action == "delete")
+    add_r = next(r for r in summary.results if r.action == "add")
+    assert (del_r.outcome, del_r.reason) == ("failed", "checked_in")
+    assert add_r.outcome == "added"
+    assert "予定外" not in add_r.detail  # 予定外訪問の担当違いの注記は付けない
+    await db.flush()
+    await db.refresh(visit)
+    assert visit.start_time == time(14, 0)
+
+
+@pytest.mark.asyncio
+async def test_checked_in_move_pairs_nearest_one_to_one(db) -> None:
+    """打刻済み 12:00・13:00 と add 13:30・12:20 → 差の小さい順に 1 対 1 で組む。"""
+    seeded = await _seed_week(db)
+    v12 = await _seed_checked_in(db, seeded, time(12, 0), time(12, 35))
+    v13 = await _seed_checked_in(db, seeded, time(13, 0), time(13, 35))
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, v12, "12:00", "12:35"),
+            _delete_spec(seeded, v13, "13:00", "13:35"),
+            _add_spec(seeded, "13:30", "14:05"),
+            _add_spec(seeded, "12:20", "12:55"),
+        ],
+    )
+
+    summary = await _run(db, items)
+
+    assert (summary.added, summary.failed, summary.updated, summary.skipped) == (0, 0, 2, 2), [
+        r.detail for r in summary.results
+    ]
+    await db.flush()
+    await db.refresh(v12)
+    await db.refresh(v13)
+    assert v12.start_time == time(12, 20)
+    assert v13.start_time == time(13, 30)
+    visits = await _patient_visits_on(db, seeded["patient"].id, TUE)
+    assert len(visits) == 3  # 10:00 + 移した 2 件
+
+
+@pytest.mark.asyncio
+async def test_checked_in_move_delete_reports_kept_when_add_fails(db) -> None:
+    """組になった add が移せなかったら、delete は「打刻済みのため取り消していません」。"""
+    seeded = await _seed_week(db)
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    seeded["patient"].status = "admitted"  # 非稼働 → add は skipped (追加しない)
+    await db.commit()
+    items = await _sheet_items(
+        db,
+        [
+            _delete_spec(seeded, visit, "14:00", "14:35"),
+            _add_spec(seeded, "13:00", "13:35"),
+        ],
+    )
+
+    summary = await _run(db, items)
+
+    del_r = next(r for r in summary.results if r.action == "delete")
+    assert (del_r.outcome, del_r.reason) == ("failed", "checked_in")
+    assert del_r.detail.startswith("7/7 14:00 は打刻済みのため取り消していません")
+    assert summary.failed == 1 and summary.skipped == 1
+    await db.flush()
+    await db.refresh(visit)
+    assert visit.start_time == time(14, 0)
+
+
+@pytest.mark.asyncio
+async def test_smart_checked_in_time_change_moves_visit(client, db, stub_kaipoke) -> None:  # noqa: F811
+    """smart 取込の通しの形: 区分違いの時刻変更でも、打刻済みの予定は 1 件のまま移る。"""
+    seeded = await _seed_week(db)
+    visit = await _seed_checked_in(db, seeded, time(14, 0), time(14, 35))
+    admin = await _make_admin(db)
+    stub_kaipoke.by_month[MONTH] = _csv(
+        _kp_row(TUE, time(10, 0), time(10, 35)),
+        _row(TUE, time(13, 0), time(13, 35), STAFF_NAME, "精神基本療養費Ⅰ・正看"),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+    )
+
+    res = await _preview(client, admin)
+    assert res.status_code == 200, res.text
+    res2 = await _apply(client, admin, sheet_id=res.json()["sheetId"], dry_run=False)
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["diff"]["failed"] == 0, res2.text
+
+    await db.refresh(visit)
+    assert (visit.start_time, visit.status) == (time(13, 0), "completed")
+    visits = await _patient_visits_on(db, seeded["patient"].id, TUE)
+    assert sorted(v.start_time for v in visits) == [time(10, 0), time(13, 0)]
