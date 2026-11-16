@@ -144,6 +144,24 @@ class Settings(BaseSettings):
     # (kaipoke_cred_secret と同じ作法)。変えると保存済みのトークンは読めなくなり、接続し直しになる。
     google_drive_token_secret: str | None = Field(default=None)
 
+    # --- 予定のお知らせ (SMS・docs/plans/sms-notify-design-2026-11-16.md §7・§8) ---
+    # mock = 記録するだけ (既定) / kddi = KDDI Message Cast へ送る。
+    sms_provider: str = Field(default="mock")
+    # KDDI の接続の値 (秘密)。本番 VPS の秘密のファイルにだけ置く。コード・文書・試験に書かない。
+    # host はホスト名だけ (https:// は付けなくてよい)。
+    sms_kddi_host: str = Field(default="")
+    sms_kddi_agg_id: str = Field(default="")
+    sms_kddi_bot_id: str = Field(default="")
+    # 相手の携帯に出る送信元の番号 (+81 を付けない)。
+    sms_kddi_sms_number: str = Field(default="")
+    sms_kddi_basic_id: str = Field(default="")
+    sms_kddi_basic_password: str = Field(default="")
+    # 試験の守り: 番号 (数字だけ・カンマ区切り)。空でないあいだは、ここに無い番号へは
+    # kddi でも実際には送らず skipped として記録だけにする。
+    sms_test_allowlist: str = Field(default="")
+    # 送ってよい時間帯 (日本時間・"HH:MM-HH:MM"・終わりの時刻は含まない)。
+    sms_send_hours: str = Field(default="08:00-20:00")
+
     @field_validator("cors_origins")
     @classmethod
     def _normalize_origins(cls, value: str) -> str:

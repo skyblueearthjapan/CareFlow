@@ -27,12 +27,14 @@ from pydantic import BaseModel, ConfigDict, Field
 #     ※ 2026-10-13: この 2 つを Literal に入れ忘れ、一覧 GET が 500 になって小窓が出なかった
 #   - ``karte_via_seat``: 訪問の音声記録のカルテ下書きを、決めた管理者のサインインした AI の席で作る拠点
 #     (失敗したら今の Gemini の要約に戻る。docs/plans/karte-via-seat-2026-10-13.md)。
+#   - ``sms_notify``: 予定のお知らせ (SMS) を使う拠点 (docs/plans/sms-notify-design-2026-11-16.md)。
 FeatureKey = Literal[
     "g21_new_algorithm",
     "l3_fix_primary_staff",
     "rakusuke_agent",
     "template_workspace",
     "karte_via_seat",
+    "sms_notify",
 ]
 
 

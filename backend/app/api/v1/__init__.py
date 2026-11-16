@@ -52,6 +52,7 @@ from app.api.v1 import (
     schedule_v2,
     scheduling_settings,
     shift_requests,
+    sms,
     special_visits,
     staff,
     staff_event_defaults,
@@ -295,6 +296,8 @@ api_router.include_router(leave_kaipoke.router, prefix="/leave", tags=["leave-ka
 api_router.include_router(google_drive.router, prefix="/google-drive", tags=["google-drive"])
 # 「休み・勤務表」の月の API (admin・summary だけ職員も・休み・勤務表の設計 §5・#8)
 api_router.include_router(leave.router, prefix="/leave", tags=["leave"])
+# 予定のお知らせ (SMS・admin のみ・拠点の旗 sms_notify・docs/plans/sms-notify-design-2026-11-16.md)
+api_router.include_router(sms.router, prefix="/sms", tags=["sms"])
 # らく助 専門エージェント向けの読み取り専用 API (admin のみ・docs/plans/agent-skills/api-additions-2026-10-12.md)
 api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
 # らく助エージェントへの声の入力 (admin のみ・音声は保存しない・docs/plans/voice-input-and-karte-engine-research-2026-10-13.md)

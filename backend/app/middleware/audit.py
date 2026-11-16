@@ -66,6 +66,14 @@ _MULTIPART_BODY_SKIP_PREFIXES = ("/api/v1/visit-recordings", "/api/v1/agent/tran
 # Body placeholder persisted for the skipped uploads above.
 _MULTIPART_BODY_MARKER: dict[str, Any] = {"_multipart": True}
 
+# Paths whose request bodies are never stored (any content-type): the SMS
+# notices handle message bodies and phone numbers (docs/plans/sms-notify-design-2026-11-16.md §6
+# — 監査ログには本文と番号を書かない). The row keeps actor / path / status only.
+_BODY_OMIT_PREFIXES = ("/api/v1/sms",)
+
+# Body placeholder persisted for the routes above.
+_OMITTED_BODY_MARKER: dict[str, Any] = {"_omitted": True}
+
 # Second, path-independent guard: any audited request that *declares* more than
 # this many bytes is never buffered, whatever its content-type. The prefix list
 # above only protects the routes we know about today; this backstop keeps a
@@ -197,7 +205,11 @@ def _skips_body_buffering(
 
     Module level (not a method) so tests can pin the rule without driving a
     20 MiB upload through the whole stack.
+
+    3. A route under ``_BODY_OMIT_PREFIXES`` (SMS notices) → ``{"_omitted": true}``.
     """
+    if path.startswith(_BODY_OMIT_PREFIXES):
+        return dict(_OMITTED_BODY_MARKER)
     if (
         method == "POST"
         and path.startswith(_MULTIPART_BODY_SKIP_PREFIXES)
