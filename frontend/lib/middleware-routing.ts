@@ -8,8 +8,11 @@
 const PUBLIC_PATHS = ['/login'];
 const ADMIN_PREFIX = '/admin';
 const COMMON_PREFIXES = ['/dashboard', '/patients', '/staff', '/schedule', '/records'];
-/** /admin の外にある管理者だけのページ (事務所からのやること・patient-tasks-design §2-6)。 */
-const ADMIN_ONLY_PATHS = ['/tasks'];
+/**
+ * /admin の外にある管理者だけのページ (事務所からのやること・patient-tasks-design §2-6／
+ * お知らせの記録・sms-notify-design §5-4)。
+ */
+const ADMIN_ONLY_PATHS = ['/tasks', '/sms-notices'];
 
 /**
  * Path of the forced-password-change screen. The middleware is the only

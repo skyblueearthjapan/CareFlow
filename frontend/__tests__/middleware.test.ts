@@ -78,6 +78,16 @@ describe('decideRoute', () => {
     expect(decideRoute({ pathname: '/tasksx', session: staffSession })).toEqual({ kind: 'next' });
   });
 
+  it('redirects non-admin away from /sms-notices to /dashboard (お知らせの記録)', () => {
+    expect(decideRoute({ pathname: '/sms-notices', session: staffSession })).toEqual({
+      kind: 'redirect',
+      to: '/dashboard',
+    });
+    expect(decideRoute({ pathname: '/sms-notices', session: adminSession })).toEqual({
+      kind: 'next',
+    });
+  });
+
   it('lets admin access /admin/users', () => {
     expect(decideRoute({ pathname: '/admin/users', session: adminSession })).toEqual({
       kind: 'next',

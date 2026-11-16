@@ -44,6 +44,16 @@ vi.mock('@/lib/queries/tasks', () => ({
   },
 }));
 
+// 予定のお知らせ (SMS) の「お知らせの記録」は旗 sms_notify が ON のときだけ (sms-notify-design §5-4)
+let smsEnabled = false;
+const smsCalls: unknown[][] = [];
+vi.mock('@/lib/queries/sms', () => ({
+  useSmsEnabled: (...args: unknown[]) => {
+    smsCalls.push(args);
+    return smsEnabled && args[0] === true;
+  },
+}));
+
 import { useSession } from 'next-auth/react';
 import { Sidebar } from '../Sidebar';
 
@@ -61,6 +71,25 @@ describe('Sidebar — ロール別メニュー表示', () => {
     pendingCalls.length = 0;
     openTasks = [];
     taskCalls.length = 0;
+    smsEnabled = false;
+    smsCalls.length = 0;
+  });
+
+  it('お知らせの記録: 管理者で旗が ON のときだけ出す', () => {
+    setRole('admin');
+    const { unmount } = render(<Sidebar collapsed={false} />);
+    expect(screen.queryByRole('link', { name: /お知らせの記録/ })).not.toBeInTheDocument();
+    unmount();
+    smsEnabled = true;
+    const second = render(<Sidebar collapsed={false} />);
+    expect(screen.getByRole('link', { name: /お知らせの記録/ })).toHaveAttribute(
+      'href',
+      '/sms-notices',
+    );
+    second.unmount();
+    setRole('staff');
+    render(<Sidebar collapsed={false} />);
+    expect(screen.queryByRole('link', { name: /お知らせの記録/ })).not.toBeInTheDocument();
   });
 
   it('1. admin → 連携・監査ログ・申請履歴が表示される', () => {

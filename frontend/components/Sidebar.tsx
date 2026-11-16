@@ -18,12 +18,14 @@ import {
   ToggleRight,
   CalendarHeart,
   ClipboardList,
+  MessageSquareText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/rbac';
 import { upcomingLeaveMonth } from '@/lib/leave-sheet';
 import { useLeaveMonthSummary } from '@/lib/queries/leave';
 import { useTasks } from '@/lib/queries/tasks';
+import { useSmsEnabled } from '@/lib/queries/sms';
 
 /** メニューの未処理の休みの申請の件数を読み直す間隔 (60 秒に 1 回まで・PO 決定)。 */
 const LEAVE_PENDING_POLL_MS = 60_000;
@@ -77,6 +79,15 @@ const NAV_ITEMS = [
     adminOnly: true,
     strictAdmin: true,
   },
+  // 予定のお知らせ (SMS) の記録 (sms-notify-design-2026-11-16 §5-4)。管理者だけ・旗 sms_notify が ON のときだけ
+  {
+    href: '/sms-notices',
+    label: 'お知らせの記録',
+    icon: MessageSquareText,
+    adminOnly: true,
+    strictAdmin: true,
+    smsOnly: true,
+  },
   // 機能の切り替え（拠点ごとの機能の旗）。PO 2026-10-13: 旗の ON/OFF は画面から（DB を直接触らない）
   {
     href: '/admin/feature-flags',
@@ -106,7 +117,11 @@ export function Sidebar({ collapsed }: SidebarProps) {
   );
   const openTaskCount = isAdmin ? (openTasks.data?.length ?? 0) : 0;
 
+  // 「お知らせの記録」は旗 sms_notify が ON の拠点があるときだけ (GET /sms/status の enabled)
+  const smsEnabled = useSmsEnabled(isAdmin);
+
   const items = NAV_ITEMS.filter((item) => {
+    if ('smsOnly' in item && item.smsOnly && !smsEnabled) return false;
     // strictAdmin = 管理者のみ表示。ロール二軸(mig 0069)以降アカウント権限は
     // admin/staff の2値で、旧セッション JWT に残る 'manager' は admin の別名
     // (lib/rbac.ts) — 生比較だと旧トークン保持者からメニューが消えるため

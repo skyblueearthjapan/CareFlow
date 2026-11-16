@@ -56,6 +56,7 @@ import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel'
 import { PatientQrManageDialog } from '@/components/patients/PatientQrManageDialog';
 import { LocationDriftNotice } from '@/components/patients/LocationDriftNotice';
 import { PatientContactsView } from '@/components/patients/PatientContactsView';
+import { SmsRecentCard } from '@/components/sms/SmsRecentCard';
 import { usePatientLocationDrift } from '@/lib/queries/patientLocation';
 import { isAdminRole } from '@/lib/rbac';
 import { googleMapsPlaceUrl } from '@/lib/maps';
@@ -334,6 +335,7 @@ export default function PatientDetailPage() {
       </Card>
 
       {canEdit ? <PatientContactsView patientId={data.id} patientName={data.name} /> : null}
+      {canEdit ? <SmsRecentCard patientId={data.id} /> : null}
 
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">保険・拠点</h2>

@@ -118,6 +118,7 @@ export const OFFICE_FEATURE_KEYS = [
   'rakusuke_agent',
   'template_workspace',
   'karte_via_seat',
+  'sms_notify',
 ] as const;
 export type OfficeFeatureKey = (typeof OFFICE_FEATURE_KEYS)[number];
 export const officeFeatureKeySchema = z.enum(OFFICE_FEATURE_KEYS);

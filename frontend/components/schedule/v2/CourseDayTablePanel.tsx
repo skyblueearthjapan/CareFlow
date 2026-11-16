@@ -196,6 +196,7 @@ import {
 // ─── 週空間 Phase E「今週の運転席」(docs/plans/week-cockpit-design.md §3) ───
 // 部品は FE-A/FE-B が作成済み。ここ (FE-C) は結線だけを行う。
 import { SyncBar } from './cockpit/SyncBar';
+import { SmsNoticeButton } from '@/components/sms/SmsNoticeButton';
 import { StaffWeekTimelineStack } from './cockpit/StaffWeekTimelineStack';
 import { FixedEventRow } from './cockpit/FixedEventRow';
 import { VisitActionMenu } from './cockpit/VisitActionMenu';
@@ -6634,6 +6635,7 @@ export function CourseDayTablePanel({
                     <ListChecks className="mr-1 h-4 w-4" aria-hidden />
                     週次ガイド
                   </Button>
+                  <SmsNoticeButton weekStart={weekStartStr} />
                   {/* コンパクト表示: 「コースの作業場」などページ上部の道具をここに入れる (D5)。 */}
                   {headerCollapsed ? compactToolsExtra : null}
                 </div>

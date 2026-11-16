@@ -54,6 +54,7 @@ const FEATURE_KEY_LABEL: Record<OfficeFeatureKey, string> = {
   rakusuke_agent: 'らく助エージェント',
   template_workspace: 'コースの作業場',
   karte_via_seat: 'カルテの下書きをサインインした AI で',
+  sms_notify: '予定のお知らせ（SMS）',
 };
 
 const FEATURE_KEY_DESC: Record<OfficeFeatureKey, string> = {
@@ -63,6 +64,8 @@ const FEATURE_KEY_DESC: Record<OfficeFeatureKey, string> = {
     'スケジュールの画面に「コースの作業場」を出します。いまの型を写した下書きで、コースの組み方を試して登録できます。',
   karte_via_seat:
     '訪問の録音から作るカルテの下書きを、⚙ で決めた管理者のサインインした AI（ChatGPT か Claude）で作ります。AI が使えないときは、いままでどおり Gemini で作ります。',
+  sms_notify:
+    '患者様やご家族へ、訪問の予定を SMS でお知らせできるようにします。スケジュールの画面に［予定のお知らせ］が出て、送る前に一覧で文面を確かめてから送ります。メニューに「お知らせの記録」も出ます。管理者だけが使えます。',
 };
 
 // ─────────────────────────────────────────────────────────────────────────

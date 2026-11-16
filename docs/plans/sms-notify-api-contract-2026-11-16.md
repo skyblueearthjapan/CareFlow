@@ -98,3 +98,68 @@ SMS を送らずに「お伝え済み」にする。
 | failed | 届きませんでした |
 | unknown | 分かりません |
 | skipped | 送っていません（理由を添える: 試験の状態のため／ほか） |
+
+## 12. 見た内容と送る内容を合わせる印（レビュー 2026-11-16 で追加）
+確かめた後に予定や連絡先が変わっても、見ていない文面・番号で送らない・見ていない変更を「済み」にしないための印。印はどれも sha256 の先頭 32 桁（16 進の文字列）。
+- **週のお知らせ**
+  - `POST /week-notices/preview` の `rows[]` の各行に `token` を足す。中身は、その行の本文・送り先（連絡先の ID と番号）・訪問の並びから作るハッシュ。`not_sendable[]` には無い。
+  - `POST /week-notices/send` の要求に `tokens`（`{"<patient_id>": "<token>"}`・`patient_ids` の全員分が必須。足りなければ 422）を足す。サーバーは本文を作り直して印を比べ、1 名でも違えば **409**「予定か連絡先が変わりました。一覧を開き直してください」で、だれにも送らない。
+- **変更のお知らせ**
+  - `GET /changes/pending` の `items[]` の各行に 2 つ足す: `token`（本文・送り先・変更の並びのハッシュ。送れない方は null）と `change_token`（変更の並びだけのハッシュ。全員にある）。
+  - `POST /changes/send` の `items[]` は `{"patient_id", "week_start", "token"}`（`token` 必須）。違えば同じ 409 で、だれにも送らない。
+  - `POST /changes/resolve` の要求に `change_token`（必須）を足す。今の変更の並びと違えば 409（見ていない変更を「済み」にしない）。
+
+## 13. レビュー（backend・2026-11-16）で決めた直し
+### 13-1. 「お伝えした内容」は、受け付けられてから替える
+- `patient_week_notices.version` は「送ろうとした回」の番号（batch を作るたびに上がる・二重送信を防ぐ鍵に使う）。
+- **お伝えした内容（`visits`・`told_at`・`last_channel`・`told_version`）は、その版の SMS が 1 通でも KDDI に受け付けられた（accepted）ときに初めて替える**。`skipped`・`failed`・`unknown` だけで終わった版では替えない。「送らずに済みにする」（電話など）はその場で替える。
+- 週の一覧（`/week-notices/preview`）の `rows[].state` を 5 つにする:
+  | state | 意味 | 既定の印 |
+  |---|---|---|
+  | `new` | まだお伝えしていない | 付ける |
+  | `changed_since_sent` | お伝えした内容と今の予定が違う | 付ける |
+  | `already_sent_same` | 同じ内容をお伝え済み | 付けない |
+  | `sending` | いま送っている途中（待ち・送信中の行がある） | 付けない（選べない） |
+  | `not_delivered` | 前に送ろうとしたが、受け付けられなかった／届かなかった | 付ける |
+- `rows[]` に `last_attempt`（null か `{"at": "...Z", "result": "skipped"|"failed"|"unknown"|"delivery_failed", "label": "…"}`）を足す。`delivery_failed`＝受け付けられたが、あとで全通が届かなかった。
+- 変更のお知らせ（`/changes/pending`）は、お伝えした内容がある方だけが対象（一度も受け付けられていない方は週の一覧の `new`／`not_delivered` に出る）。
+
+### 13-2. 待っている送信の期限と、送る直前の確かめ
+- `sms_messages.expires_at`＝ `max(created_at, not_before) + 60 分`。送る直前に次を確かめ、当てはまれば送らず `skipped` にする（`skip_reason`）:
+  - `expired`: 期限を過ぎた／作った日（日本時間）と今日が違う
+  - `superseded`: その方の `version` がもう新しい
+  - `contact_changed`: 今の連絡先が「お知らせを送る・同意は確認済み・携帯」を満たさない、または番号が違う
+  - `patient_inactive`: 患者様が稼働中でない
+  - `outside_hours` は skip にせず、待ちのまま次の回へ（ただし期限で `expired` になる）
+- 送れる時間帯は 1 通ごとに確かめる。同じ番号への 600 秒の間隔も、送る直前に確かめる。
+- 期限切れなどで送らなかった分は、ベルで知らせる（「送れなかったお知らせが N 件あります」）。
+
+### 13-3. 送れない理由に足すもの（週の一覧の `not_sendable[].reason`・変更の `not_sendable_reason`）
+- `unsupported_char`: 文面に、SMS で送れない文字（BMP の外の文字）がある → 「お名前などに、SMS で送れない文字があります」
+- `patient_inactive`（変更だけ）: 患者様が稼働中でない → 「いまは稼働中でない方です（お電話でお伝えください）」
+
+### 13-4. 模擬の窓口と設定の誤り
+- `/sms/messages` の `items[]` に `provider`（`mock`／`kddi`）を足す。画面は `mock` の行に「模擬（実際には送っていません）」と出す。mock の照会は `status_raw="mock"` を返す。
+- `SMS_SEND_MODE=live` なのに窓口が `kddi` でないときは、1 件も送らず `failed`（`error_code="config"`）にする。KDDI の値が足りないときは、待ちのままにしてベルを 1 回出す（期限で `expired` になる）。
+
+### 13-5. skip_reason の言葉（画面）
+| skip_reason | 画面の言葉 |
+|---|---|
+| test_mode / not_in_test_allowlist | 試験の状態のため |
+| expired | 送る前に時間が過ぎたため |
+| superseded | 新しいお知らせを作ったため |
+| contact_changed | 連絡先が変わったため |
+| patient_inactive | 稼働中でなくなったため |
+
+### 13-6. そのほか
+- `GET /status` に `provider_ok`（bool。窓口が kddi のとき値がそろっているか。mock は true）と `undelivered_count`（直近 7 日の、届かなかった・分からない・送れなかった件数）を足す。`failed_recent_count` は残す。
+- `POST /changes/resolve`: `channel=phone` は `reason=phoned` だけ、`channel=none` は `patient_request`／`other` だけ。合わない組は 422。
+- 今日の分は、開始の時刻がもう過ぎた訪問を週のお知らせに載せない。
+
+## 14. 2 回目のレビューで足したもの（2026-11-17）
+- 行の印（§12）には、その行の状態・見たときの版（`notice_version_seen`）・`told_version` も入れる。ほかの管理者が先に送ったあとは、`resend` を付けても 409 になる。
+- お伝えした経路 `told_via`（`kddi`／`mock`／`phone`／`none`）を残す。**模擬（mock）でお伝えした方は、窓口が mock でなくなったら「まだお伝えしていない」と扱う**（週の一覧で `new` などに戻り、変更のお知らせ待ちにも出ない）。
+- `GET /messages` に `undelivered=true`（届かなかった・分からない・送れなかった。試験の状態のため送らなかった分は除く）。`status` はカンマでつないで複数渡せる。`carrier` は大文字・小文字を区別しない。
+- `provider_ok` は、`SMS_SEND_MODE=live` なのに窓口が kddi でないとき、`SMS_PROVIDER` が知らない値のときも false。このときは 1 件も送らず、ベル「SMS の設定に誤りがあるため、送れていません」を出す。
+- 変更のベル: 同じ内容を 4 分以上あとの回でも見たら初めて鳴らす。急ぎ（今日・明日）は、全体の 15 分の間隔に縛られない。
+- `by_fail_reason[].reason` は null にしない（`"unknown"`）。患者様の行が無いときの `patient_name` は「（削除された方）」。
