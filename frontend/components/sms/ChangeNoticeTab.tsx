@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api-client';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { useResolveChange, useSendChangeNotices, useSmsPendingChanges } from '@/lib/queries/sms';
-import type { ResolveChannel, ResolveReason, SmsPendingItem } from '@/lib/schemas/sms';
+import type { ResolveChannel, ResolveReason, SmsPendingItem, SmsStatus } from '@/lib/schemas/sms';
 
 import { SendConfirmPanel } from './SendConfirmPanel';
 import {
@@ -35,6 +35,8 @@ export interface ChangeNoticeTabProps {
   active: boolean;
   /** 窓口の設定が足りないなど、いまは送れないとき true。 */
   sendBlocked?: boolean;
+  /** 試験の状態・模擬の窓口を確かめの欄に出すため。 */
+  status?: SmsStatus;
 }
 
 const itemKey = (it: SmsPendingItem) => `${it.patient_id}:${it.week_start}`;
@@ -75,7 +77,7 @@ interface SendSnapshot {
   dataUpdatedAt: number;
 }
 
-export function ChangeNoticeTab({ active, sendBlocked = false }: ChangeNoticeTabProps) {
+export function ChangeNoticeTab({ active, sendBlocked = false, status }: ChangeNoticeTabProps) {
   const pending = useSmsPendingChanges(active);
   const send = useSendChangeNotices();
   const [checked, setChecked] = useState<Record<string, boolean>>({});
@@ -186,12 +188,7 @@ export function ChangeNoticeTab({ active, sendBlocked = false }: ChangeNoticeTab
   }
 
   return (
-    <div className="space-y-3" data-testid="sms-change-tab">
-      <p className="text-sm text-text-secondary">
-        お知らせしたあとに予定が変わった方です。文面を確かめて、送る方に印を付けてください。
-        お電話でお伝えしたときは［送らずに済みにする］を押してください。
-      </p>
-
+    <div className="flex min-h-0 flex-1 flex-col gap-3" data-testid="sms-change-tab">
       {error ? (
         <p
           role="alert"
@@ -211,134 +208,144 @@ export function ChangeNoticeTab({ active, sendBlocked = false }: ChangeNoticeTab
         </p>
       ) : null}
 
-      {items.length === 0 ? (
-        <p className="rounded border border-border-default p-4 text-sm text-text-secondary">
-          お知らせ待ちの方はいません。
+      <div className="min-h-[8rem] flex-1 space-y-3 overflow-y-auto" data-testid="sms-change-body">
+        <p className="text-sm text-text-secondary">
+          お知らせしたあとに予定が変わった方です。文面を確かめて、送る方に印を付けてください。
+          お電話でお伝えしたときは［送らずに済みにする］を押してください。
         </p>
-      ) : (
-        <ul className="space-y-2">
-          {items.map((it) => {
-            const key = itemKey(it);
-            const isChecked = it.sendable && !!checked[key];
-            return (
-              <li
-                key={key}
-                className={
-                  'rounded-md border p-3 ' +
-                  (it.urgent ? 'border-red-300 bg-red-50/40' : 'border-border-default')
-                }
-                data-testid={`sms-change-row-${it.patient_id}`}
-              >
-                <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-                  <label
-                    className={
-                      'flex min-w-[12rem] items-center gap-2 py-1.5 ' +
-                      (it.sendable ? 'cursor-pointer' : 'cursor-not-allowed')
-                    }
-                  >
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 accent-brand-primary"
-                      checked={isChecked}
-                      disabled={!it.sendable || send.isPending}
-                      onChange={() => {
-                        setChecked((prev) => ({ ...prev, [key]: !prev[key] }));
-                        setSnapshot(null);
-                      }}
-                      aria-label={`${it.patient_name} 様に送る`}
-                    />
-                    <span className="text-sm font-bold text-text-primary">
-                      {it.patient_name} 様
-                    </span>
-                  </label>
-                  {it.urgent ? (
-                    <span className="rounded-full border border-red-300 bg-red-100 px-2 py-0.5 text-xs font-bold text-red-800">
-                      急ぎ（今日・明日）
-                    </span>
-                  ) : null}
-                  <span className="text-sm text-text-secondary">
-                    気づいてから {formatWaiting(it.waiting_minutes)}
-                  </span>
-                  {it.sendable ? (
-                    <span className="ml-auto text-sm text-text-secondary tnum">
-                      {it.char_count ?? 0} 文字・{it.segments_est ?? 0} 通分
-                      {messageCount(it) > 1 ? ` × ${messageCount(it)} 件` : ''}・
-                      {formatYen(it.est_yen ?? 0)}
-                    </span>
-                  ) : null}
-                </div>
 
-                <ul className="mt-1 flex flex-wrap gap-2 text-sm text-text-primary">
-                  {it.changes.map((c, i) => (
-                    <li key={i} className="rounded bg-bg-muted px-2 py-0.5">
-                      {c.label}
-                    </li>
-                  ))}
-                </ul>
-
-                {it.sendable ? (
-                  <>
-                    <div className="mt-1 text-sm text-text-secondary">
-                      送り先:{' '}
-                      {it.destinations
-                        .map((d) => `${d.relation_label}（末尾 ${d.phone_last4}）`)
-                        .join('、')}
-                    </div>
-                    {it.body ? (
-                      <pre className="mt-2 whitespace-pre-wrap break-words rounded border border-border-default bg-bg-muted/50 p-2 font-mono text-sm leading-relaxed text-text-primary">
-                        {it.body}
-                      </pre>
-                    ) : null}
-                  </>
-                ) : (
-                  <p className="mt-1 text-sm font-bold text-amber-900">
-                    SMS でお知らせできません:{' '}
-                    {smsNotSendableLabel(it.not_sendable_reason, it.not_sendable_label)}
-                  </p>
-                )}
-
-                {it.urgent && it.call_numbers.length > 0 ? (
-                  <div
-                    className="mt-2 rounded border border-red-200 bg-bg-base p-2 text-sm"
-                    data-testid={`sms-change-call-${it.patient_id}`}
-                  >
-                    <p className="font-bold text-red-800">
-                      <Phone className="mr-1 inline h-4 w-4" aria-hidden />
-                      お電話でもお伝えください
-                    </p>
-                    <ul className="mt-1 flex flex-wrap gap-x-4">
-                      {it.call_numbers.map((n, i) => (
-                        <li key={i} className="tnum">
-                          {n.relation_label}: {n.phone_display}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-
-                <div className="mt-2 flex justify-end">
-                  {resolvingKey === key ? null : (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setResolvingKey(key)}
-                      data-testid={`sms-change-resolve-open-${it.patient_id}`}
+        {items.length === 0 ? (
+          <p className="rounded border border-border-default p-4 text-sm text-text-secondary">
+            お知らせ待ちの方はいません。
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {items.map((it) => {
+              const key = itemKey(it);
+              const isChecked = it.sendable && !!checked[key];
+              return (
+                <li
+                  key={key}
+                  className={
+                    'rounded-md border p-3 ' +
+                    (it.urgent ? 'border-red-300 bg-red-50/40' : 'border-border-default')
+                  }
+                  data-testid={`sms-change-row-${it.patient_id}`}
+                >
+                  <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+                    <label
+                      className={
+                        'flex min-w-[12rem] items-center gap-2 py-1.5 ' +
+                        (it.sendable ? 'cursor-pointer' : 'cursor-not-allowed')
+                      }
                     >
-                      送らずに済みにする
-                    </Button>
-                  )}
-                </div>
-                {resolvingKey === key ? (
-                  <ResolveForm item={it} onDone={() => setResolvingKey(null)} />
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-brand-primary"
+                        checked={isChecked}
+                        disabled={!it.sendable || send.isPending}
+                        onChange={() => {
+                          setChecked((prev) => ({ ...prev, [key]: !prev[key] }));
+                          setSnapshot(null);
+                        }}
+                        aria-label={`${it.patient_name} 様に送る`}
+                      />
+                      <span className="text-sm font-bold text-text-primary">
+                        {it.patient_name} 様
+                      </span>
+                    </label>
+                    {it.urgent ? (
+                      <span className="rounded-full border border-red-300 bg-red-100 px-2 py-0.5 text-xs font-bold text-red-800">
+                        急ぎ（今日・明日）
+                      </span>
+                    ) : null}
+                    <span className="text-sm text-text-secondary">
+                      気づいてから {formatWaiting(it.waiting_minutes)}
+                    </span>
+                    {it.sendable ? (
+                      <span className="ml-auto text-sm text-text-secondary tnum">
+                        {it.char_count ?? 0} 文字・{it.segments_est ?? 0} 通分
+                        {messageCount(it) > 1 ? ` × ${messageCount(it)} 件` : ''}・
+                        {formatYen(it.est_yen ?? 0)}
+                      </span>
+                    ) : null}
+                  </div>
 
-      <div className="sticky bottom-0 space-y-2 border-t border-border-default bg-bg-base pt-3">
+                  <ul className="mt-1 flex flex-wrap gap-2 text-sm text-text-primary">
+                    {it.changes.map((c, i) => (
+                      <li key={i} className="rounded bg-bg-muted px-2 py-0.5">
+                        {c.label}
+                      </li>
+                    ))}
+                  </ul>
+
+                  {it.sendable ? (
+                    <>
+                      <div className="mt-1 text-sm text-text-secondary">
+                        送り先:{' '}
+                        {it.destinations
+                          .map((d) => `${d.relation_label}（末尾 ${d.phone_last4}）`)
+                          .join('、')}
+                      </div>
+                      {it.body ? (
+                        <pre className="mt-2 whitespace-pre-wrap break-words rounded border border-border-default bg-bg-muted/50 p-2 font-mono text-sm leading-relaxed text-text-primary">
+                          {it.body}
+                        </pre>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="mt-1 text-sm font-bold text-amber-900">
+                      SMS でお知らせできません:{' '}
+                      {smsNotSendableLabel(it.not_sendable_reason, it.not_sendable_label)}
+                    </p>
+                  )}
+
+                  {it.urgent && it.call_numbers.length > 0 ? (
+                    <div
+                      className="mt-2 rounded border border-red-200 bg-bg-base p-2 text-sm"
+                      data-testid={`sms-change-call-${it.patient_id}`}
+                    >
+                      <p className="font-bold text-red-800">
+                        <Phone className="mr-1 inline h-4 w-4" aria-hidden />
+                        お電話でもお伝えください
+                      </p>
+                      <ul className="mt-1 flex flex-wrap gap-x-4">
+                        {it.call_numbers.map((n, i) => (
+                          <li key={i} className="tnum">
+                            {n.relation_label}: {n.phone_display}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-2 flex justify-end">
+                    {resolvingKey === key ? null : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setResolvingKey(key)}
+                        data-testid={`sms-change-resolve-open-${it.patient_id}`}
+                      >
+                        送らずに済みにする
+                      </Button>
+                    )}
+                  </div>
+                  {resolvingKey === key ? (
+                    <ResolveForm item={it} onDone={() => setResolvingKey(null)} />
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <div
+        className="shrink-0 space-y-2 border-t border-border-default bg-bg-base pt-3"
+        data-testid="sms-change-footer"
+      >
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm text-text-primary tnum" data-testid="sms-change-totals">
             送る方 <b>{totals.people}</b> 名・<b>{totals.messages}</b> 件（{totals.segments}{' '}
@@ -369,6 +376,7 @@ export function ChangeNoticeTab({ active, sendBlocked = false }: ChangeNoticeTab
             yen={snapshot.totals.yen}
             pending={send.isPending}
             blocked={pending.isFetching}
+            status={status}
             onConfirm={() => void handleSend()}
             onBack={() => setSnapshot(null)}
             testId="sms-change-confirm"
@@ -395,6 +403,11 @@ function ResolveForm({ item, onDone }: { item: SmsPendingItem; onDone: () => voi
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
+  // 開いたら、一覧の中でフォームが見えるところまで送る (下の欄の陰に残さない)。
+  const formRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    formRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, []);
   const noteRequired = reason === 'other';
   const pairOk = allowedReasons.includes(reason);
   const noteOk = !noteRequired || note.trim().length > 0;
@@ -434,6 +447,7 @@ function ResolveForm({ item, onDone }: { item: SmsPendingItem; onDone: () => voi
   const id = `resolve-${item.patient_id}-${item.week_start}`;
   return (
     <div
+      ref={formRef}
       className="mt-2 space-y-3 rounded-md border border-border-default bg-bg-muted/40 p-3"
       data-testid={`sms-change-resolve-${item.patient_id}`}
     >

@@ -49,6 +49,7 @@ from app.services.contacts import RELATION_LABEL
 from app.services.sms import composer
 from app.services.sms.composer import VisitChange, slots_from_json
 from app.services.sms.notices import (
+    CHANGE_PENDING_PATH,
     CONFLICT_MESSAGE,
     IN_FLIGHT_STATUSES,
     JST,
@@ -693,6 +694,7 @@ async def run_detect(db: AsyncSession, now: datetime) -> dict[str, Any]:
                 title=f"予定が変わった方が {len(pendings)} 名います（お知らせ待ち）",
                 body=body,
                 now=now,
+                href=CHANGE_PENDING_PATH,
             )
             bells = 1
             for p in stable:

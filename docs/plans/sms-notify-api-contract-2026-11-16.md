@@ -163,3 +163,4 @@ SMS を送らずに「お伝え済み」にする。
 - `provider_ok` は、`SMS_SEND_MODE=live` なのに窓口が kddi でないとき、`SMS_PROVIDER` が知らない値のときも false。このときは 1 件も送らず、ベル「SMS の設定に誤りがあるため、送れていません」を出す。
 - 変更のベル: 同じ内容を 4 分以上あとの回でも見たら初めて鳴らす。急ぎ（今日・明日）は、全体の 15 分の間隔に縛られない。
 - `by_fail_reason[].reason` は null にしない（`"unknown"`）。患者様の行が無いときの `patient_name` は「（削除された方）」。
+- ベルの開く先: 変更のお知らせ待ちのベルは `/schedule?sms=changes`（週の画面で、お知らせの一覧の「変更のお知らせ」が開く。`?sms=week` なら「週のお知らせ」）。ほかの SMS のベルは `/sms-notices`。

@@ -21,7 +21,7 @@ import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api-client';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { useSendWeekNotices, useWeekNoticePreview } from '@/lib/queries/sms';
-import type { WeekNoticeRow } from '@/lib/schemas/sms';
+import type { SmsStatus, WeekNoticeRow } from '@/lib/schemas/sms';
 
 import { SendConfirmPanel } from './SendConfirmPanel';
 import { openCallListPrint } from './printCallList';
@@ -29,6 +29,7 @@ import {
   SMS_LIST_REFRESHED_MESSAGE,
   SMS_ROW_STATE_LABEL,
   SMS_SEND_UNKNOWN_MESSAGE,
+  formatHm,
   formatJstDateTime,
   formatYen,
   formatYmdShort,
@@ -40,6 +41,8 @@ export interface WeekNoticeTabProps {
   active: boolean;
   /** 窓口の設定が足りないなど、いまは送れないとき true。 */
   sendBlocked?: boolean;
+  /** 試験の状態・模擬の窓口を確かめの欄に出すため。 */
+  status?: SmsStatus;
 }
 
 /** 印を付けられる行か。送っている途中の方は選べない (知らない状態もここに入る)。 */
@@ -52,7 +55,7 @@ function defaultChecked(row: WeekNoticeRow): boolean {
 }
 
 const visitsText = (visits: ReadonlyArray<{ date: string; start: string }>) =>
-  visits.map((v) => `${formatYmdShort(v.date)}${v.start}`).join('、');
+  visits.map((v) => `${formatYmdShort(v.date)}${formatHm(v.start)}`).join('、');
 
 function stateChipClass(state: WeekNoticeRow['state']): string {
   switch (state) {
@@ -85,7 +88,12 @@ interface SendSnapshot {
   dataUpdatedAt: number;
 }
 
-export function WeekNoticeTab({ weekStart, active, sendBlocked = false }: WeekNoticeTabProps) {
+export function WeekNoticeTab({
+  weekStart,
+  active,
+  sendBlocked = false,
+  status,
+}: WeekNoticeTabProps) {
   const preview = useWeekNoticePreview(weekStart, active);
   const send = useSendWeekNotices();
   // 人が触った印だけを持つ (触っていない行は既定のまま)。
@@ -204,10 +212,12 @@ export function WeekNoticeTab({ weekStart, active, sendBlocked = false }: WeekNo
 
   const notDeliveredRows = rows.filter((r) => r.state === 'not_delivered');
   const callRowCount = (data?.not_sendable.length ?? 0) + notDeliveredRows.length;
+  // week_label は文面用の「来週の」「12/1からの週の」なので、画面では末尾の「の」を外す。
+  const weekName = (data?.week_label ?? '').replace(/の$/, '');
 
   const handlePrint = () => {
     if (!data) return;
-    const ok = openCallListPrint(`お電話でお伝えする方（${data.week_label}）`, [
+    const ok = openCallListPrint(`お電話でお伝えする方（${weekName}）`, [
       ...data.not_sendable.map((r) => ({
         name: r.patient_name,
         reason: smsNotSendableLabel(r.reason, r.reason_label),
@@ -244,12 +254,7 @@ export function WeekNoticeTab({ weekStart, active, sendBlocked = false }: WeekNo
   }
 
   return (
-    <div className="space-y-3" data-testid="sms-week-tab">
-      <p className="text-sm text-text-secondary">
-        {data.week_label}の訪問予定を、患者様（またはご家族）へ SMS でお知らせします。
-        送る方に印を付けて、文面を確かめてください。
-      </p>
-
+    <div className="flex min-h-0 flex-1 flex-col gap-3" data-testid="sms-week-tab">
       {error ? (
         <p
           role="alert"
@@ -269,113 +274,157 @@ export function WeekNoticeTab({ weekStart, active, sendBlocked = false }: WeekNo
         </p>
       ) : null}
 
-      {rows.length === 0 ? (
-        <p className="rounded border border-border-default p-4 text-sm text-text-secondary">
-          SMS でお知らせできる方はいません。
+      <div className="min-h-[8rem] flex-1 space-y-3 overflow-y-auto" data-testid="sms-week-body">
+        <p className="text-sm text-text-secondary">
+          {weekName}の訪問予定を、患者様（またはご家族）へ SMS でお知らせします。
+          送る方に印を付けて、文面を確かめてください。
         </p>
-      ) : (
-        <ul className="space-y-2" data-testid="sms-week-rows">
-          {rows.map((r) => {
-            const checked = isChecked(r);
-            const canPick = selectable(r);
-            const stateLabel = SMS_ROW_STATE_LABEL[r.state];
-            return (
-              <li
-                key={r.patient_id}
-                className={
-                  'rounded-md border p-3 ' +
-                  (checked
-                    ? 'border-brand-primary/60 bg-bg-base'
-                    : 'border-border-default bg-bg-muted/40')
-                }
-                data-testid={`sms-week-row-${r.patient_id}`}
-              >
-                <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-                  <label
-                    className={
-                      'flex min-w-[12rem] items-center gap-2 py-1.5 ' +
-                      (canPick ? 'cursor-pointer' : 'cursor-not-allowed')
-                    }
-                  >
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 accent-brand-primary"
-                      checked={checked}
-                      onChange={() => toggle(r)}
-                      disabled={!canPick || send.isPending}
-                      aria-label={`${r.patient_name} 様に送る`}
-                    />
-                    <span className="text-sm font-bold text-text-primary">{r.patient_name} 様</span>
-                  </label>
-                  {stateLabel ? (
-                    <span
-                      className={
-                        'rounded-full border px-2 py-0.5 text-xs ' + stateChipClass(r.state)
-                      }
-                      data-testid={`sms-week-state-${r.patient_id}`}
-                    >
-                      {stateLabel}
-                    </span>
-                  ) : null}
-                  {r.state === 'not_delivered' && r.last_attempt ? (
-                    <span
-                      className="text-sm text-red-800"
-                      data-testid={`sms-week-last-attempt-${r.patient_id}`}
-                    >
-                      {r.last_attempt.label || '届いていません'}（
-                      {formatJstDateTime(r.last_attempt.at)}）
-                    </span>
-                  ) : null}
-                  <div className="text-sm text-text-secondary">
-                    送り先:{' '}
-                    {r.destinations
-                      .map((d) => `${d.relation_label}（末尾 ${d.phone_last4}）`)
-                      .join('、')}
-                  </div>
-                  <div className="ml-auto text-sm text-text-secondary tnum">
-                    {r.char_count} 文字・{r.segments_est} 通分
-                    {r.message_count > 1 ? ` × ${r.message_count} 件` : ''}・{formatYen(r.est_yen)}
-                  </div>
-                </div>
-                {r.surname_uncertain ? (
-                  <p
-                    className="mt-1 text-xs text-text-secondary"
-                    data-testid={`sms-week-surname-note-${r.patient_id}`}
-                  >
-                    お名前に空白が無いため、姓の代わりにお名前全体を入れています
-                  </p>
-                ) : null}
-                <pre
-                  className="mt-2 whitespace-pre-wrap break-words rounded border border-border-default bg-bg-muted/50 p-2 font-mono text-sm leading-relaxed text-text-primary"
-                  data-testid={`sms-week-body-${r.patient_id}`}
-                >
-                  {r.body}
-                </pre>
-              </li>
-            );
-          })}
-        </ul>
-      )}
 
-      {data.not_sendable.length > 0 ? (
-        <section
-          className="rounded-md border border-border-default"
-          data-testid="sms-week-not-sendable"
-        >
-          <div className="flex items-center justify-between gap-2 p-2">
-            <button
-              type="button"
-              className="flex items-center gap-1 text-sm font-bold text-text-primary"
-              onClick={() => setNotSendableOpen((o) => !o)}
-              aria-expanded={notSendableOpen}
-            >
-              {notSendableOpen ? (
-                <ChevronDown className="h-4 w-4" aria-hidden />
-              ) : (
-                <ChevronRight className="h-4 w-4" aria-hidden />
-              )}
-              SMS でお知らせできない方（{data.not_sendable.length} 名）
-            </button>
+        {rows.length === 0 ? (
+          <p className="rounded border border-border-default p-4 text-sm text-text-secondary">
+            SMS でお知らせできる方はいません。
+          </p>
+        ) : (
+          <ul className="space-y-2" data-testid="sms-week-rows">
+            {rows.map((r) => {
+              const checked = isChecked(r);
+              const canPick = selectable(r);
+              const stateLabel = SMS_ROW_STATE_LABEL[r.state];
+              return (
+                <li
+                  key={r.patient_id}
+                  className={
+                    'rounded-md border p-3 ' +
+                    (checked
+                      ? 'border-brand-primary/60 bg-bg-base'
+                      : 'border-border-default bg-bg-muted/40')
+                  }
+                  data-testid={`sms-week-row-${r.patient_id}`}
+                >
+                  <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+                    <label
+                      className={
+                        'flex min-w-[12rem] items-center gap-2 py-1.5 ' +
+                        (canPick ? 'cursor-pointer' : 'cursor-not-allowed')
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-brand-primary"
+                        checked={checked}
+                        onChange={() => toggle(r)}
+                        disabled={!canPick || send.isPending}
+                        aria-label={`${r.patient_name} 様に送る`}
+                      />
+                      <span className="text-sm font-bold text-text-primary">
+                        {r.patient_name} 様
+                      </span>
+                    </label>
+                    {stateLabel ? (
+                      <span
+                        className={
+                          'rounded-full border px-2 py-0.5 text-xs ' + stateChipClass(r.state)
+                        }
+                        data-testid={`sms-week-state-${r.patient_id}`}
+                      >
+                        {stateLabel}
+                      </span>
+                    ) : null}
+                    {r.state === 'not_delivered' && r.last_attempt ? (
+                      <span
+                        className="text-sm text-red-800"
+                        data-testid={`sms-week-last-attempt-${r.patient_id}`}
+                      >
+                        {r.last_attempt.label || '届いていません'}（
+                        {formatJstDateTime(r.last_attempt.at)}）
+                      </span>
+                    ) : null}
+                    <div className="text-sm text-text-secondary">
+                      送り先:{' '}
+                      {r.destinations
+                        .map((d) => `${d.relation_label}（末尾 ${d.phone_last4}）`)
+                        .join('、')}
+                    </div>
+                    <div className="ml-auto text-sm text-text-secondary tnum">
+                      {r.char_count} 文字・{r.segments_est} 通分
+                      {r.message_count > 1 ? ` × ${r.message_count} 件` : ''}・
+                      {formatYen(r.est_yen)}
+                    </div>
+                  </div>
+                  {r.state === 'sending' ? (
+                    <p
+                      className="mt-1 text-xs text-sky-900"
+                      data-testid={`sms-week-sending-note-${r.patient_id}`}
+                    >
+                      同じ番号へ続けて送るときは、10 分ほどあけて送ります。しばらくお待ちください
+                    </p>
+                  ) : null}
+                  {r.surname_uncertain ? (
+                    <p
+                      className="mt-1 text-xs text-text-secondary"
+                      data-testid={`sms-week-surname-note-${r.patient_id}`}
+                    >
+                      お名前に空白が無いため、姓の代わりにお名前全体を入れています
+                    </p>
+                  ) : null}
+                  <pre
+                    className="mt-2 whitespace-pre-wrap break-words rounded border border-border-default bg-bg-muted/50 p-2 font-mono text-sm leading-relaxed text-text-primary"
+                    data-testid={`sms-week-body-${r.patient_id}`}
+                  >
+                    {r.body}
+                  </pre>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {data.not_sendable.length > 0 ? (
+          <section
+            className="rounded-md border border-border-default"
+            data-testid="sms-week-not-sendable"
+          >
+            <div className="flex items-center justify-between gap-2 p-2">
+              <button
+                type="button"
+                className="flex items-center gap-1 text-sm font-bold text-text-primary"
+                onClick={() => setNotSendableOpen((o) => !o)}
+                aria-expanded={notSendableOpen}
+              >
+                {notSendableOpen ? (
+                  <ChevronDown className="h-4 w-4" aria-hidden />
+                ) : (
+                  <ChevronRight className="h-4 w-4" aria-hidden />
+                )}
+                SMS でお知らせできない方（{data.not_sendable.length} 名）
+              </button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handlePrint}
+                data-testid="sms-week-print"
+              >
+                <Printer className="mr-1 h-4 w-4" aria-hidden />
+                お電話でお伝えする方を印刷
+              </Button>
+            </div>
+            {notSendableOpen ? (
+              <ul className="divide-y divide-border-default border-t border-border-default">
+                {data.not_sendable.map((r) => (
+                  <li key={r.patient_id} className="flex flex-wrap gap-x-4 px-3 py-2 text-sm">
+                    <span className="font-bold text-text-primary">{r.patient_name} 様</span>
+                    <span className="text-amber-900">
+                      {smsNotSendableLabel(r.reason, r.reason_label)}
+                    </span>
+                    <span className="text-text-secondary">{visitsText(r.visits)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        ) : callRowCount > 0 ? (
+          <div className="flex justify-end">
             <Button
               type="button"
               variant="outline"
@@ -387,37 +436,11 @@ export function WeekNoticeTab({ weekStart, active, sendBlocked = false }: WeekNo
               お電話でお伝えする方を印刷
             </Button>
           </div>
-          {notSendableOpen ? (
-            <ul className="divide-y divide-border-default border-t border-border-default">
-              {data.not_sendable.map((r) => (
-                <li key={r.patient_id} className="flex flex-wrap gap-x-4 px-3 py-2 text-sm">
-                  <span className="font-bold text-text-primary">{r.patient_name} 様</span>
-                  <span className="text-amber-900">
-                    {smsNotSendableLabel(r.reason, r.reason_label)}
-                  </span>
-                  <span className="text-text-secondary">{visitsText(r.visits)}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
-      ) : callRowCount > 0 ? (
-        <div className="flex justify-end">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={handlePrint}
-            data-testid="sms-week-print"
-          >
-            <Printer className="mr-1 h-4 w-4" aria-hidden />
-            お電話でお伝えする方を印刷
-          </Button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       <div
-        className="sticky bottom-0 space-y-2 border-t border-border-default bg-bg-base pt-3"
+        className="shrink-0 space-y-2 border-t border-border-default bg-bg-base pt-3"
         data-testid="sms-week-footer"
       >
         <div className="flex flex-wrap items-center gap-3">
@@ -452,6 +475,7 @@ export function WeekNoticeTab({ weekStart, active, sendBlocked = false }: WeekNo
             notDeliveredCount={snapshot.notDeliveredCount}
             pending={send.isPending}
             blocked={preview.isFetching}
+            status={status}
             onConfirm={() => void handleSend()}
             onBack={() => setSnapshot(null)}
             testId="sms-week-confirm"

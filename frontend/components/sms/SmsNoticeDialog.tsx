@@ -8,6 +8,8 @@
  * 窓口の設定に誤りがあるか足りない (status.provider_ok === false) ときは帯を出し、送れなくする
  * (決まり §13-6)。
  * 届いていないお知らせ (status.undelivered_count) があれば、お知らせの記録へのリンクを出す。
+ * 縦の並びは「見出し・帯・タブ・一覧 (ここだけスクロール)・下の合計と送るボタン」。
+ * 下の欄は一覧に重ならない (どの高さでも、一覧の文や済みにするフォームが下に隠れない)。
  */
 import { useState } from 'react';
 import Link from 'next/link';
@@ -116,7 +118,7 @@ export function SmsNoticeDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="max-h-[90vh] max-w-5xl"
+        className="flex max-h-[90dvh] max-w-5xl flex-col"
         data-testid="sms-notice-dialog"
         data-busy={busy ? 'true' : 'false'}
         onEscapeKeyDown={(e) => {
@@ -186,12 +188,17 @@ export function SmsNoticeDialog({
           role="tabpanel"
           id={`sms-panel-${tab}`}
           aria-labelledby={`sms-tab-${tab}`}
-          className="min-h-[200px]"
+          className="flex min-h-0 flex-1 flex-col"
         >
           {tab === 'week' ? (
-            <WeekNoticeTab weekStart={weekStart} active={open} sendBlocked={sendBlocked} />
+            <WeekNoticeTab
+              weekStart={weekStart}
+              active={open}
+              sendBlocked={sendBlocked}
+              status={status}
+            />
           ) : (
-            <ChangeNoticeTab active={open} sendBlocked={sendBlocked} />
+            <ChangeNoticeTab active={open} sendBlocked={sendBlocked} status={status} />
           )}
         </div>
       </DialogContent>

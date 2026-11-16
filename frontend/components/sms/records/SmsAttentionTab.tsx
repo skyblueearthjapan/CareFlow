@@ -31,7 +31,7 @@ export function SmsAttentionTab() {
       ) : (
         <div className="overflow-x-auto rounded-md border border-border-default">
           <table className="w-full text-sm">
-            <thead className="bg-bg-muted text-left text-text-secondary">
+            <thead className="whitespace-nowrap bg-bg-muted text-left text-text-secondary">
               <tr>
                 <th className="px-3 py-2">患者様</th>
                 <th className="px-3 py-2">番号</th>
@@ -44,7 +44,9 @@ export function SmsAttentionTab() {
             <tbody className="divide-y divide-border-default">
               {items.map((it, i) => (
                 <tr key={`${it.patient_id}-${it.phone_last4 ?? ''}-${it.kind}-${i}`}>
-                  <td className="px-3 py-2 font-bold text-text-primary">{it.patient_name}</td>
+                  <td className="whitespace-nowrap px-3 py-2 font-bold text-text-primary">
+                    {it.patient_name}
+                  </td>
                   <td className="whitespace-nowrap px-3 py-2">
                     {it.relation_label ?? '—'}
                     {it.phone_last4 ? `（末尾 ${it.phone_last4}）` : ''}

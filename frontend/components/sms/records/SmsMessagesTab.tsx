@@ -197,7 +197,7 @@ export function SmsMessagesTab({
       ) : (
         <div className="overflow-x-auto rounded-md border border-border-default">
           <table className="w-full text-sm" data-testid="sms-messages-table">
-            <thead className="bg-bg-muted text-left text-text-secondary">
+            <thead className="whitespace-nowrap bg-bg-muted text-left text-text-secondary">
               <tr>
                 <th className="px-3 py-2">日時</th>
                 <th className="px-3 py-2">患者様</th>
@@ -220,7 +220,7 @@ export function SmsMessagesTab({
                   <td className="whitespace-nowrap px-3 py-2 tnum">
                     {formatJstDateTime(m.created_at)}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="whitespace-nowrap px-3 py-2">
                     <button
                       type="button"
                       className="text-left font-bold text-text-primary underline-offset-2 hover:underline"

@@ -30,7 +30,12 @@ vi.mock('@/lib/queries/notifications', () => ({
 }));
 
 import { useSession } from 'next-auth/react';
-import { Header, leaveSheetHrefFromNotice, scheduleWeekHrefFromNotice } from '../Header';
+import {
+  Header,
+  leaveSheetHrefFromNotice,
+  scheduleWeekHrefFromNotice,
+  smsHrefFromNotice,
+} from '../Header';
 
 function setRole(role: 'admin' | 'manager' | 'staff') {
   (useSession as Mock).mockReturnValue({
@@ -226,5 +231,22 @@ describe('scheduleWeekHrefFromNotice (取り込み後の確認のベル)', () =>
     expect(scheduleWeekHrefFromNotice({ data: { week_start: 'bad' } })).toBe(
       '/schedule?unit=staff&day=week&view=timeline',
     );
+  });
+});
+
+describe('smsHrefFromNotice (SMS のお知らせのベル)', () => {
+  it('お知らせ待ちはスケジュールのダイアログ、ほかは記録を開く', () => {
+    expect(
+      smsHrefFromNotice({ type: 'sms_change_pending', data: { href: '/schedule?sms=changes' } }),
+    ).toBe('/schedule?sms=changes');
+    expect(smsHrefFromNotice({ type: 'sms_delivery_failed', data: { href: '/sms-notices' } })).toBe(
+      '/sms-notices',
+    );
+  });
+
+  it('SMS でないベルや、アプリの外の道は開かない', () => {
+    expect(smsHrefFromNotice({ type: 'leave_request', data: { href: '/sms-notices' } })).toBeNull();
+    expect(smsHrefFromNotice({ type: 'sms_unsent', data: { href: '//evil.example' } })).toBeNull();
+    expect(smsHrefFromNotice({ type: 'sms_unsent', data: null })).toBeNull();
   });
 });

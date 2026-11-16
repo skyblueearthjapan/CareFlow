@@ -88,6 +88,20 @@ export function scheduleWeekHrefFromNotice(n: { data?: Record<string, unknown> |
   return ws && /^\d{4}-\d{2}-\d{2}$/.test(ws) ? `${base}&week=${ws}` : base;
 }
 
+/**
+ * SMS のお知らせのベル (type が sms_ で始まる) の開く先。サーバーが data.href に入れる
+ * (お知らせ待ちは /schedule?sms=changes・ほかは /sms-notices)。アプリの中の道だけを開く。
+ */
+export function smsHrefFromNotice(n: {
+  type: string;
+  data?: Record<string, unknown> | null;
+}): string | null {
+  if (!n.type.startsWith('sms_')) return null;
+  const href = n.data?.href;
+  if (typeof href !== 'string' || !href.startsWith('/') || href.startsWith('//')) return null;
+  return href;
+}
+
 interface HeaderProps {
   title?: string;
   onToggleSidebar: () => void;
@@ -227,6 +241,21 @@ function NotificationButton() {
                       className="mt-1 inline-flex items-center px-2 text-xs font-medium text-brand-primary underline-offset-2 hover:underline"
                     >
                       スケジュールでこの週を開く
+                    </Link>
+                  )}
+                  {isAdmin && smsHrefFromNotice(n) && (
+                    <Link
+                      href={smsHrefFromNotice(n) ?? '/sms-notices'}
+                      onClick={() => {
+                        if (n.read_at == null) markRead.mutate(n.id);
+                        setOpen(false);
+                      }}
+                      data-testid={`notification-open-sms-${n.id}`}
+                      className="mt-1 inline-flex items-center px-2 text-xs font-medium text-brand-primary underline-offset-2 hover:underline"
+                    >
+                      {smsHrefFromNotice(n)?.startsWith('/schedule')
+                        ? '予定のお知らせを開く'
+                        : 'お知らせの記録を開く'}
                     </Link>
                   )}
                 </li>

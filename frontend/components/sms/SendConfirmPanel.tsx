@@ -10,6 +10,7 @@ import { useEffect, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import type { SmsStatus } from '@/lib/schemas/sms';
 
 import { formatYen } from './smsLabels';
 
@@ -25,6 +26,8 @@ export interface SendConfirmPanelProps {
   resendCount?: number;
   /** 前回届かなかった方の人数。 */
   notDeliveredCount?: number;
+  /** 試験の状態 (send_mode=test)・模擬の窓口 (provider=mock) のときに一言添えるため。 */
+  status?: SmsStatus;
   onConfirm: () => void;
   onBack: () => void;
   testId?: string;
@@ -39,6 +42,7 @@ export function SendConfirmPanel({
   blocked = false,
   resendCount = 0,
   notDeliveredCount = 0,
+  status,
   onConfirm,
   onBack,
   testId = 'sms-send-confirm',
@@ -86,6 +90,17 @@ export function SendConfirmPanel({
       {notDeliveredCount > 0 ? (
         <p className="text-sm font-bold text-amber-900" data-testid={`${testId}-not-delivered`}>
           前回届かなかった方を {notDeliveredCount} 名ふくみます
+        </p>
+      ) : null}
+      {status?.send_mode === 'test' ? (
+        <p className="text-sm font-bold text-amber-900" data-testid={`${testId}-test-mode`}>
+          試験の状態のため、実際に送るのは決めた番号（{status.test_allowlist_count ?? 0}{' '}
+          件）の方だけです
+        </p>
+      ) : null}
+      {status?.provider === 'mock' ? (
+        <p className="text-sm text-amber-900" data-testid={`${testId}-mock`}>
+          いまは記録するだけで、実際には送りません
         </p>
       ) : null}
       <p className="text-sm font-bold text-red-700">送ったあとは取り消せません。</p>

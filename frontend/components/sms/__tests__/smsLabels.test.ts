@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest';
 import { smsPendingListSchema, weekNoticePreviewSchema } from '@/lib/schemas/sms';
 
 import {
+  formatHm,
+  formatPhone,
   formatWaiting,
   smsCarrierLabel,
   smsNotSendableLabel,
@@ -129,5 +131,19 @@ describe('API の形 (ゆるく読む)', () => {
     expect(pending.items[0]?.call_numbers).toEqual([]);
     expect(preview.rows[0]?.body).toBe('');
     expect(preview.rows[0]?.char_count).toBe(0);
+  });
+});
+
+describe('番号と時刻の出し方', () => {
+  it('11 けたの携帯はハイフンで区切り、ほかの長さはそのまま', () => {
+    expect(formatPhone('09000000002')).toBe('090-0000-0002');
+    expect(formatPhone('0312345678')).toBe('0312345678');
+    expect(formatPhone(null)).toBe('—');
+  });
+
+  it('時の 0 を付けない (画面の文面と同じ)', () => {
+    expect(formatHm('09:00')).toBe('9:00');
+    expect(formatHm('14:30')).toBe('14:30');
+    expect(formatHm('9:30')).toBe('9:30');
   });
 });

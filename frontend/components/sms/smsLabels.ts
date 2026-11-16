@@ -208,6 +208,18 @@ export function formatWaiting(minutes: number | null | undefined): string {
   return m === 0 ? `${h} 時間` : `${h} 時間 ${m} 分`;
 }
 
+/** "09:00" → "9:00" (画面の文面と同じく、時の 0 を付けない)。形の違うものはそのまま。 */
+export function formatHm(hm: string): string {
+  return hm.replace(/^0(\d:\d{2})/, '$1');
+}
+
+/** 11 けたの携帯の番号 "09000000002" → "090-0000-0002"。ほかの長さはそのまま。 */
+export function formatPhone(phone: string | null | undefined): string {
+  if (!phone) return '—';
+  const m = /^(0[5789]0)(\d{4})(\d{4})$/.exec(phone);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : phone;
+}
+
 export function formatYen(yen: number): string {
   return `${yen.toLocaleString('ja-JP')} 円`;
 }

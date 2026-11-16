@@ -117,6 +117,8 @@ ATTEMPT_RESULT_LABEL: dict[str, str] = {
 # --- ベル (管理者全員・患者様の名前は書かない) ---
 #: 画面の「お知らせの記録」(ベルから開く先)。
 RECORDS_PATH: Final = "/sms-notices"
+#: お知らせ待ちのベルの開く先。送る一覧はスケジュールの画面のダイアログ (変更のお知らせ) にある。
+CHANGE_PENDING_PATH: Final = "/schedule?sms=changes"
 NOTIFY_CHANGE_PENDING: Final = "sms_change_pending"
 NOTIFY_DELIVERY_FAILED: Final = "sms_delivery_failed"
 NOTIFY_UNSENT: Final = "sms_unsent"
@@ -253,8 +255,19 @@ async def admin_users(db: AsyncSession) -> list[User]:
     )
 
 
-async def add_bell(db: AsyncSession, *, type_: str, title: str, body: str, now: datetime) -> int:
-    """管理者全員へ 1 つずつベルを足す (患者様の名前は入れない)。足した行の数を返す."""
+async def add_bell(
+    db: AsyncSession,
+    *,
+    type_: str,
+    title: str,
+    body: str,
+    now: datetime,
+    href: str = RECORDS_PATH,
+) -> int:
+    """管理者全員へ 1 つずつベルを足す (患者様の名前は入れない)。足した行の数を返す.
+
+    href はベルを押したときに開く画面。既定は「お知らせの記録」。
+    """
     users = await admin_users(db)
     ref = uuid.uuid4()
     for u in users:
@@ -266,7 +279,7 @@ async def add_bell(db: AsyncSession, *, type_: str, title: str, body: str, now: 
                 body=body,
                 reference_type=type_,
                 reference_id=ref,
-                data={"href": RECORDS_PATH},
+                data={"href": href},
                 created_at=now,
                 updated_at=now,
             )

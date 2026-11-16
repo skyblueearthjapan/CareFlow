@@ -881,6 +881,53 @@ describe('タブ', () => {
   });
 });
 
+describe('磨きの直し (画面の確かめ 11-17)', () => {
+  it('試験の状態・模擬の窓口なら、確かめの欄に一言添える', async () => {
+    openWeek({ ...STATUS_LIVE, send_mode: 'test', provider: 'mock', test_allowlist_count: 2 });
+    await screen.findByTestId('sms-week-tab');
+    fireEvent.click(screen.getByTestId('sms-week-send'));
+    const confirm = screen.getByTestId('sms-week-confirm');
+    expect(within(confirm).getByTestId('sms-week-confirm-test-mode')).toHaveTextContent(
+      '試験の状態のため、実際に送るのは決めた番号（2 件）の方だけです',
+    );
+    expect(within(confirm).getByTestId('sms-week-confirm-mock')).toHaveTextContent(
+      'いまは記録するだけで、実際には送りません',
+    );
+  });
+
+  it('本番の状態なら、確かめの欄に試験・模擬の一言は出さない', async () => {
+    openWeek();
+    await screen.findByTestId('sms-week-tab');
+    fireEvent.click(screen.getByTestId('sms-week-send'));
+    expect(screen.queryByTestId('sms-week-confirm-test-mode')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sms-week-confirm-mock')).not.toBeInTheDocument();
+  });
+
+  it('送っている途中の方には、間をあけて送ることを添える', async () => {
+    handler = route({
+      '/api/v1/sms/week-notices/preview': () => {
+        const p = preview();
+        return { ...p, rows: [{ ...p.rows[0], state: 'sending' }, ...p.rows.slice(1)] };
+      },
+    });
+    openWeek();
+    expect(await screen.findByTestId(`sms-week-sending-note-${P1}`)).toHaveTextContent(
+      '同じ番号へ続けて送るときは、10 分ほどあけて送ります。しばらくお待ちください',
+    );
+    expect(screen.queryByTestId(`sms-week-sending-note-${P2}`)).not.toBeInTheDocument();
+  });
+
+  it('一覧と下の欄を分け、一覧だけをスクロールにする', async () => {
+    openWeek();
+    await screen.findByTestId('sms-week-tab');
+    const body = screen.getByTestId('sms-week-body');
+    const footer = screen.getByTestId('sms-week-footer');
+    expect(body.className).toContain('overflow-y-auto');
+    expect(footer.className).not.toContain('sticky');
+    expect(body.contains(footer)).toBe(false);
+  });
+});
+
 describe('［予定のお知らせ］ボタン', () => {
   it('旗が OFF なら出さない', async () => {
     handler = route({ '/api/v1/sms/status': () => ({ enabled: false }) });

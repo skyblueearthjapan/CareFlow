@@ -46,7 +46,7 @@ export function SmsPatientsTab() {
       ) : (
         <div className="overflow-x-auto rounded-md border border-border-default">
           <table className="w-full text-sm">
-            <thead className="bg-bg-muted text-left text-text-secondary">
+            <thead className="whitespace-nowrap bg-bg-muted text-left text-text-secondary">
               <tr>
                 <th className="px-3 py-2">患者様</th>
                 <th className="px-3 py-2 text-right">回数</th>
@@ -60,7 +60,7 @@ export function SmsPatientsTab() {
             <tbody className="divide-y divide-border-default">
               {items.map((it) => (
                 <tr key={it.patient_id}>
-                  <td className="px-3 py-2">
+                  <td className="whitespace-nowrap px-3 py-2">
                     <Link
                       href={`/sms-notices?tab=messages&patient=${it.patient_id}`}
                       className="font-bold text-text-primary underline-offset-2 hover:underline"
@@ -78,7 +78,9 @@ export function SmsPatientsTab() {
                   >
                     {it.failed}
                   </td>
-                  <td className="px-3 py-2">{formatJstDate(it.last_delivered_at)}</td>
+                  <td className="whitespace-nowrap px-3 py-2">
+                    {formatJstDate(it.last_delivered_at)}
+                  </td>
                   <td className="px-3 py-2 text-right tnum">{it.told_by_phone}</td>
                 </tr>
               ))}

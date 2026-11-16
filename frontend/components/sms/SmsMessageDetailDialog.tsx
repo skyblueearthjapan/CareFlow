@@ -20,6 +20,7 @@ import { useSmsMessageDetail } from '@/lib/queries/sms';
 import {
   SMS_MOCK_LABEL,
   formatJstDateTime,
+  formatPhone,
   smsCarrierLabel,
   smsKindLabel,
   smsStatusLabel,
@@ -77,7 +78,7 @@ export function SmsMessageDetailDialog({ messageId, onClose }: SmsMessageDetailD
                 ) : null}
               </Row>
               <Row label="送り先">
-                {m.relation_label ?? '—'}・{m.phone ?? '—'}
+                {m.relation_label ?? '—'}・{formatPhone(m.phone)}
               </Row>
               <Row label="作った日時">{formatJstDateTime(m.created_at)}</Row>
               <Row label="送った人">{m.created_by_name ?? '—'}</Row>

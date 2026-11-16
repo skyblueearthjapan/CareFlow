@@ -547,7 +547,7 @@ async def test_bells_after_stable_60min_gap_and_no_duplicate(db, base) -> None:
     (bell,) = await _bells(db)
     assert bell.title == "予定が変わった方が 1 名います（お知らせ待ち）"
     assert "見本" not in bell.title and "見本" not in (bell.body or "")
-    assert bell.user_id == base["admin_id"] and bell.data == {"href": "/sms-notices"}
+    assert bell.user_id == base["admin_id"] and bell.data == {"href": "/schedule?sms=changes"}
 
     for minutes in (10, 30, 64):
         assert (await sms_changes.run_detect(db, NOW + timedelta(minutes=minutes)))["bells"] == 0

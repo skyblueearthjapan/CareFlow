@@ -3,6 +3,8 @@
 /**
  * お知らせの記録 — 「月のまとめ」(設計 §5-4 の 3・決まり §6〜§7)。
  * 金額は見込み (届いた分の通数 × 11 円)。確かな額は KDDI の請求書で確かめる。
+ * 送らずに済ませたもの (skipped) があるときは「作ったお知らせ N 件（うち送っていないもの M 件）」と出し、
+ * 「送った件数」と食い違って見えないようにする。
  * 窓口が模擬 (status.provider === "mock") のときは、実際には送っていないと 1 行添える (決まり §13-4)。
  */
 import { useState, type ReactNode } from 'react';
@@ -24,9 +26,19 @@ import {
 } from '../smsLabels';
 import { MonthPicker } from './SmsPatientsTab';
 
-function Tile({ label, value, note }: { label: string; value: ReactNode; note?: string }) {
+function Tile({
+  label,
+  value,
+  note,
+  testId,
+}: {
+  label: string;
+  value: ReactNode;
+  note?: string;
+  testId?: string;
+}) {
   return (
-    <div className="rounded-md border border-border-default p-3">
+    <div className="rounded-md border border-border-default p-3" data-testid={testId}>
       <p className="text-xs text-text-secondary">{label}</p>
       <p className="text-xl font-bold text-text-primary tnum">{value}</p>
       {note ? <p className="text-xs text-text-secondary">{note}</p> : null}
@@ -51,28 +63,35 @@ function SmallTable({
       {rows.length === 0 ? (
         <p className="text-sm text-text-secondary">{empty}</p>
       ) : (
-        <table className="w-full rounded-md border border-border-default text-sm">
-          <thead className="bg-bg-muted text-left text-text-secondary">
-            <tr>
-              {head.map((h, i) => (
-                <th key={h} className={'px-3 py-1.5 ' + (i > 0 ? 'text-right' : '')}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-default">
-            {rows.map((r, i) => (
-              <tr key={i}>
-                {r.map((c, j) => (
-                  <td key={j} className={'px-3 py-1.5 ' + (j > 0 ? 'text-right tnum' : '')}>
-                    {c}
-                  </td>
+        <div className="overflow-x-auto rounded-md border border-border-default">
+          <table className="w-full text-sm">
+            <thead className="whitespace-nowrap bg-bg-muted text-left text-text-secondary">
+              <tr>
+                {head.map((h, i) => (
+                  <th key={h} className={'px-3 py-1.5 ' + (i > 0 ? 'text-right' : '')}>
+                    {h}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-border-default">
+              {rows.map((r, i) => (
+                <tr key={i}>
+                  {r.map((c, j) => (
+                    <td
+                      key={j}
+                      className={
+                        'whitespace-nowrap px-3 py-1.5 ' + (j > 0 ? 'text-right tnum' : '')
+                      }
+                    >
+                      {c}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
@@ -141,20 +160,30 @@ export function SmsSummaryTab() {
         <p className="text-sm text-text-secondary">読み込んでいます…</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <Tile label="送った件数" value={`${s.totals.messages} 件`} />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-6">
+            {s.totals.skipped > 0 ? (
+              <Tile
+                label="作ったお知らせ"
+                value={`${s.totals.messages} 件`}
+                note={`うち送っていないもの ${s.totals.skipped} 件`}
+                testId="sms-summary-messages"
+              />
+            ) : (
+              <Tile
+                label="送った件数"
+                value={`${s.totals.messages} 件`}
+                testId="sms-summary-messages"
+              />
+            )}
             <Tile label="届いた割合" value={rate} note={`届いた ${s.totals.delivered} 件`} />
             <Tile label="届かなかった" value={`${s.totals.failed} 件`} />
-            <Tile
-              label="分からない・まだ"
-              value={`${s.totals.unknown + s.totals.pending} 件`}
-              note={`送っていない ${s.totals.skipped} 件`}
-            />
+            <Tile label="分からない・まだ" value={`${s.totals.unknown + s.totals.pending} 件`} />
             <Tile label="通数の合計" value={`${s.totals.segments} 通分`} />
             <Tile
-              label="見込みの金額"
+              label="見込みの金額（届いた分）"
               value={formatYen(s.totals.est_yen)}
-              note="請求書で確かめてください"
+              note="確かな金額は請求書で確かめてください"
+              testId="sms-summary-yen"
             />
           </div>
 
