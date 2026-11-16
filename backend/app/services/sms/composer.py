@@ -47,6 +47,10 @@ SEGMENT_TABLES: dict[str, tuple[int, int]] = {
 ESTIMATE_CARRIER = "docomo"
 
 
+#: 文面で訪問時刻の行の頭に付ける印 (PO 2026-11-17)。
+BULLET = "・"
+
+
 def surname_of(name: str | None) -> str:
     """``patients.name`` から姓を取る (最初の空白より前・空白が無ければ全体).
 
@@ -145,7 +149,8 @@ def compose_week_notice(
         f"{station_name} です。{surname}様の{week_label(week_start, today)}"
         "ご訪問予定をお知らせします。"
     ]
-    lines.extend(format_slot(d, t) for d, t in unique_slots(slots))
+    # 訪問時刻の頭に「・」を付けて見やすくする (PO 2026-11-17)。
+    lines.extend(f"{BULLET}{format_slot(d, t)}" for d, t in unique_slots(slots))
     lines.append(
         f"時刻は前後することがあります。ご都合が悪いときは{contact_tel}までご連絡ください。"
     )
@@ -215,6 +220,6 @@ def compose_change_notice(
             f"ご都合が悪いときは{contact_tel}へ"
         )
     lines = [f"{head} ご訪問の変更です。"]
-    lines.extend(change_line(c) for c in changes)
+    lines.extend(f"{BULLET}{change_line(c)}" for c in changes)
     lines.append(f"ご都合が悪いときは{contact_tel}へ")
     return "\n".join(lines)

@@ -275,7 +275,7 @@ async def test_preview_classification(client, db, base) -> None:
         {"date": "2026-12-01", "start": "10:00"},
         {"date": "2026-12-01", "start": "15:00"},
     ]
-    assert row["body"].split("\n")[1:3] == ["12/1(火)10:00", "12/1(火)15:00"]
+    assert row["body"].split("\n")[1:3] == ["・12/1(火)10:00", "・12/1(火)15:00"]
     assert "一郎" not in row["body"]
     assert row["destinations"] == [
         {
