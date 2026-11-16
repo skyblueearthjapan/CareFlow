@@ -156,14 +156,20 @@ def refresh(plan: dict) -> None:
     by_id = {u["visit_id"]: u for u in plan.get("unplaced") or []}
     res = plan.get("resolutions") or []
     left = unresolved(plan)
-    blockers = [b for b in plan.get("blockers") or [] if not str(b).startswith(UNPLACED_BLOCKER_PREFIX)]
+    from rk.plan import COURSE_GUARD_PREFIX, course_staff_conflicts
+    blockers = [b for b in plan.get("blockers") or []
+                if not str(b).startswith((UNPLACED_BLOCKER_PREFIX, COURSE_GUARD_PREFIX))]
     if left:
         blockers.append(f"{UNPLACED_BLOCKER_PREFIX} {len(left)} 件あります（rk plan resolve で 1 件ずつ決めると反映できます）")
+    blockers += course_staff_conflicts(plan)  # 決め方でコースに残る訪問が変わるので、毎回見直す
     plan["blockers"] = blockers
     plan["ready"] = not blockers
+    from rk.plan import KEPT_UNASSIGNED_PREFIX, kept_unassigned_notes
     plan["warnings"] = [w for w in plan.get("warnings") or []
-                        if not str(w).startswith(("決めたこと:", "承知の上で超過:", "承知の上で残す:"))]
+                        if not str(w).startswith(("決めたこと:", "承知の上で超過:", "承知の上で残す:",
+                                                  KEPT_UNASSIGNED_PREFIX))]
     plan["warnings"] += [resolution_warning(r, by_id.get(r["visit_id"])) for r in res]
+    plan["warnings"] += kept_unassigned_notes(plan)
     checks = [c for c in plan.get("checks") or [] if not str(c).startswith(OVER_CHECK_PREFIX)]
     over = [r for r in res if r["choice"] == "allow-over"]
     if over:

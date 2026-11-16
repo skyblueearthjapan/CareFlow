@@ -110,6 +110,7 @@ def current_basis_hash(cfg: Config, plan: dict, run_sql: Callable[[str], Any] | 
     """今の週の形を rk level と同じ物差しで読み直す（読み取り専用の SQL 1 本）。
 
     物差し = tools/leveling/plan.py の basis_hash（docs/tools/week-leveling/extract.py の週の SQL の visits）。
+    案の target.days（日を絞った案）があれば、その日だけで比べる（ほかの日の変化では止めない）。
     """
     if str(AGENT_DIR) not in sys.path:
         sys.path.insert(0, str(AGENT_DIR))
@@ -124,7 +125,8 @@ def current_basis_hash(cfg: Config, plan: dict, run_sql: Callable[[str], Any] | 
     week = unwrap(run(ex._week_sql(_plan_monday(plan))))
     if not isinstance(week, dict):
         raise RkError("週の形を読み直せません（SQL の結果が想定外）")
-    return basis_hash(week)
+    days = (plan.get("target") or {}).get("days")
+    return basis_hash(week, days if isinstance(days, list) and days else None)
 
 
 def check_basis(cfg: Config, plan: dict, run_sql: Callable[[str], Any] | None = None) -> str | None:

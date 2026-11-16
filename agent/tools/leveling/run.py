@@ -204,7 +204,7 @@ def level(
     summary = result.get("summary") or {}
     files = {"dir": str(out_dir), **(summary.get("files") or {})}
     plan = build_plan(result, week_data, extra, config=config, kind=kind, title=title, files=files,
-                      created_at=now.isoformat(timespec="seconds"))
+                      created_at=now.isoformat(timespec="seconds"), days=[str(x) for x in day_set] or None)
     plans_dir = Path(cfg.runs_dir) / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
     plan_path = plans_dir / f"{now:%Y%m%d-%H%M}-week{iso_week}-leveling{tag}.json"

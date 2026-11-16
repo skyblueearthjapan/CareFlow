@@ -241,24 +241,59 @@ def cmd(argv: list[str]) -> tuple[int, dict]:
         except (KeyError, ValueError):
             print("rk week preview-clear|preview-generate --year <年> --week <週> です", file=sys.stderr)
             return 2, {"cmd": "week"}
+        rng = (str(opt["from"]), str(opt["to"])) if opt.get("from") and opt.get("to") else (None, None)
+        where = f"{rng[0]}〜{rng[1]} " if rng[0] else f"週{w} "
         if sub == "preview-clear":
-            res = world.week_preview_clear(y, w)
-            print(f"週{w} を空にすると、消える予定は {res['to_delete']} 件（うちカイポケとつながっているもの "
+            res = world.week_preview_clear(y, w, *rng)
+            print(f"{where}を空にすると、消える予定は {res['to_delete']} 件（うちカイポケとつながっているもの "
                   f"{res['kaipoke_linked']} 件）。打刻・実績のある訪問 {res['kept_checked_in']} 件は残ります。まだ何も変えていません。")
             _out(res)
-            return 0, {"cmd": "week preview-clear", "year": y, "week": w}
+            return 0, {"cmd": "week preview-clear", "year": y, "week": w, "from": rng[0], "to": rng[1]}
         if sub == "preview-generate":
-            status, res = world.week_preview_generate(y, w)
+            status, res = world.week_preview_generate(y, w, *rng)
             if status == 409:
                 msg = "この週にはもう予定があります。作り直すなら、先に週を空にする（clear-week）案が要ります。"
                 print(msg + " まだ何も変えていません。")
                 _out({"conflict": True, "status": 409, "message": msg})
             else:
-                print(f"週{w} を型から作ると、{res['to_add']} 件の訪問が増えます（担当は付きません）。まだ何も変えていません。")
+                print(f"{where}を型から作ると、{res['to_add']} 件の訪問が増えます（担当は付きません）。まだ何も変えていません。")
                 _out(res)
-            return 0, {"cmd": "week preview-generate", "year": y, "week": w, "status": status}
+            return 0, {"cmd": "week preview-generate", "year": y, "week": w, "status": status, "from": rng[0], "to": rng[1]}
         print("week のあとに preview-clear か preview-generate を書いてください", file=sys.stderr)
         return 2, {"cmd": "week"}
+    if c == "period":
+        # 日付の計算は本物の rk の build_scope をそのまま使う（件数だけ架空の事業所から）。
+        # 作業フォルダーの rk は写しなので、本物は別の Python で読む（つながない処理だけ）
+        pos, opt = _opts(rest[1:] if rest else [])
+        if not rest or rest[0] != "scope":
+            print("rk period scope --month YYYY-MM か --from … --to … です", file=sys.stderr)
+            return 2, {"cmd": "period"}
+        args = {"month": opt.get("month"), "date_from": opt.get("from"), "date_to": opt.get("to")}
+        args = {k: (None if v is True else v) for k, v in args.items()}
+        code = chr(10).join([
+            "import json, sys, types",
+            "from datetime import date",
+            "from rk import RkError",
+            "from rk.commands import period as P",
+            "a = json.loads(sys.stdin.read())",
+            "try:",
+            "    f, t = P.parse_range(types.SimpleNamespace(**a['args']))",
+            "    s = P.build_scope(f, t, date.fromisoformat(a['today']), a['counts'])",
+            "    print(json.dumps(s, ensure_ascii=False, indent=2))",
+            "except RkError as e:",
+            "    print(e, file=sys.stderr)",
+            "    sys.exit(1)",
+        ])
+        env = {k: v for k, v in os.environ.items() if not k.startswith("RK_")}
+        env.update({"PYTHONPATH": str(CFG["real_agent"]), "PYTHONIOENCODING": "utf-8"})
+        r = subprocess.run([sys.executable, "-c", code], env=env, cwd=str(CFG["real_agent"]), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=60,
+                           input=json.dumps({"args": args, "today": world.TODAY.isoformat(),
+                                             "counts": world.period_counts("0000-01-01", "9999-12-31")}))
+        sys.stdout.write(r.stdout)
+        sys.stderr.write(r.stderr)
+        return (0 if r.returncode == 0 else 1), {"cmd": "period scope", "month": args["month"],
+                                                  "from": args["date_from"], "to": args["date_to"]}
     if c == "level":
         sub = rest[0] if rest else ""
         pos, opt = _opts(rest[1:], multi=("day", "off", "drop", "prefer-staff", "avoid-staff", "cancel", "only-staff",

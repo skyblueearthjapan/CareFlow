@@ -345,6 +345,39 @@ def test_check_basis_detects_change(cfg):
         check_basis(cfg, p, run_sql=run_sql)
 
 
+def test_check_basis_with_target_days_ignores_other_days(cfg):
+    """日を絞った案（target.days）は、その日だけ読み直して比べる（agent-period-build-design §3-2）。"""
+    pytest.importorskip("tools.leveling.plan")
+    from rk.applyrun import BASIS_CHANGED, check_basis
+    from tools.leveling.plan import basis_hash
+
+    def week(d20="09:30", d22="09:30"):
+        return {"extracted_at": "x", "visits": [
+            {"id": "v1", "visit_date": "2026-10-20", "start_time": d20 + ":00", "status": "planned",
+             "course_office": "稲", "course_code": "A", "primary_staff_id": "s1"},
+            {"id": "v2", "visit_date": "2026-10-22", "start_time": d22 + ":00", "status": "planned",
+             "course_office": "稲", "course_code": "B", "primary_staff_id": "s2"}]}
+    p = _plan(_op("v1", "S9"))
+    p["target"] = {"iso_year": 2026, "iso_week": 43, "week_start": "2026-10-19", "days": ["2026-10-20"]}
+    p["source"] = {"basis_hash": basis_hash(week(), ["2026-10-20"])}
+    state = {"w": week()}
+
+    def run_sql(sql):
+        return [{"json_build_object": json.dumps(state["w"])}]
+    assert check_basis(cfg, p, run_sql=run_sql) == p["source"]["basis_hash"]
+    state["w"] = week(d22="11:00")  # 範囲の外の日が変わっても止めない
+    assert check_basis(cfg, p, run_sql=run_sql) == p["source"]["basis_hash"]
+    state["w"] = week(d20="10:00")  # 範囲の中が変わったら止める
+    with pytest.raises(RkError, match=BASIS_CHANGED):
+        check_basis(cfg, p, run_sql=run_sql)
+    # target.days の無い案は今までどおり週全体（範囲の外の変化でも止まる）
+    del p["target"]["days"]
+    p["source"] = {"basis_hash": basis_hash(week())}
+    state["w"] = week(d22="11:00")
+    with pytest.raises(RkError, match=BASIS_CHANGED):
+        check_basis(cfg, p, run_sql=run_sql)
+
+
 def test_main_apply_refuses_changed_basis_before_connecting(tmp_path, monkeypatch, capsys):
     from rk import applyrun, cli
     monkeypatch.setenv("RK_RUNS_DIR", str(tmp_path / "runs"))

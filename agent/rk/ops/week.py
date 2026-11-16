@@ -151,6 +151,9 @@ class CopyWeek(Op):
 #   POST /schedule/v2/weeks/{y}/{w}/clear       {dry_run, office_id?} → {to_delete, kaipoke_linked, kept_checked_in, snapshot_id}
 #   POST /schedule/v2/weeks/{y}/{w}/clear/undo  {snapshot_id} → {restored}
 #   POST /schedule/generate-week-only           {iso_year, iso_week, office_id?, dry_run} → dry_run は {to_add}・空でない週は 409
+# 期間で組む（agent-period-build-design-2026-11-16 §3-2）: どちらも任意の date_from・date_to（YYYY-MM-DD・組で・
+# その ISO 週の月〜日の中・from ≦ to）を受ける。付けると、その日だけを空にする／作る（範囲の外の日はそのまま）。
+# 付けないときは週全体（今までどおり）。生成の 409 は「範囲の中が空でない」になる。
 # dry_run: true は DB を変えない。ただし POST の本文で決まるため rk post-read の許可リストには入れず、
 # この操作の中（snapshot）で api.call(dry_run=true) を押す。
 
@@ -174,6 +177,46 @@ def _office(op: dict) -> dict:
     return {"office_id": op["office_id"]} if op.get("office_id") else {}
 
 
+def _range_errors(op: dict) -> list[str]:
+    """date_from・date_to（任意）の検査: 組で・日付・その週の中・from ≦ to。"""
+    has_f, has_t = op.get("date_from") is not None, op.get("date_to") is not None
+    if not has_f and not has_t:
+        return []
+    if has_f != has_t:
+        return ["date_from と date_to は組で書きます（片方だけは不可。週全体なら両方とも書かない）"]
+    days = []
+    for k in ("date_from", "date_to"):
+        v = op[k]
+        try:
+            if not isinstance(v, str) or len(v) != 10:
+                raise ValueError
+            days.append(date.fromisoformat(v))
+        except ValueError:
+            return [f"{k} は YYYY-MM-DD の日付です（{v!r}）"]
+    try:
+        monday = date.fromisocalendar(op["iso_year"], op["iso_week"], 1)
+    except (KeyError, TypeError, ValueError):
+        return []  # 週の誤りは _week_ints が知らせる
+    sunday = monday + timedelta(days=6)
+    errs = [f"{k} {d} は {monday}〜{sunday} の週の外です" for k, d in zip(("date_from", "date_to"), days)
+            if not monday <= d <= sunday]
+    if days[0] > days[1]:
+        errs.append(f"date_from {days[0]} が date_to {days[1]} より後です")
+    return errs
+
+
+def _range(op: dict) -> dict:
+    """本文に足す範囲（無ければ空 = 週全体）。"""
+    if op.get("date_from") and op.get("date_to"):
+        return {"date_from": str(op["date_from"]), "date_to": str(op["date_to"])}
+    return {}
+
+
+def _range_ja(op: dict) -> str:
+    r = _range(op)
+    return f"{r['date_from']}〜{r['date_to']} " if r else ""
+
+
 def _clear_path(op: dict) -> str:
     return f"/schedule/v2/weeks/{op['iso_year']}/{op['iso_week']}/clear"
 
@@ -188,17 +231,17 @@ class ClearWeek(Op):
         errs = _week_ints(op)
         if op.get("office_id") is not None and not isinstance(op["office_id"], str):
             errs.append("office_id は拠点 ID（文字列）です")
-        return errs
+        return errs + _range_errors(op)
 
     def request(self, op: dict) -> tuple[str, str, dict | None]:
-        return ("POST", _clear_path(op), {"dry_run": False, **_office(op)})
+        return ("POST", _clear_path(op), {"dry_run": False, **_office(op), **_range(op)})
 
     def snapshot(self, api: Api, op: dict) -> dict:
-        pv = api.call("POST", _clear_path(op), {"dry_run": True, **_office(op)}) or {}
+        pv = api.call("POST", _clear_path(op), {"dry_run": True, **_office(op), **_range(op)}) or {}
         return {"dry_run": {k: pv.get(k) for k in ("to_delete", "kaipoke_linked", "kept_checked_in")}}
 
     def execute(self, api: Api, op: dict) -> Any:
-        res = api.call("POST", _clear_path(op), {"dry_run": False, **_office(op)})
+        res = api.call("POST", _clear_path(op), {"dry_run": False, **_office(op), **_range(op)})
         if isinstance(res, dict):
             op["_snapshot_id"] = res.get("snapshot_id")  # inverse() が読む（応答は inverse に渡らないため）
         return res
@@ -215,9 +258,9 @@ class ClearWeek(Op):
         return [{"op": "clear-week-undo", "iso_year": op["iso_year"], "iso_week": op["iso_week"], "snapshot_id": sid}]
 
     def verify(self, api: Api, op: dict) -> list[str]:
-        pv = api.call("POST", _clear_path(op), {"dry_run": True, **_office(op)}) or {}
+        pv = api.call("POST", _clear_path(op), {"dry_run": True, **_office(op), **_range(op)}) or {}
         left = int(pv.get("to_delete") or 0)
-        return [f"まだ消える訪問が {left} 件あります"] if left else []
+        return [f"{_range_ja(op)}まだ消える訪問が {left} 件あります"] if left else []
 
 
 @register
@@ -244,6 +287,12 @@ class ClearWeekUndo(Op):
         return "画面からは元に戻せません"
 
 
+def _nothing_to_add(op: dict) -> bool:
+    """反映の前の確認（dry_run）で、型から作るものが 0 件だった（範囲が日曜だけ等）。"""
+    v = op.get("_to_add")
+    return v is not None and int(v or 0) == 0
+
+
 @register
 class GenerateWeek(Op):
     name = "generate-week"
@@ -254,11 +303,11 @@ class GenerateWeek(Op):
         errs = _week_ints(op)
         if op.get("office_id") is not None and not isinstance(op["office_id"], str):
             errs.append("office_id は拠点 ID（文字列）です")
-        return errs
+        return errs + _range_errors(op)
 
     def request(self, op: dict) -> tuple[str, str, dict | None]:
         return ("POST", "/schedule/generate-week-only",
-                {"iso_year": op["iso_year"], "iso_week": op["iso_week"], "dry_run": False, **_office(op)})
+                {"iso_year": op["iso_year"], "iso_week": op["iso_week"], "dry_run": False, **_office(op), **_range(op)})
 
     def snapshot(self, api: Api, op: dict) -> dict:
         _, path, body = self.request(op)
@@ -266,16 +315,18 @@ class GenerateWeek(Op):
             pv = api.call("POST", path, {**body, "dry_run": True}) or {}
         except ApiError as e:
             if e.status == 409:
-                raise RkError("この週にはもう予定があります（取消の記録と打刻・実績のある訪問以外）。"
-                              "作り直すなら先に clear-week で空にします") from e
+                where = f"{_range_ja(op)}の日" if _range(op) else "この週"
+                raise RkError(f"{where}にはもう予定があります（取消の記録と打刻・実績のある訪問以外）。"
+                              "作り直すなら先に clear-week（同じ範囲）で空にします") from e
             raise
+        op["_to_add"] = pv.get("to_add")  # check_response・verify が読む（範囲に作るものが無い日もある）
         return {"to_add": pv.get("to_add")}
 
     def check_response(self, op: dict, response: Any) -> list[str]:
         if not isinstance(response, dict):
             return ["応答の形が想定外です"]
         out = []
-        if int(response.get("visits_created") or 0) == 0:
+        if int(response.get("visits_created") or 0) == 0 and not _nothing_to_add(op):
             out.append("作った訪問が 0 件です")
         if response.get("unplaced_multi_staff_patients"):
             out.append(f"2 名体制で片側が欠けて作れなかった方が {len(response['unplaced_multi_staff_patients'])} 名います")
@@ -289,5 +340,20 @@ class GenerateWeek(Op):
         return "画面からは元に戻せません"
 
     def verify(self, api: Api, op: dict) -> list[str]:
+        if _range(op):
+            # 範囲の中に訪問があるか: 同じ範囲で「空にする」の確認（dry_run・DB は変わらない）の件数を読む。
+            # 作った訪問は空にすると消える側に数えられる。中継の中でも通る読み方（dry_run の POST）。
+            pv = api.call("POST", _clear_path(op), {"dry_run": True, **_office(op), **_range(op)}) or {}
+            if int(pv.get("to_delete") or 0) or _nothing_to_add(op):
+                return []
+            if "_to_add" not in op:  # rk verify で案を読み直したとき（覚えた値が無い）: 型から作るものがあるかを読む
+                _, path, body = self.request(op)
+                try:
+                    if int((api.call("POST", path, {**body, "dry_run": True}) or {}).get("to_add") or 0) == 0:
+                        return []  # 範囲に型の枠が無い（日曜だけ等）
+                except ApiError as e:
+                    if e.status != 409:
+                        raise
+            return [f"{_range_ja(op)}に作った訪問がありません"]
         monday = date.fromisocalendar(op["iso_year"], op["iso_week"], 1)
         return [] if _week_visits(api, monday) else [f"{monday} の週に訪問がありません"]

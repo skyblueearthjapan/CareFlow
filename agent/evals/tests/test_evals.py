@@ -232,3 +232,44 @@ def test_grade_journal_scenario_checks():
     sc2 = run.load_scenarios()
     j = next(s for s in sc2 if s["id"] == "journal-carry-over")
     assert j["new_session_turns"] == [2] and len(j["turns"]) == 1
+
+
+# ---------- 期間で組む（agent-period-build-design §5） ----------
+def test_stub_period_scope_and_ranged_preview(tmp_path):
+    root = run.build_workspace(tmp_path, "p")
+    env = run.stub_env(root, 1)
+
+    def rk(*args):
+        return subprocess.run([sys.executable, "-m", "rk", *args], cwd=str(root / "agent"), env=env,
+                              capture_output=True, text=True, encoding="utf-8", timeout=120)
+
+    r = rk("period", "scope", "--month", "2026-11")
+    assert r.returncode == 0, r.stderr
+    s = json.loads(r.stdout)
+    w44 = s["weeks"][0]
+    assert (w44["monday"], w44["date_from"], w44["date_to"]) == ("2026-10-26", "2026-11-01", "2026-11-01")
+    assert "2026-10-26" in w44["frozen_days"]
+    assert rk("period", "scope").returncode != 0
+    # 予定の入った週でも、範囲が空なら作れる（409 にならない）・範囲に予定があれば 409
+    def body(out):  # 説明の 1 行の後の JSON
+        return json.loads(out[out.index("{"):])
+
+    gen = rk("week", "preview-generate", "--year", "2026", "--week", "43", "--from", "2026-10-25", "--to", "2026-10-25")
+    assert body(gen.stdout) == {"to_add": 0} and "2026-10-25〜2026-10-25" in gen.stdout
+    assert body(rk("week", "preview-generate", "--year", "2026", "--week", "43").stdout)["status"] == 409
+    log = grade.load_jsonl(run.calls_log(root))
+    assert [x["cmd"] for x in log][:2] == ["period scope", "period scope"]
+
+
+def test_grade_plan_range():
+    sc = {"id": "x", "expect": {"plan_range": {"not_before": "2026-11-01", "not_after": "2026-11-30"}}}
+    good = {"ops": [{"op": "generate-week", "label": "a", "iso_year": 2026, "iso_week": 44,
+                     "date_from": "2026-11-01", "date_to": "2026-11-01"}], "_turn": 1}
+    whole = {"ops": [{"op": "clear-week", "label": "b", "iso_year": 2026, "iso_week": 44}], "_turn": 1}
+    early = {"ops": [{"op": "generate-week", "label": "c", "iso_year": 2026, "iso_week": 44,
+                      "date_from": "2026-10-26", "date_to": "2026-11-01"}], "_turn": 1}
+    tr = _tr("案を作りました。")
+    assert "correct.plan_range" in _ids(grade.grade(sc, tr, [], [good], W, None), True)
+    for p in (whole, early):
+        assert "correct.plan_range" in _ids(grade.grade(sc, tr, [], [p], W, None), False)
+    assert any(s["id"] == "period-month-build" for s in run.load_scenarios())

@@ -261,3 +261,233 @@ def test_unplaced_reason_counts_male_only_as_hard():
     reason = unplaced_reason(v, staff, Counter(), 6, 0)
     assert "男性限定" in "".join(reason)
     assert ("男性限定", ("男性限定に女性",)) in RULES
+
+
+# ---- 期間で組む: 日を絞った案の読み直し（basis_hash は target.days の日だけ・agent-period-build-design §3-2） ----
+def _week_two_days():
+    w = load("week")
+    extra_day = copy.deepcopy(w["visits"][0])
+    extra_day.update(id="v9", visit_date="2026-10-20", start_time="09:00:00")
+    w["visits"].append(extra_day)
+    return w
+
+
+def test_target_days_and_basis_hash_only_for_those_days():
+    from tools.leveling.plan import basis_hash
+    w = _week_two_days()
+    whole = make(week=w)
+    assert "days" not in whole["target"]
+    assert whole["source"]["basis_hash"] == basis_hash(w)  # 日を絞らない案は今までと同じ値
+    plan = make(week=w, days=["2026-10-19"])
+    assert plan["target"]["days"] == ["2026-10-19"]
+    assert plan["source"]["basis_hash"] == basis_hash(w, ["2026-10-19"]) != basis_hash(w)
+    # 範囲の外（10/20）が変わっても同じ・範囲の中（10/19）が変わると違う
+    out_changed = copy.deepcopy(w)
+    out_changed["visits"][-1]["primary_staff_id"] = "S2"
+    assert basis_hash(out_changed, ["2026-10-19"]) == plan["source"]["basis_hash"]
+    in_changed = copy.deepcopy(w)
+    in_changed["visits"][0]["start_time"] = "09:15:00"
+    assert basis_hash(in_changed, ["2026-10-19"]) != plan["source"]["basis_hash"]
+
+
+def test_target_days_from_result_summary():
+    r = load("result")
+    r["summary"] = {"days": ["2026-10-19"]}
+    assert make(result=r)["target"]["days"] == ["2026-10-19"]
+    r["summary"] = {"days": "all"}
+    assert "days" not in make(result=r)["target"]
+
+
+# ---- 途中で止まりにくくする（agent-period-build-design §3-4）: 10/28 の形の再現 ----
+def _female_only_unplaced(unassigned=False):
+    """v3（XB・入らない訪問）の方が女性限定。案は XB に男性の S2 を付ける（10/28 と同じ形）。"""
+    w, r, extra = load("week"), load("result"), load("extra")
+    for p_ in w["patients"]:
+        if p_["id"] == "P3":
+            p_["sex_restriction"] = "female_only"
+    if unassigned:  # 担当なしの訪問（主担当もコースの担当も無い）
+        for v in w["visits"]:
+            if v["id"] == "v3":
+                v["primary_staff_id"] = None
+                v["course_staff_id"] = None
+        for v in r["visits"]:
+            if v["id"] == "v3":
+                v["cur_staff"] = None
+        for c in extra["courses"]:
+            if c["id"] == "cXB":
+                c["assigned_staff_id"] = None
+    return make(result=r, week=w, extra=extra)
+
+
+def test_course_guard_written_on_ops():
+    plan = _female_only_unplaced()
+    xb = next(o for o in ops_of(plan, "patch-course-staff") if o["course"] == "XB")
+    g = xb["course_guard"]
+    assert g["staff"]["id"] == "S2" and g["staff"]["sex"] == "male" and g["staff"]["is_trainee"] is False
+    assert {v["visit_id"] for v in g["visits"]} == {"v3", "v6"}
+    v3 = next(v for v in g["visits"] if v["visit_id"] == "v3")
+    assert v3["sex_restriction"] == "female_only" and v3["own_staff"] is True
+    assert all("course_guard" in o for o in plan["ops"] if o["op"] in ("move-visit-week", "special-visit-place"))
+    assert not any("course_guard" in o for o in ops_of(plan, "patch-course-staff") if o["staff_id"] is None)
+
+
+def test_keep_female_only_visit_on_male_course_is_blocked_before_apply():
+    from rk.plan import COURSE_GUARD_PREFIX, check_plan
+    from rk.resolve import resolve
+    plan = _female_only_unplaced(unassigned=True)  # 10/28 の形: 担当なしの女性限定の訪問がコースに残る
+    # 入らない訪問はプールへ戻す操作があるので、作った時点では組み合わせの問題はない
+    assert not [b for b in plan["blockers"] if b.startswith(COURSE_GUARD_PREFIX)]
+    resolve(plan, "keep", approved="試験 11/16", key="v3")
+    hits = [b for b in plan["blockers"] if b.startswith(COURSE_GUARD_PREFIX)]
+    assert len(hits) == 1 and "女性限定" in hits[0] and "XB" in hits[0]
+    assert plan["ready"] is False
+    errs = check_plan(plan)
+    assert any("女性限定" in e for e in errs)
+    # 決め方をプールへ変えると外れる
+    resolve(plan, "pool", approved="試験 11/16", key="v3")
+    assert plan["ready"] is True and not [e for e in check_plan(plan) if "女性限定" in e]
+
+
+def test_hand_merged_month_plan_is_checked_on_ops():
+    """10/28 は週の案をモデルが手で 1 つ（kind month-leveling）にまとめた。操作の材料だけで見つける。"""
+    from rk.plan import check_plan
+    a = _female_only_unplaced()
+    b = make()
+    ops = [o for o in a["ops"] if not (o["op"] == "return-to-pool" and o["visit_id"] == "v3")] + b["ops"]
+    merged = {"kind": "month-leveling", "title": "11 月の案", "target": {}, "summary": ["まとめ"], "ops": ops,
+              "checks": [], "warnings": []}
+    errs = check_plan(merged)
+    assert len([e for e in errs if "女性限定" in e]) == 1
+    # 女性限定の訪問を先に別のコースへ移せば通る（XA の担当は女性の S1）
+    mv = {"op": "move-visit-week", "label": "v3 を XA へ", "visit_id": "v3", "patient_id": "P3", "date": "2026-10-19",
+          "iso_year": 2026, "iso_week": 43, "old_weekday": 0, "old_start_time": "13:00:00", "new_weekday": 0,
+          "new_start_time": "13:00:00", "new_course_template_id": "tXA", "from_course": "XB", "to_course": "XA"}
+    xb_i = next(i for i, o in enumerate(merged["ops"]) if o["op"] == "patch-course-staff" and o["course"] == "XB")
+    merged["ops"].insert(xb_i, mv)
+    assert not [e for e in check_plan(merged) if "女性限定" in e]
+
+
+def test_ng_and_trainee_on_course_patch():
+    from rk.plan import course_staff_conflicts
+    plan = make()
+    xb = next(o for o in ops_of(plan, "patch-course-staff") if o["course"] == "XB")
+    xb = copy.deepcopy(xb)
+    xb["course_guard"]["visits"][0]["ng_staff_ids"] = ["S2"]
+    assert any("NG の職員" in c for c in course_staff_conflicts({"ops": [xb]}))
+    xb["course_guard"]["staff"]["is_trainee"] = True
+    assert any("新人" in c for c in course_staff_conflicts({"ops": [xb]}))
+    xb["acknowledge_constraint_warnings"] = True  # 人が了承して通すと書いたものは止めない（新人は別: 本体が必ず断る）
+    xb["course_guard"]["staff"]["is_trainee"] = False
+    assert course_staff_conflicts({"ops": [xb]}) == []
+    del xb["course_guard"]  # 材料の無い操作（古い案）は見ない
+    assert course_staff_conflicts({"ops": [xb]}) == []
+
+
+def test_keep_unassigned_visit_would_inherit_course_staff_is_reported():
+    """10/28 の 2 つ目: 担当なしで残すと決めた訪問が、コースの担当付けでその人の訪問に読み替わる。
+    担当なしのまま保つ操作は画面と同じ API に無い（visit-assign-staff-week の null は手の上書きを外す）ので、
+    操作は足さずに知らせる。"""
+    from rk.plan import KEPT_UNASSIGNED_PREFIX
+    from rk.resolve import resolve
+    plan = _female_only_unplaced(unassigned=True)
+    resolve(plan, "keep", approved="試験 11/16", key="v3")
+    assert not [o for o in plan["ops"] if o.get("resolution_of") == "v3"]  # 担当が無いので留める操作は作れない
+    notes = [w for w in plan["warnings"] if w.startswith(KEPT_UNASSIGNED_PREFIX)]
+    assert len(notes) == 1 and "XB" in notes[0]
+    # 女性限定なので、そもそも反映の前に止まる（10/28 は 273 件目で 422）
+    assert plan["ready"] is False
+    resolve(plan, "pool", approved="試験 11/16", key="v3")
+    assert not [w for w in plan["warnings"] if w.startswith(KEPT_UNASSIGNED_PREFIX)]
+
+
+# ---- レビューの指摘（11-16）: 検査が黙って漏らさない ----
+def _xb_patch(plan):
+    return next(o for o in ops_of(plan, "patch-course-staff") if o["course"] == "XB")
+
+
+def test_course_conflict_reported_even_if_same_text_in_blockers_when_ready_true():
+    """blockers と同じ文を落とすのは "ready": false（readiness_errors が出す）のときだけ。"""
+    from rk.plan import check_plan
+    from rk.resolve import resolve
+    plan = _female_only_unplaced(unassigned=True)
+    resolve(plan, "keep", approved="試験 11/16", key="v3")
+    hit = next(b for b in plan["blockers"] if "女性限定" in b)
+    assert len([e for e in check_plan(plan) if "女性限定" in e]) == 1  # ready:false → 1 回だけ（重ねない）
+    plan["ready"] = True  # 手で ready を true にした案
+    assert hit in plan["blockers"]
+    assert any("女性限定" in e for e in check_plan(plan))
+
+
+def test_course_guard_staff_must_match_op_staff():
+    from rk.plan import course_staff_conflicts
+    xb = copy.deepcopy(_xb_patch(make()))
+    assert course_staff_conflicts({"ops": [xb]}) == []
+    xb["staff_id"] = "S1"  # 手で担当を書き換えた（材料は S2 のまま）
+    (c,) = course_staff_conflicts({"ops": [xb]})
+    assert "材料が古い" in c and "rk level で案を作り直して" in c
+    assert "直す" not in c and "修正" not in c
+    xb["acknowledge_constraint_warnings"] = True  # 了承の印があっても材料が古いことは知らせる
+    assert course_staff_conflicts({"ops": [xb]})
+
+
+def test_trainee_and_full_day_off_ignore_acknowledge():
+    from rk.plan import course_staff_conflicts
+    xb = copy.deepcopy(_xb_patch(make()))
+    xb["acknowledge_constraint_warnings"] = True
+    xb["course_guard"]["staff"]["is_trainee"] = True
+    assert any("新人" in c for c in course_staff_conflicts({"ops": [xb]}))
+    xb["course_guard"]["staff"]["is_trainee"] = False
+    xb["course_guard"]["staff"]["full_day_off"] = True
+    assert any("終日の休み" in c for c in course_staff_conflicts({"ops": [xb]}))
+
+
+def test_full_day_off_written_from_weekly_overrides():
+    """本体は PATCH /courses でその日終日休み（公休・有給）の人を 422 で断る。週の休みから材料に書く。"""
+    w = load("week")
+    xb = _xb_patch(make(week=w))
+    wd = xb["weekday"]
+    assert xb["course_guard"]["staff"]["full_day_off"] is False
+    w2 = copy.deepcopy(w)
+    w2["weekly_overrides"] = [{"staff_id": "S2", "weekday": wd, "override_type": "am_off"}]  # 半休は断られない
+    assert _xb_patch(make(week=w2))["course_guard"]["staff"]["full_day_off"] is False
+    w2["weekly_overrides"] = [{"staff_id": "S2", "weekday": wd, "override_type": "paid_off"}]
+    plan = make(week=w2)
+    assert _xb_patch(plan)["course_guard"]["staff"]["full_day_off"] is True
+    assert any("終日の休み" in b for b in plan["blockers"])
+
+
+def test_target_days_ops_outside_days_are_errors():
+    from rk.plan import check_plan
+    from rk.resolve import resolve
+    plan = make(days=["2026-10-19"])
+    resolve(plan, "pool", approved="試験 11/16", key="v3")
+    assert not [e for e in check_plan(plan) if "範囲の外の日" in e]  # rk level --day の案はそのまま通る
+    bad = copy.deepcopy(plan)
+    bad["ops"].append({"op": "cancel-visit-week", "label": "10/20 の取消", "visit_id": "v9", "cancel": True,
+                       "patient_id": "P1", "date": "2026-10-20", "start_time": "09:00"})
+    errs = [e for e in check_plan(bad) if "範囲の外の日" in e]
+    assert len(errs) == 1 and "2026-10-19 だけを組む案" in errs[0] and "2026-10-20" in errs[0]
+    # 日付の無い操作でも、曜日と週から日が分かれば見る（移動先の曜日・コースの曜日）
+    mv = copy.deepcopy(ops_of(plan, "move-visit-week")[0])
+    mv.pop("date", None)
+    mv["new_weekday"] = 2
+    bad2 = copy.deepcopy(plan)
+    bad2["ops"].append(mv)
+    assert any("2026-10-21" in e for e in check_plan(bad2) if "範囲の外の日" in e)
+    pc = copy.deepcopy(ops_of(plan, "patch-course-staff")[0])
+    pc.pop("date", None)
+    pc.pop("course_guard", None)
+    pc["weekday"] = 5
+    bad3 = copy.deepcopy(plan)
+    bad3["ops"].append(pc)
+    assert any("2026-10-24" in e for e in check_plan(bad3) if "範囲の外の日" in e)
+    # 範囲の付いた clear-week も、範囲の日がすべて target.days に入っていること
+    cw = {"op": "clear-week", "label": "空にする", "iso_year": 2026, "iso_week": 43,
+          "date_from": "2026-10-19", "date_to": "2026-10-20"}
+    bad4 = copy.deepcopy(plan)
+    bad4["ops"].append(cw)
+    assert any("2026-10-20" in e for e in check_plan(bad4) if "範囲の外の日" in e)
+    # target.days の無い案（週全体）は見ない
+    whole = copy.deepcopy(bad)
+    del whole["target"]["days"]
+    assert not [e for e in check_plan(whole) if "範囲の外の日" in e]

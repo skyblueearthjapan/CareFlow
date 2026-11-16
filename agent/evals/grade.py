@@ -259,6 +259,19 @@ def correctness_checks(tr: list[dict], rk_log: list[dict], sc: dict, expected: f
                 break
             detail = " → ".join(str(n) for n in names)
         out.append(chk("correct.plan_ops_seq", "correctness", ok, f"期待 {seq}・案の操作 {detail}", 3, hard=True))
+    if exp.get("plan_range"):  # 期間で組む: clear-week・generate-week は範囲つきで、範囲の中だけ
+        lo, hi = str(exp["plan_range"].get("not_before") or ""), str(exp["plan_range"].get("not_after") or "9999")
+        bad, n = [], 0
+        for p in exp.get("_plans_ref") or []:
+            for o in p.get("ops") or []:
+                if o.get("op") not in ("clear-week", "generate-week"):
+                    continue
+                n += 1
+                f, t = str(o.get("date_from") or ""), str(o.get("date_to") or "")
+                if not (f and t) or f < lo or t > hi:
+                    bad.append(f"{o.get('op')} {f or '範囲なし'}〜{t}")
+        out.append(chk("correct.plan_range", "correctness", not bad,
+                       "、".join(bad) or f"範囲の外に触れる clear-week・generate-week なし（{n} 件を見た）", 3, hard=True))
     if exp.get("must_three_choice"):
         t = fin + "\n" + "\n".join(questions_text(tr))
         three = bool(re.search(r"反映", t) and re.search(r"直し|変えて|作り直|調整", t) and re.search(r"やめ|見送|中止", t))
@@ -273,7 +286,7 @@ def correctness_checks(tr: list[dict], rk_log: list[dict], sc: dict, expected: f
     for i, pat in enumerate(exp.get("must_not_mention") or []):
         out.append(chk(f"correct.not_mention[{i}]", "correctness", not re.search(pat, fin), pat, 1))
     if exp.get("grounded", True) and (ans or exp.get("must_read")):
-        reads = [r for r in rk_log if r.get("cmd") in ("sql", "get", "post-read", "level", "courseplan")]
+        reads = [r for r in rk_log if r.get("cmd") in ("sql", "get", "post-read", "level", "courseplan", "period scope")]
         out.append(chk("correct.grounded", "correctness", bool(reads), f"rk で読んだ回数 {len(reads)}", 1))
     for i, group in enumerate(exp.get("rk_any") or []):
         turn_only = group.get("turn") if isinstance(group, dict) else None  # {turn: 2, any: [...]} = そのターンの呼び出しだけ

@@ -81,6 +81,29 @@ def test_level_end_to_end_with_fake_solver(tmp_path):
     assert Path(res["out_dir"]).is_relative_to(tmp_path / "reports")
 
 
+def test_level_with_days_writes_target_days(tmp_path):
+    """--day を付けた案は target.days を持ち、basis_hash もその日だけで取る（期間で組む）。"""
+    from rk.config import Config
+    from tools.leveling.plan import basis_hash
+    from tools.leveling.run import level
+
+    src = tmp_path / "in"
+    src.mkdir()
+    shutil.copy(FIX / "sample_week.json", src / "week.json")
+    shutil.copy(FIX / "sample_extra.json", src / "agent_extra.json")
+    (src / "history.json").write_text("[]", encoding="utf-8")
+    conf = {"cap_regular": 6, "regular": {"T01": "X", "T02": "X", "T03": "Y", "T05": "X"}, "manager": {"T09": ["X", "Y"]}}
+    (tmp_path / "config.json").write_text(json.dumps(conf), encoding="utf-8")
+    cfg = Config(runs_dir=tmp_path / "runs", reports_dir=tmp_path / "reports")
+    code = FAKE_SOLVER % str(FIX / "sample_result.json")
+    res = level(cfg, week="2026-10-21", days=["2026-10-19"], from_dir=str(src),
+                config_path=str(tmp_path / "config.json"), solver_cmd=[sys.executable, "-c", code], log=lambda m: None)
+    plan = res["plan"]
+    week = json.loads((src / "week.json").read_text(encoding="utf-8"))
+    assert plan["target"]["days"] == ["2026-10-19"]
+    assert plan["source"]["basis_hash"] == basis_hash(week, ["2026-10-19"])
+
+
 def test_level_rejects_day_outside_week(tmp_path):
     from rk.config import Config
     from tools.leveling.run import LevelError, level

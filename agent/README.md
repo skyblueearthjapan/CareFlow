@@ -43,7 +43,7 @@ rk 自身も 15 分に 3 回までに抑えます。パスワード・トーク�
 | `rk get <path> [-q k=v ...]` | GET。path は `/api/v1` より後 |
 | `rk post-read <path> --json <file\|->` | 読むだけの POST（`rk/readonly_posts.py` の許可リストだけ） |
 | `rk sql <名前> [-p k=v ...]` / `--list` / `--file x.sql` | 読み取り専用の SQL。結果は JSON の配列 |
-| `rk plan check <plan.json>` | 案の形・操作の許可・操作ごとの検査。`"ready": false` の案は `blockers` を 1 件ずつ出して断る |
+| `rk plan check <plan.json>` | 案の形・操作の許可・操作ごとの検査。`"ready": false` の案は `blockers` を 1 件ずつ出して断る。`patch-course-staff` に `course_guard`（`rk level` が書く）があれば、その時点でコースに残る訪問と担当の組（NG・性別の限定・新人）を見て、本体が 422 で断る組を反映の前に出す（手でまとめた案でも操作ごとに見る） |
 | `rk plan report <plan.json> [--a3] [--out x.html]` | 案の帳票（A4 縦の一覧／A3 横の時間割。`timelines` があれば 1 日 1 枚・無ければ `timeline` の 1 日）→ `docs/reports/agent/<日付>/` |
 | `rk plan submit <plan.json>` | （relay だけ）案を画面に出す。反映は人が画面で承認してから |
 | `rk progress "<1 行>"` | （relay だけ）長い作業の途中経過を画面に。ほかのモードでは表示だけ |
@@ -52,6 +52,8 @@ rk 自身も 15 分に 3 回までに抑えます。パスワード・トーク�
 | `rk verify <plan.json か run-id>` | 反映後に読み直して照合 |
 | `rk undo <run-id> --approved "..." [--partial]` | 元に戻す |
 | `rk level week\|day ...` | ならし案（`rk/commands/level.py`・本番は読むだけ）→ `runs/plans/*.json` |
+| `rk week preview-clear\|preview-generate --year Y --week W [--office ID] [--from D --to D]` | 週を空にする／型から作る の確認だけ（dry_run 固定）。`--from`/`--to`（組で・その週の中）でその日だけ |
+| `rk period scope --from D --to D` / `--month YYYY-MM` | 期間を週ごとの「組む日（`build_days`・`date_from`〜`date_to`）／触らない日（`frozen_days`）」に分け、日ごとの件数（`sql/period_days.sql`）と `rk level week` の引数（`level_args`）を JSON で返す（読むだけ・62 日まで・過ぎた日は組まない） |
 | `python bin/sync_skills.py [--check]` | スキルの正典 `.agents/skills/` を `.claude/skills/` へそのまま写す（余分は消す） |
 
 ## 安全の仕組み

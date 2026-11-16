@@ -180,3 +180,106 @@ def test_generate_week_refuses_nonempty_and_is_not_undoable():
     with pytest.raises(RkError):
         impl.snapshot(ClearApi(gen_409=True), op)
     assert impl.check_response(op, {"visits_created": 0})
+
+
+# ---- 期間で組む: clear-week・generate-week の date_from / date_to（agent-period-build-design §3-2） ----
+def _ranged(name, **kw):
+    o = {"op": name, "label": "範囲", "iso_year": 2026, "iso_week": 49, "date_from": "2026-12-01", "date_to": "2026-12-06"}
+    o.update(kw)
+    return o
+
+
+@pytest.mark.parametrize("name", ["clear-week", "generate-week"])
+def test_range_validation(name):
+    impl = REG.get(name)
+    assert impl.validate(_ranged(name)) == []
+    assert impl.validate({"op": name, "iso_year": 2026, "iso_week": 49}) == []  # 範囲なし = 週全体
+    assert any("組で" in e for e in impl.validate(_ranged(name, date_to=None)))
+    assert any("組で" in e for e in impl.validate({"op": name, "iso_year": 2026, "iso_week": 49, "date_to": "2026-12-02"}))
+    assert any("週の外" in e and "2026-11-29" in e for e in impl.validate(_ranged(name, date_from="2026-11-29")))
+    assert any("週の外" in e for e in impl.validate(_ranged(name, date_to="2026-12-07")))
+    assert any("より後" in e for e in impl.validate(_ranged(name, date_from="2026-12-04", date_to="2026-12-02")))
+    assert any("YYYY-MM-DD" in e for e in impl.validate(_ranged(name, date_from="12/1")))
+    assert any("YYYY-MM-DD" in e for e in impl.validate(_ranged(name, date_from="2026-12-32")))
+    assert impl.validate(_ranged(name, date_from="2026-11-30", date_to="2026-11-30")) == []  # 1 日・月曜
+
+
+def test_clear_week_range_in_every_request():
+    impl = REG.get("clear-week")
+    op = _ranged("clear-week")
+    rng = {"date_from": "2026-12-01", "date_to": "2026-12-06"}
+    assert impl.request(op) == ("POST", "/schedule/v2/weeks/2026/49/clear", {"dry_run": False, **rng})
+    api = ClearApi()
+    impl.snapshot(api, op)
+    impl.execute(api, op)
+    assert impl.verify(api, op) == []
+    assert [b for _p, b in api.calls] == [{"dry_run": True, **rng}, {"dry_run": False, **rng}, {"dry_run": True, **rng}]
+    # 戻し方は今までどおり（消した訪問の ID だけ書き戻す）
+    assert impl.inverse(op, {}) == [{"op": "clear-week-undo", "iso_year": 2026, "iso_week": 49, "snapshot_id": "snap-1"}]
+    left = ClearApi(left=2)
+    assert "2026-12-01〜2026-12-06" in impl.verify(left, op)[0]
+
+
+def test_clear_week_without_range_body_unchanged():
+    impl = REG.get("clear-week")
+    api = ClearApi()
+    op = {"op": "clear-week", "iso_year": 2026, "iso_week": 43, "office_id": "o-1"}
+    impl.snapshot(api, op)
+    assert api.calls[0][1] == {"dry_run": True, "office_id": "o-1"}
+
+
+def test_generate_week_range_body_and_verify():
+    impl = REG.get("generate-week")
+    op = _ranged("generate-week")
+    rng = {"date_from": "2026-12-01", "date_to": "2026-12-06"}
+    assert impl.request(op) == ("POST", "/schedule/generate-week-only",
+                                {"iso_year": 2026, "iso_week": 49, "dry_run": False, **rng})
+    api = ClearApi()
+    assert impl.snapshot(api, op) == {"to_add": 100}
+    assert api.calls[-1] == ("/schedule/generate-week-only", {"iso_year": 2026, "iso_week": 49, "dry_run": True, **rng})
+    # 照合は同じ範囲の「空にする」の確認（dry_run）で、範囲の中に訪問があるかを読む（中継の中でも通る読み方）
+    api.calls.clear()
+    assert impl.verify(api, op) == []
+    assert api.calls == [("/schedule/v2/weeks/2026/49/clear", {"dry_run": True, **rng})]
+    from rk.readonly_posts import is_dry_run_post
+    assert is_dry_run_post(api.calls[0][0], api.calls[0][1])
+    empty = ClearApi(left=0)
+    assert "作った訪問がありません" in impl.verify(empty, op)[0]
+    with pytest.raises(RkError, match="2026-12-01〜2026-12-06 の日にはもう予定"):
+        impl.snapshot(ClearApi(gen_409=True), op)
+
+
+def test_generate_week_without_range_verify_unchanged():
+    impl = REG.get("generate-week")
+    api = ClearApi()
+    assert impl.verify(api, {"op": "generate-week", "iso_year": 2026, "iso_week": 43}) == []
+    assert api.calls == []  # 週全体は今までどおり copy-week/sources（GET）で読む
+
+
+class NothingToAddApi(ClearApi):
+    """範囲に型の枠が無い（日曜だけ等）: 確認は to_add 0・作ると 0 件・範囲は空のまま。"""
+
+    def __init__(self):
+        super().__init__(left=0)
+
+    def call(self, method, path, body=None):
+        if path == "/schedule/generate-week-only":
+            self.calls.append((path, dict(body or {})))
+            return {"to_add": 0} if body["dry_run"] else {"visits_created": 0, "unplaced_multi_staff_patients": []}
+        return super().call(method, path, body)
+
+
+def test_generate_week_range_with_nothing_to_add_is_not_a_failure():
+    impl = REG.get("generate-week")
+    op = _ranged("generate-week", date_from="2026-12-06", date_to="2026-12-06")  # 日曜だけ
+    api = NothingToAddApi()
+    assert impl.snapshot(api, op) == {"to_add": 0}
+    assert op["_to_add"] == 0
+    assert impl.check_response(op, impl.execute(api, op)) == []
+    assert impl.verify(api, op) == []
+    # rk verify で案を読み直したとき（覚えた値が無い）も、確認を読み直して 0 件なら失敗にしない
+    fresh = _ranged("generate-week", date_from="2026-12-06", date_to="2026-12-06")
+    assert impl.verify(NothingToAddApi(), fresh) == []
+    # 作るものがあったのに範囲が空なら、今までどおり失敗
+    assert "作った訪問がありません" in impl.verify(ClearApi(left=0), _ranged("generate-week"))[0]
+    assert impl.check_response(_ranged("generate-week", _to_add=5), {"visits_created": 0})

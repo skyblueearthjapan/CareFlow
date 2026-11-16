@@ -209,7 +209,9 @@ def choose_courses(people, keep, candidates, cur_courses, staff, course_office, 
 # ---------------------------------------------------------------------------
 def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: dict | None = None,
                kind: str = "week-leveling", title: str | None = None, files: dict | None = None,
-               created_at: str | None = None) -> dict:
+               created_at: str | None = None, days: list[str] | None = None) -> dict:
+    """days = 計算を絞った日（rk level の --day・--days）。あれば target.days に書き、basis_hash もその日だけで取る
+    （範囲の外の日の変化で案を作り直させない・agent-period-build-design §3-2）。無ければ result の summary.days を見る。"""
     config = config or {}
     cap = int(config.get("cap_regular", 6))
     allow_over = int((result.get("options") or {}).get("allow_over") or 0)
@@ -438,6 +440,7 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
                              f"→ {disp(staff[x['staff']]['name'])}（担当なしの訪問に直接付ける）"})
 
     warnings.extend(_simulate_moves(ops, raw, vis))
+    add_course_guard(ops, week)
 
     # --- 決まりの検査・新人 ---
     trainee_hits = []
@@ -463,10 +466,14 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
         blockers.append(f"{UNPLACED_BLOCKER_PREFIX} {len(unplaced)} 件あります（rk plan resolve で 1 件ずつ決めると反映できます）")
     if trainee_hits:
         blockers.append("新人が担当になっています（アプリが 422 で断ります）")
+    blockers.extend(_course_guard_blockers(ops))
 
     summary = _summary(result, items, new_assign, ops, errors, flags, staff)
     timelines = build_timeline(result, staff, vis, cmap)
     target = {"iso_year": iso_year, "iso_week": iso_week, "week_start": str(monday)}
+    plan_days = plan_days_of(result, days)
+    if plan_days:
+        target["days"] = plan_days
     solved_days = sorted(result["days"])
     if len(solved_days) == 1:
         target["date"] = solved_days[0]
@@ -477,7 +484,7 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
         "created_at": created_at,
         "target": target,
         "source": {"tool": "docs/tools/week-leveling", "options": result.get("options"),
-                   "extracted_at": week.get("extracted_at"), "basis_hash": basis_hash(week)},
+                   "extracted_at": week.get("extracted_at"), "basis_hash": basis_hash(week, plan_days)},
         "summary": summary,
         "ops": ops,
         "checks": [check_line(c) for c in check_details],
@@ -508,6 +515,55 @@ def _move(iso_year, iso_week, visit_id, v, wd, old_start, new_start, new_tpl, fr
             "from_course": from_course, "to_course": to_course, "op_group_id": group, "label": label}
 
 
+def _course_guard_blockers(ops: list[dict]) -> list[str]:
+    try:
+        from rk.plan import course_staff_conflicts
+    except ImportError:  # rk の無いところ（docs の道具だけ）では見ない
+        return []
+    return course_staff_conflicts({"ops": ops})
+
+
+def add_course_guard(ops: list[dict], week: dict) -> None:
+    """rk plan check がコースの担当と残る訪問の組み合わせ（NG・性別の限定・新人）を反映の前に見られるよう、
+    操作に材料（course_guard）を書く。本体の PATCH /courses と同じく、そのコースに載っている訪問すべて
+    （取消・削除を除く。打刻済み・手の上書きも含む）の利用者を見る（rk/plan.py course_staff_conflicts）。"""
+    pats = {p["id"]: p for p in week.get("patients") or []}
+    ng = defaultdict(list)
+    for r in week.get("ng") or []:
+        ng[r["patient_id"]].append(r["staff_id"])
+    staff = {s["id"]: s for s in week.get("staff") or []}
+    # 終日の休み（公休・有給）: 本体は PATCH /courses でその日休みの人を 422 で断る（了承の印でも通らない）
+    full_off = {(r.get("staff_id"), r.get("weekday")) for r in week.get("weekly_overrides") or []
+                if isinstance(r, dict) and r.get("override_type") in ("off", "paid_off")}
+
+    def pinfo(pid: str) -> dict:
+        p = pats.get(pid) or {}
+        return {"sex_restriction": p.get("sex_restriction"), "ng_staff_ids": sorted(ng.get(pid, []))}
+
+    for o in ops:
+        if o["op"] in ("move-visit-week", "special-visit-place"):
+            o["course_guard"] = {"patient": pinfo(o["patient_id"])}
+        elif o["op"] == "patch-course-staff" and o.get("staff_id") is not None:
+            s = staff.get(o["staff_id"]) or {}
+            visits = []
+            for v in sorted(week.get("visits") or [], key=lambda v: str(v["start_time"])):
+                if str(v["visit_date"])[:10] != o["date"] or v.get("status") == "cancelled":
+                    continue
+                if f"{v.get('course_office') or ''}{v.get('course_code') or ''}" != o["course"]:
+                    continue
+                pname = (pats.get(v["patient_id"]) or {}).get("name") or ""
+                visits.append({"visit_id": v["id"], "patient_id": v["patient_id"],
+                               "start_time": str(v["start_time"])[:5],
+                               # 自分の担当があるか（主担当か手の上書きの印）。無ければコースの担当が写る
+                               "own_staff": bool(v.get("primary_staff_id") or v.get("manual_staff_override")),
+                               "label": f"{day_label(date.fromisoformat(o['date']))} {pname} {str(v['start_time'])[:5]}",
+                               **pinfo(v["patient_id"])})
+            o["course_guard"] = {"staff": {"id": o["staff_id"], "name": disp(s.get("name")), "sex": s.get("sex"),
+                                           "is_trainee": bool(s.get("is_trainee")),
+                                           "full_day_off": (o["staff_id"], date.fromisoformat(o["date"]).weekday()) in full_off},
+                                 "visits": visits}
+
+
 def _simulate_moves(ops, raw, vis) -> list[str]:
     """流す順に追って、移動の元（利用者・曜日・開始）が 1 件に決まるかを確かめる（build_ops の README 手順 2）。"""
     state = Counter()
@@ -530,12 +586,23 @@ def _simulate_moves(ops, raw, vis) -> list[str]:
     return out
 
 
-def basis_hash(week: dict) -> str:
-    """案を作った時点の週の形（反映の前に週が変わっていないかを比べる）。"""
+def plan_days_of(result: dict, days: list[str] | None = None) -> list[str] | None:
+    """案が受け持つ日（日を絞ったときだけ）。週全部なら None。"""
+    picked = days if days else (result.get("summary") or {}).get("days")
+    if not isinstance(picked, list) or not picked:
+        return None
+    return sorted({str(d)[:10] for d in picked})
+
+
+def basis_hash(week: dict, days: list[str] | None = None) -> str:
+    """案を作った時点の週の形（反映の前に週が変わっていないかを比べる）。
+    days があれば、その日の訪問だけで取る（無いときの値は今までと同じ）。"""
+    keep = {str(d)[:10] for d in days} if days else None
     rows = sorted(
         f"{v['id']}|{v['visit_date']}|{str(v['start_time'])[:5]}|{v.get('status')}|{v.get('course_office')}{v.get('course_code')}"
         f"|{v.get('primary_staff_id')}"
         for v in week.get("visits") or []
+        if keep is None or str(v.get("visit_date"))[:10] in keep
     )
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()[:16]
 

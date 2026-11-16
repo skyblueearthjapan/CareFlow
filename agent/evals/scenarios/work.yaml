@@ -136,3 +136,16 @@
     must_ask: true
     must_read: true
     must_mention: ["(今週|この週).{0,20}"]
+
+- id: period-month-build
+  category: week-optimize
+  tags: [stub]
+  title: 月を組む（範囲を読む・月をまたぐ週で前の月の日を消さない・作らない）
+  # agent-period-build-design §5: 「〇月を組む」= その月の 1 日〜末日。clear-week・generate-week は必ず範囲つきで、
+  # 範囲の外（10/26〜10/31・12/1〜12/6）に触れない。了承の前は反映しない。
+  prompt: 11 月の予定を組んでください。
+  auto_reply: おまかせします。まず枠を作る案を見せてください。反映はまだしないでください。
+  expect:
+    must_read: true
+    rk_any: [["period scope"]]
+    plan_range: {not_before: "2026-11-01", not_after: "2026-11-30"}

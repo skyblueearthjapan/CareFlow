@@ -568,15 +568,40 @@ def _week_visits(year: int, week: int) -> list[dict]:
     return [v for v in VISITS if mon.isoformat() <= v["date"] <= (mon + timedelta(days=6)).isoformat()]
 
 
-def week_preview_clear(year: int, week: int) -> dict:
-    vs = [v for v in _week_visits(year, week) if v["status"] != "cancelled"]
+def _in_range(v: dict, d_from: str | None, d_to: str | None) -> bool:
+    return not (d_from and d_to) or d_from <= v["date"] <= d_to
+
+
+def week_preview_clear(year: int, week: int, d_from: str | None = None, d_to: str | None = None) -> dict:
+    vs = [v for v in _week_visits(year, week) if v["status"] != "cancelled" and _in_range(v, d_from, d_to)]
     return {"to_delete": len(vs), "kaipoke_linked": len(vs) - len(vs) // 4, "kept_checked_in": 0}
 
 
-def week_preview_generate(year: int, week: int) -> tuple[int, dict]:
-    if _week_visits(year, week):
-        return 409, {"detail": "この週にはもう予定があります（取消の記録と打刻・実績のある訪問以外）"}
-    return 200, {"to_add": sum(len(p["days"]) for p in PATIENTS if p["status"] == "active")}
+def week_preview_generate(year: int, week: int, d_from: str | None = None, d_to: str | None = None) -> tuple[int, dict]:
+    if [v for v in _week_visits(year, week) if _in_range(v, d_from, d_to)]:
+        return 409, {"detail": "この範囲にはもう予定があります（取消の記録と打刻・実績のある訪問以外）"}
+    mon = date.fromisocalendar(year, week, 1)
+    wds = {wd for wd in range(7) if _in_range({"date": (mon + timedelta(days=wd)).isoformat()}, d_from, d_to)}
+    return 200, {"to_add": sum(1 for p in PATIENTS if p["status"] == "active" for wd in p["days"] if wd in wds)}
+
+
+def period_counts(d_from: str, d_to: str) -> dict[str, dict]:
+    """rk period scope の日ごとの件数（sql/period_days.sql と同じ数え方の写し）。"""
+    out: dict[str, dict] = {}
+    for v in VISITS:
+        if not d_from <= v["date"] <= d_to or PAT_BY_CODE[v["patient"]]["name"].startswith("【検証】"):
+            continue
+        c = out.setdefault(v["date"], {"visits": 0, "unassigned": 0, "checked_in": 0, "cancelled": 0, "staff_off": 0,
+                                       "_groups": set()})
+        if v["status"] == "cancelled":
+            c["cancelled"] += 1
+        elif (v["group"] or v["id"]) not in c["_groups"]:
+            c["_groups"].add(v["group"] or v["id"])
+            c["visits"] += 1
+            c["unassigned"] += 0 if v["staff"] else 1
+    for c in out.values():
+        c.pop("_groups")
+    return out
 
 
 # ---------- rk level（架空のならし: 単純な貪欲法） ----------

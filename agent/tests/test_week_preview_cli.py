@@ -59,3 +59,42 @@ def test_preview_generate_409_message(monkeypatch, capsys):
     assert cli.main(["week", "preview-generate", "--year", "2026", "--week", "43"]) == 0
     out = capsys.readouterr().out
     assert "もう予定があります" in out and '"status": 409' in out
+
+
+def test_preview_clear_with_range(monkeypatch, capsys):
+    calls = []
+    _patch(monkeypatch, calls)
+    assert cli.main(["week", "preview-clear", "--year", "2026", "--week", "49",
+                     "--from", "2026-12-01", "--to", "2026-12-06"]) == 0
+    assert calls == [("POST", "/schedule/v2/weeks/2026/49/clear",
+                      {"dry_run": True, "date_from": "2026-12-01", "date_to": "2026-12-06"})]
+    out = capsys.readouterr().out
+    assert "週49 の 2026-12-01〜2026-12-06 を空にすると" in out
+    assert json.loads(out[out.index("{"):])["date_from"] == "2026-12-01"
+
+
+def test_preview_generate_with_range(monkeypatch, capsys):
+    calls = []
+    _patch(monkeypatch, calls)
+    assert cli.main(["week", "preview-generate", "--year", "2026", "--week", "49",
+                     "--from", "2026-12-01", "--to", "2026-12-01"]) == 0
+    assert calls[0][2] == {"iso_year": 2026, "iso_week": 49, "dry_run": True,
+                           "date_from": "2026-12-01", "date_to": "2026-12-01"}
+    assert "週49 の 2026-12-01〜2026-12-01 を型から作ると、118 件" in capsys.readouterr().out
+
+
+def test_preview_generate_range_409(monkeypatch, capsys):
+    from rk.opsbase import ApiError
+    _patch(monkeypatch, [], fail=ApiError(409, {"detail": "予定あり"}))
+    assert cli.main(["week", "preview-generate", "--year", "2026", "--week", "49",
+                     "--from", "2026-12-01", "--to", "2026-12-02"]) == 0
+    assert "2026-12-01〜2026-12-02 にはもう予定があります" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("extra", [["--from", "2026-12-01"], ["--from", "2026-11-29", "--to", "2026-12-01"],
+                                   ["--from", "2026-12-03", "--to", "2026-12-01"]])
+def test_preview_range_errors_before_connecting(monkeypatch, capsys, extra):
+    calls = []
+    _patch(monkeypatch, calls)
+    assert cli.main(["week", "preview-clear", "--year", "2026", "--week", "49", *extra]) != 0
+    assert calls == []
