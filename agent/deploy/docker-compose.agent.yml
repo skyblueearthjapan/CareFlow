@@ -74,6 +74,8 @@ services:
       AGENT_BACKUP_DIR: /backups
       # 同時に動かす相談の数（PO 2026-10-13: 1 だと 2 つ目の相談が断られた → 5 に）
       AGENT_MAX_PROCS: "${AGENT_MAX_PROCS:-5}"
+      # 新しい相談の既定の AI（codex = ChatGPT／claude = Claude Opus）。人ごとに ⚙ で選んだものが先（agent.settings）
+      AGENT_DEFAULT_PROVIDER: ${AGENT_DEFAULT_PROVIDER:-codex}
       AGENT_MIN_MEM_AVAILABLE_MB: "900"
     ports:
       - "127.0.0.1:${AGENT_PUBLIC_HOST_PORT:-18201}:8090"
