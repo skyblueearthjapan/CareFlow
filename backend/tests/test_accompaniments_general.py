@@ -1440,6 +1440,38 @@ async def test_default_kind_support_propagates_to_week_link(client, db) -> None:
     assert link.source == "default"
 
 
+@pytest.mark.asyncio
+async def test_expand_defaults_only_weekdays_skips_outside_days(db) -> None:
+    """期間で組む: ``only_weekdays`` の外の曜日のコースには同行を張らない."""
+    from app.services.accompaniment import expand_accompaniment_defaults
+
+    staff = await _make_staff(db, "期間サポート")
+    office = await _make_office(db)
+    tmpl = await _make_template(db, office, "A")
+    for wd in (0, 2):
+        db.add(
+            AccompanimentDefault(
+                accompanying_staff_id=staff.id,
+                weekday=wd,
+                course_template_id=tmpl.id,
+                kind="support",
+            )
+        )
+    await db.commit()
+    await _make_course(db, office, weekday=0, code="A", template_id=tmpl.id)
+    wed = await _make_course(db, office, weekday=2, code="A", template_id=tmpl.id)
+
+    created = await expand_accompaniment_defaults(db, ISO_YEAR, ISO_WEEK, only_weekdays={2})
+    await db.commit()
+    assert created == 1
+    links = (
+        await db.scalars(
+            select(Accompaniment).where(Accompaniment.accompanying_staff_id == staff.id)
+        )
+    ).all()
+    assert [link.course_id for link in links] == [wed.id]
+
+
 # ---------------------------------------------------------------------------
 # 休職スタッフの既定は展開しない (最終レビュー major-1)
 # ---------------------------------------------------------------------------

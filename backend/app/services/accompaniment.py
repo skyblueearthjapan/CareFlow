@@ -113,7 +113,12 @@ async def _cleanup_orphan_links(db: AsyncSession, iso_year: int, iso_week: int) 
     return removed
 
 
-async def expand_accompaniment_defaults(db: AsyncSession, iso_year: int, iso_week: int) -> int:
+async def expand_accompaniment_defaults(
+    db: AsyncSession,
+    iso_year: int,
+    iso_week: int,
+    only_weekdays: set[int] | None = None,
+) -> int:
     """毎週の既定を当該週の同行リンクへ物質化する (冪等・週全体) — 設計 §5.1.
 
     - **冪等**: 既存リンク (staff × course) はスキップする。
@@ -127,6 +132,9 @@ async def expand_accompaniment_defaults(db: AsyncSession, iso_year: int, iso_wee
 
     ``commit`` はしない (``flush`` のみ)。呼び出し側 (週生成 / reset / 自動割当) が
     トランザクション境界を制御する。返却 = 新規に張ったリンク数。
+
+    ``only_weekdays`` (0=月) を渡すと、その曜日のコースにだけ張る (期間で組む・範囲の外の
+    日に人が外した同行を張り直さない)。None = 週全体 (今までどおり)。
     """
     await _cleanup_orphan_links(db, iso_year, iso_week)
 
@@ -169,6 +177,8 @@ async def expand_accompaniment_defaults(db: AsyncSession, iso_year: int, iso_wee
 
     created = 0
     for d in defaults:
+        if only_weekdays is not None and d.weekday not in only_weekdays:
+            continue  # 期間で組む: 範囲の外の曜日には張らない
         courses = list(
             (
                 await db.scalars(

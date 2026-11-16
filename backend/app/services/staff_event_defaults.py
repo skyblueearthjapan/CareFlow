@@ -149,8 +149,17 @@ async def _load_off_keys(
     return off_keys, half_keys
 
 
-async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week: int) -> int:
-    """当該週の固定イベントを staff_events へ物質化する。返却 = 新規作成数。"""
+async def expand_staff_event_defaults(
+    db: AsyncSession,
+    iso_year: int,
+    iso_week: int,
+    only_weekdays: set[int] | None = None,
+) -> int:
+    """当該週の固定イベントを staff_events へ物質化する。返却 = 新規作成数。
+
+    ``only_weekdays`` (0=月) を渡すと、その曜日だけ展開する (期間で組む・範囲の外の日に
+    人が消したイベントを作り直さない)。None = 週全体 (今までどおり)。
+    """
     defaults = list(
         (
             await db.scalars(
@@ -198,6 +207,8 @@ async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week:
     for d in defaults:
         if not (0 <= d.weekday <= 5):
             continue  # 日曜(6)・不正値は展開しない (API 側でも 0-5 に制限)
+        if only_weekdays is not None and d.weekday not in only_weekdays:
+            continue  # 期間で組む: 範囲の外の曜日は展開しない
         if (d.staff_id, d.weekday) in off_keys:
             continue  # その日は休み → 展開しない (Phase 3 休み連携)
         if visit_hits_leave(half_keys.get((d.staff_id, d.weekday)), d.start_time, d.end_time):

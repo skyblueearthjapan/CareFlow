@@ -6,6 +6,9 @@
   (DB 不変)。本実行は **先にスナップショット** (``inbound_snapshots``・kind=clear_week)
   を取ってから論理削除する。残すのは打刻・実績・サインのある訪問と取消の記録だけ。
 * ``POST .../clear/undo`` — 消した訪問だけを書き戻す (残した訪問には触れない)。
+* 期間で組む (``agent-period-build-design-2026-11-16.md`` §3-1): 任意の ``date_from``・
+  ``date_to`` (どちらもこの週の中) を渡すと、その日だけを空にする。範囲の外の日の訪問は
+  元に戻すときの判定に使わない (範囲の中だけを見る)。渡さなければ週全体 (今までどおり)。
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from app.services.scheduling.week_clear import (
     SNAPSHOT_KIND_CLEAR_WEEK,
     apply_clear,
     plan_clear,
+    range_error,
 )
 
 router = APIRouter()
@@ -41,6 +45,8 @@ class ClearWeekRequest(BaseModel):
 
     dry_run: bool = True
     office_id: UUID | None = None
+    date_from: date | None = None
+    date_to: date | None = None
 
 
 class ClearWeekResponse(BaseModel):
@@ -97,8 +103,16 @@ async def clear_week(
     user: Annotated[User, Depends(require_role("admin"))],
 ) -> ClearWeekResponse:
     monday = _monday(iso_year, iso_week)
+    if (msg := range_error(monday, payload.date_from, payload.date_to)) is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=msg)
+    # 範囲つきのときだけスナップショットと監査ログに範囲を残す (範囲なしは今までと同じ形)。
+    range_info = (
+        {"date_from": payload.date_from.isoformat(), "date_to": payload.date_to.isoformat()}
+        if payload.date_from is not None and payload.date_to is not None
+        else {}
+    )
     if payload.dry_run:
-        plan = await plan_clear(db, monday, payload.office_id)
+        plan = await plan_clear(db, monday, payload.office_id, payload.date_from, payload.date_to)
         return ClearWeekResponse(
             to_delete=len(plan.to_delete),
             kaipoke_linked=plan.kaipoke_linked,
@@ -109,7 +123,7 @@ async def clear_week(
     if lock.locked():
         raise _busy()
     async with lock:
-        plan = await plan_clear(db, monday, payload.office_id)
+        plan = await plan_clear(db, monday, payload.office_id, payload.date_from, payload.date_to)
         try:
             snap = await snapshot_week(db, monday, kind=SNAPSHOT_KIND_CLEAR_WEEK, user_id=user.id)
             snapshot_id = snap.id  # commit 後に ORM 属性を読まない (expire 対策)
@@ -131,6 +145,13 @@ async def clear_week(
                     }
                     for c in plan.cleared_courses
                 ],
+                **range_info,
+                # 範囲の外の日の訪問 (記録用)。元に戻すときは範囲の中だけを見るので判定には使わない。
+                **(
+                    {"outside_visit_ids": [str(v.id) for v in plan.outside_range]}
+                    if range_info
+                    else {}
+                ),
             }
             counts = {
                 "to_delete": len(plan.to_delete),
@@ -149,6 +170,7 @@ async def clear_week(
                         **counts,
                         "courses_cleared": len(plan.cleared_courses),
                         "office_id": str(payload.office_id) if payload.office_id else None,
+                        **range_info,
                     },
                 )
             )

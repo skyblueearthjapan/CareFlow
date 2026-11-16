@@ -327,3 +327,22 @@ async def test_event_defaults_validation(client, db) -> None:
         json={"weekday": 0, "start_time": "10:00", "end_time": "09:00", "title": "朝会"},
     )
     assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_expand_only_weekdays_skips_other_days(db) -> None:
+    """期間で組む: only_weekdays の曜日だけ作る (範囲の外の日に消したイベントを作り直さない)."""
+    staff = await _make_staff(db, name="期間 花子")
+    await _make_default(db, staff, weekday=0, title="月の朝会")
+    await _make_default(db, staff, weekday=2, title="水の朝会")
+
+    created = await expand_staff_event_defaults(db, ISO_YEAR, ISO_WEEK, only_weekdays={1, 2, 3})
+    await db.commit()
+    assert created == 1
+    rows = (await db.scalars(select(StaffEvent).where(StaffEvent.staff_id == staff.id))).all()
+    assert [e.title for e in rows] == ["水の朝会"]
+
+    # 範囲なしは今までどおり週全体 (残りの月曜だけが足される)
+    created_all = await expand_staff_event_defaults(db, ISO_YEAR, ISO_WEEK)
+    await db.commit()
+    assert created_all == 1

@@ -372,6 +372,8 @@ async def restore_cleared_visits(db: AsyncSession, snap: InboundSnapshot, *, now
     二重にしてしまう。こちらは ``payload['cleared_visit_ids']`` の訪問だけを新 UUID で
     作り直し、担当を外したコースの担当 (``payload['cleared_courses']``) を戻す。
     空にした後に予定が入っている (残した訪問以外が 1 件でもある) 週は戻さない。
+    期間で空にした (``payload['date_from']``・``date_to`` がある) ときは、範囲の中の日の
+    訪問だけでこれを判定する (範囲の外の追加・編集では止めない)。
     """
     payload = snap.payload or {}
     if payload.get("restored_at"):
@@ -384,12 +386,16 @@ async def restore_cleared_visits(db: AsyncSession, snap: InboundSnapshot, *, now
         # 事業所限定で空にした場合は、その事業所の訪問だけを「変わったか」の判定に使う。
         in_office = set(
             (
-                await db.scalars(
-                    select(Patient.id).where(Patient.primary_office_id == office_id)
-                )
+                await db.scalars(select(Patient.id).where(Patient.primary_office_id == office_id))
             ).all()
         )
         current = [v for v in current if v.patient_id in in_office]
+    if payload.get("date_from") and payload.get("date_to"):
+        # 期間で空にした場合は、範囲の中の日だけを判定に使う (範囲の外の追加・編集では
+        # 止めない)。範囲の外から中へ動いた訪問は、残した訪問ではないので止める。
+        lo = date.fromisoformat(payload["date_from"])
+        hi = date.fromisoformat(payload["date_to"])
+        current = [v for v in current if lo <= v.visit_date <= hi]
     if any(str(v.id) not in kept_ids for v in current):
         raise ClearUndoBlockedError(
             "空にした後に予定が入っているため、元に戻せません（先に『この週を空にする』を押してください）"

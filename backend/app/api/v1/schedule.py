@@ -116,7 +116,12 @@ from app.services.scheduling.layer3_assignment import (
     UnresolvedNgStaffWarning,
 )
 from app.services.scheduling.pair_visit import pair_secondary_staff
-from app.services.scheduling.week_clear import GENERATE_NEEDS_EMPTY_WEEK_MESSAGE, week_is_empty
+from app.services.scheduling.week_clear import (
+    GENERATE_NEEDS_EMPTY_WEEK_MESSAGE,
+    range_dates,
+    range_error,
+    week_is_empty,
+)
 from app.services.staff_event_defaults import expand_staff_event_defaults
 
 logger = logging.getLogger(__name__)
@@ -1427,6 +1432,17 @@ class GenerateWeekOnlyRequest(BaseModel):
         default=False,
         description="true なら何も書かず、型から足す件数 (to_add) だけ返す (青ピン廃止 BP-3).",
     )
+    date_from: date | None = Field(
+        default=None,
+        description=(
+            "期間で組む (agent-period-build-design-2026-11-16.md §3-1): この週の中の始まりの日。"
+            "date_to と組で指定する。省けば週全体 (今までどおり)."
+        ),
+    )
+    date_to: date | None = Field(
+        default=None,
+        description="期間で組む: この週の中の終わりの日 (date_from ≦ date_to).",
+    )
 
 
 class GenerateWeekPreviewResponse(BaseModel):
@@ -1848,10 +1864,14 @@ async def _generate_week_only_impl(
                 detail=f"Office not found: {payload.office_id}",
             )
 
-    # ----- 空の週でだけ生成できる (BP-3) -----
-    if not await week_is_empty(
-        db, date.fromisocalendar(payload.iso_year, payload.iso_week, 1), payload.office_id
-    ):
+    # ----- 期間 (任意): 同じ週の中・from ≦ to・両方か両方なし -----
+    monday = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    if (msg := range_error(monday, payload.date_from, payload.date_to)) is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=msg)
+    only_dates = range_dates(payload.date_from, payload.date_to)
+
+    # ----- 空の週でだけ生成できる (BP-3)。期間つきなら期間の中が空ならよい -----
+    if not await week_is_empty(db, monday, payload.office_id, payload.date_from, payload.date_to):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=GENERATE_NEEDS_EMPTY_WEEK_MESSAGE,
@@ -1866,6 +1886,7 @@ async def _generate_week_only_impl(
             iso_year=payload.iso_year,
             iso_week=payload.iso_week,
             office_id=payload.office_id,
+            only_dates=only_dates,
         )
         if payload.dry_run:
             # 件数だけ数えて全部捨てる (週が空なので失うものは無い)。
@@ -1874,9 +1895,16 @@ async def _generate_week_only_impl(
             return GenerateWeekPreviewResponse(to_add=to_add)
 
         # 新人同行 (§5.1-1): 展開成功後・commit 前に既定を当該週へ物質化する (冪等)。
-        await expand_accompaniment_defaults(db, payload.iso_year, payload.iso_week)
+        # 期間で組むときは、同行の既定と固定イベントも範囲の曜日だけ (範囲の外の日に人が
+        # 外した同行・消したイベントを作り直さない)。
+        only_weekdays = {d.weekday() for d in only_dates} if only_dates is not None else None
+        await expand_accompaniment_defaults(
+            db, payload.iso_year, payload.iso_week, only_weekdays=only_weekdays
+        )
         # 固定イベント (朝会など・Phase 2) も同じタイミングで冪等展開する。
-        await expand_staff_event_defaults(db, payload.iso_year, payload.iso_week)
+        await expand_staff_event_defaults(
+            db, payload.iso_year, payload.iso_week, only_weekdays=only_weekdays
+        )
 
         await db.commit()
     except Layer1ExpandError as exc:

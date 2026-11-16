@@ -686,6 +686,7 @@ class Layer1Expander:
         iso_year: int,
         iso_week: int,
         office_id: UUID | None = None,
+        only_dates: set[date] | None = None,
     ) -> Layer1Result:
         """指定週の visits を全 active 患者から展開する.
 
@@ -696,6 +697,10 @@ class Layer1Expander:
             office_id: W16 codex fix (重大 2) — 指定時は patient.primary_office_id
                 がこの拠点と一致する患者のみを展開し、削除も同患者の範囲に絞る。
                 None の場合は全 active 患者を対象 (旧挙動).
+            only_dates: 期間で組む (agent-period-build-design-2026-11-16.md §3-1)。
+                指定時は **この日だけ** 最初の掃除と訪問の作成を行い、ほかの日の訪問には
+                触れない (消さない・作らない・休みの後始末もしない)。M コースの用意は
+                週単位のまま (「無ければ作る」だけで訪問を変えない)。None = 週全体 (旧挙動)。
 
         Returns:
             Layer1Result: 生成された visits + 保留プール + サマリ。
@@ -753,6 +758,7 @@ class Layer1Expander:
             db,
             week_monday=week_monday,
             patient_ids=[p.id for p in patients] + inactive_patient_ids,
+            only_dates=only_dates,
         )
 
         if not patients:
@@ -776,6 +782,7 @@ class Layer1Expander:
                 week_monday=week_monday,
                 result=result,
                 template_cache=template_cache,
+                only_dates=only_dates,
             )
             result.visits_created.extend(created)
 
@@ -789,7 +796,11 @@ class Layer1Expander:
         # (訪問を作る処理の最後で必ず呼ぶ共通の後始末・今日以降だけ)。
         from app.services.staff_leave import settle_leave_unassign
 
-        await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
+        # 期間で組むときは範囲の日だけ (範囲の外の日の担当を変えない)。
+        if only_dates is not None:
+            await settle_leave_unassign(db, dates=only_dates)
+        else:
+            await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
 
         # 確定 (commit は呼び出し側)
         await db.flush()
@@ -832,6 +843,7 @@ class Layer1Expander:
         week_monday: date,
         result: Layer1Result,
         template_cache: dict[UUID, CourseTemplate | None] | None = None,
+        only_dates: set[date] | None = None,
     ) -> list[VisitCreated]:
         """1 患者を固定枠 / 希望パターンどちらかで展開する (hybrid).
 
@@ -888,6 +900,7 @@ class Layer1Expander:
                 iso_year=iso_year,
                 iso_week=iso_week,
                 result=result,
+                only_dates=only_dates,
             )
 
         # 従来: 希望パターン (weekly_pattern) ベース
@@ -938,6 +951,7 @@ class Layer1Expander:
             template=template,
             iso_year=iso_year,
             iso_week=iso_week,
+            only_dates=only_dates,
         )
 
     async def _fetch_manual_conflict_keys(
@@ -1025,6 +1039,7 @@ class Layer1Expander:
         iso_year: int | None = None,
         iso_week: int | None = None,
         result: Layer1Result | None = None,
+        only_dates: set[date] | None = None,
     ) -> list[VisitCreated]:
         """固定枠エントリ (patient_fixed_visits 由来) から visits を INSERT する.
 
@@ -1076,6 +1091,12 @@ class Layer1Expander:
         for fe in fixed_entries:
             wd = fe.get("weekday")
             if not isinstance(wd, int) or not (0 <= wd <= 6):
+                continue
+            # 期間で組む: 範囲の外の日は作らない (保留の記録にも載せない)。
+            if (
+                only_dates is not None
+                and date.fromordinal(week_monday.toordinal() + wd) not in only_dates
+            ):
                 continue
             slot_idx = fe.get("slot_index", 0) or 0
             if slot_idx not in (0, 1):
@@ -1352,6 +1373,7 @@ class Layer1Expander:
         *,
         week_monday: date,
         patient_ids: list[UUID],
+        only_dates: set[date] | None = None,
     ) -> None:
         """当該週の auto / reset_v2 visit を **論理削除** (冪等性のため).
 
@@ -1368,6 +1390,8 @@ class Layer1Expander:
               manual_week / import / manual / kaipoke 等の人手・外部入力を保護)
             - status = 'planned' (completed / in_progress / cancelled を保護)
             - deleted_at IS NULL (既に論理削除された行は二重更新しない)
+            - ``only_dates`` 指定時は visit_date IN (only_dates) (期間で組む・範囲の外の
+              日の auto 行を消さない)
 
         bulk UPDATE を 1 文で発行し ORM ローダー経由のレース問題を避ける.
         ``synchronize_session=False`` を指定しないと SQLAlchemy が二段
@@ -1382,16 +1406,21 @@ class Layer1Expander:
         # 削除対象 = 週内 + source∈(auto, reset_v2) + status=planned + deleted_at IS NULL.
         # status in (completed/cancelled/in_progress) と source∉(auto, reset_v2) は
         # 履歴・人手入力の保護対象なので絶対に触らない.
+        where = [
+            Visit.patient_id.in_(patient_ids),
+            Visit.visit_date >= week_monday,
+            Visit.visit_date <= week_sunday,
+            Visit.source.in_(LAYER1_REGENERABLE_SOURCES),
+            Visit.status == LAYER1_VISIT_STATUS,
+            Visit.deleted_at.is_(None),
+        ]
+        if only_dates is not None:
+            if not only_dates:
+                return
+            where.append(Visit.visit_date.in_(sorted(only_dates)))
         await db.execute(
             update(Visit)
-            .where(
-                Visit.patient_id.in_(patient_ids),
-                Visit.visit_date >= week_monday,
-                Visit.visit_date <= week_sunday,
-                Visit.source.in_(LAYER1_REGENERABLE_SOURCES),
-                Visit.status == LAYER1_VISIT_STATUS,
-                Visit.deleted_at.is_(None),
-            )
+            .where(*where)
             .values(deleted_at=now)
             .execution_options(synchronize_session=False),
         )
@@ -1408,6 +1437,7 @@ class Layer1Expander:
         template: CourseTemplate | None = None,
         iso_year: int | None = None,
         iso_week: int | None = None,
+        only_dates: set[date] | None = None,
     ) -> list[VisitCreated]:
         """1 患者の entries を visits に展開して INSERT する.
 
@@ -1419,6 +1449,15 @@ class Layer1Expander:
         ``visit_staff_assignments`` を埋める想定。
         """
         created: list[VisitCreated] = []
+
+        # 期間で組む: 範囲の外の日の entry は作らない。
+        if only_dates is not None:
+            entries = [
+                e
+                for e in entries
+                if (wd := _resolve_weekday(e.get("weekday"))) is not None
+                and date.fromordinal(week_monday.toordinal() + wd) in only_dates
+            ]
 
         # 同一週内の (weekday, start_time) 重複をフィルタ
         seen_slots: set[tuple[int, str]] = set()
