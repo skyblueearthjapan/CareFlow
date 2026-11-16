@@ -9,11 +9,16 @@ Create Date: 2026-11-16
 
 1. ``sms_batches``: 1 回の「送る」(種類 week / change・週の始まり・押した人・件数)。
 2. ``sms_messages``: 1 通 (本文・番号・状態・KDDI の受付の ID・やりとりの番号・キャリア・
-   splitNum・届かなかった理由・照会の回数と次の時刻・二重送信を防ぐ鍵 UNIQUE)。
+   splitNum・届かなかった理由・照会の回数と次の時刻・「届かなかった」のベルを出した時刻・
+   送る期限 ``expires_at``・``sending`` へ取った時刻 ``claimed_at``・二重送信を防ぐ鍵 UNIQUE)。
    ``contact_id`` は外部キーなし (連絡先の保存は消して入れ直すため)。
 3. ``sms_status_events``: 1 通の状態の経過。
 4. ``patient_week_notices``: 患者 × 週の「お伝えした内容」(UNIQUE patient_id, week_start)。
-5. ``patient_notice_events``: 「お伝えした内容」の版ごとの記録。
+   ``version`` = 送ろうとした回・``told_version`` = お伝えした内容の版 (契約 §13-1)・
+   ``told_via`` = お伝えした経路 (kddi / mock / phone / none)。
+   段階 2 のお知らせ待ち: 気づいた時刻・違いの印とそれを見た時刻・違いが消えた時刻・急ぎ・
+   最後のベルの時刻・ベルの回数。
+5. ``patient_notice_events``: 版ごとの記録 (理由・説明・急ぎを含む・UNIQUE notice_id, version)。
 
 ## downgrade
 5 つの表を消す (送信の記録とお伝えした内容は失われる)。
@@ -101,6 +106,7 @@ def upgrade() -> None:
         sa.Column("skip_reason", sa.String(64), nullable=True),
         sa.Column("dedupe_key", sa.String(200), nullable=False),
         sa.Column("not_before", _TS, nullable=True),
+        sa.Column("expires_at", _TS, nullable=True),
         sa.Column("provider", sa.String(16), nullable=True),
         sa.Column("provider_msg_id", sa.String(64), nullable=True),
         sa.Column("transaction_id", sa.String(128), nullable=True),
@@ -111,11 +117,13 @@ def upgrade() -> None:
         sa.Column("split_num", sa.SmallInteger(), nullable=True),
         sa.Column("fail_reason_raw", sa.String(255), nullable=True),
         sa.Column("sent_at", _TS, nullable=True),
+        sa.Column("claimed_at", _TS, nullable=True),
         sa.Column("accepted_at", _TS, nullable=True),
         sa.Column("status_decided_at", _TS, nullable=True),
         sa.Column("status_checked_at", _TS, nullable=True),
         sa.Column("poll_count", sa.SmallInteger(), nullable=False, server_default="0"),
         sa.Column("next_poll_at", _TS, nullable=True),
+        sa.Column("fail_notified_at", _TS, nullable=True),
         _user_fk("created_by_user_id"),
         sa.Column("created_at", _TS, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", _TS, nullable=False, server_default=sa.func.now()),
@@ -126,7 +134,12 @@ def upgrade() -> None:
     op.create_index("ix_sms_messages_batch_id", "sms_messages", ["batch_id"])
     op.create_index("ix_sms_messages_patient_id", "sms_messages", ["patient_id"])
     op.create_index("ix_sms_messages_status_not_before", "sms_messages", ["status", "not_before"])
+    op.create_index(
+        "ix_sms_messages_status_next_poll_at", "sms_messages", ["status", "next_poll_at"]
+    )
     op.create_index("ix_sms_messages_created_at", "sms_messages", ["created_at"])
+    op.create_index("ix_sms_messages_phone_sent_at", "sms_messages", ["phone", "sent_at"])
+    op.create_index("ix_sms_messages_patient_week", "sms_messages", ["patient_id", "week_start"])
 
     op.create_table(
         "sms_status_events",
@@ -156,9 +169,18 @@ def upgrade() -> None:
         sa.Column("week_start", sa.Date(), nullable=False),
         sa.Column("visits", _json(), nullable=False),
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column("last_channel", sa.String(8), nullable=False, server_default="sms"),
+        sa.Column("told_version", sa.Integer(), nullable=True),
+        sa.Column("last_channel", sa.String(8), nullable=True),
+        sa.Column("told_via", sa.String(8), nullable=True),
         _user_fk("told_by_user_id"),
         sa.Column("told_at", _TS, nullable=True),
+        sa.Column("pending_since", _TS, nullable=True),
+        sa.Column("pending_signature", sa.String(64), nullable=True),
+        sa.Column("pending_signature_at", _TS, nullable=True),
+        sa.Column("pending_cleared_at", _TS, nullable=True),
+        sa.Column("pending_urgent", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("last_bell_at", _TS, nullable=True),
+        sa.Column("bell_count", sa.SmallInteger(), nullable=False, server_default="0"),
         sa.Column("created_at", _TS, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", _TS, nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint(
@@ -168,7 +190,12 @@ def upgrade() -> None:
             "last_channel IN ('sms', 'phone', 'none')",
             name=op.f("ck_patient_week_notices_last_channel"),
         ),
+        sa.CheckConstraint(
+            "told_via IN ('kddi', 'mock', 'phone', 'none')",
+            name=op.f("ck_patient_week_notices_told_via"),
+        ),
     )
+    op.create_index("ix_patient_week_notices_week_start", "patient_week_notices", ["week_start"])
 
     op.create_table(
         "patient_notice_events",
@@ -190,9 +217,11 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(8), nullable=False),
         sa.Column("channel", sa.String(8), nullable=False),
         sa.Column("reason", sa.String(64), nullable=True),
+        sa.Column("note", sa.String(200), nullable=True),
+        sa.Column("urgent", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("visits", _json(), nullable=False),
         sa.Column("detected_at", _TS, nullable=True),
-        sa.Column("told_at", _TS, nullable=False),
+        sa.Column("told_at", _TS, nullable=True),
         _user_fk("told_by_user_id"),
         sa.Column(
             "batch_id",
@@ -204,6 +233,9 @@ def upgrade() -> None:
         sa.CheckConstraint(_KINDS, name=op.f("ck_patient_notice_events_kind")),
         sa.CheckConstraint(
             "channel IN ('sms', 'phone', 'none')", name=op.f("ck_patient_notice_events_channel")
+        ),
+        sa.UniqueConstraint(
+            "notice_id", "version", name=op.f("uq_patient_notice_events_notice_version")
         ),
     )
     op.create_index(
@@ -217,11 +249,15 @@ def downgrade() -> None:
     """注意: 送信の記録とお伝えした内容は失われる."""
     op.drop_index("ix_patient_notice_events_patient_week", table_name="patient_notice_events")
     op.drop_table("patient_notice_events")
+    op.drop_index("ix_patient_week_notices_week_start", table_name="patient_week_notices")
     op.drop_table("patient_week_notices")
     op.drop_index("ix_sms_status_events_message_id", table_name="sms_status_events")
     op.drop_table("sms_status_events")
     for name in (
+        "ix_sms_messages_patient_week",
+        "ix_sms_messages_phone_sent_at",
         "ix_sms_messages_created_at",
+        "ix_sms_messages_status_next_poll_at",
         "ix_sms_messages_status_not_before",
         "ix_sms_messages_patient_id",
         "ix_sms_messages_batch_id",

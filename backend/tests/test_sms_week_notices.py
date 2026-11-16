@@ -42,6 +42,10 @@ SEND = "/api/v1/sms/week-notices/send"
 # ---------------------------------------------------------------------------
 
 
+#: 外部キーを確かめる (PostgreSQL と同じく、親より先に子を書いたら落ちる)。
+pytestmark = pytest.mark.usefixtures("sqlite_foreign_keys")
+
+
 def _bearer(user: User) -> dict[str, str]:
     token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
     return {"Authorization": f"Bearer {token}"}
@@ -53,6 +57,21 @@ def _clock(monkeypatch):
     monkeypatch.setattr(sms_notices, "_now", lambda: state["now"])
     monkeypatch.setattr(sms_notices, "SEND_INTERVAL_SECONDS", 0)
     return state
+
+
+#: 試験の番号 (見本)。
+ALLOW = "09000000001,09000000002,09000000003"
+
+
+@pytest.fixture(autouse=True)
+def _test_mode(monkeypatch):
+    """この試験の多くは mock で「送った」後を見るので、試験の番号を一覧に入れる.
+
+    live + mock は送らない (契約 §13-4) ので test の状態で送る。
+    設定は ``_engine`` が作り直すので、環境変数で渡す。
+    """
+    monkeypatch.setenv("SMS_SEND_MODE", "test")
+    monkeypatch.setenv("SMS_TEST_ALLOWLIST", ALLOW)
 
 
 @pytest_asyncio.fixture
@@ -134,10 +153,20 @@ async def _preview(client, admin, week: date = WEEK):
     return res.json()
 
 
-async def _send(client, admin, ids, expected, **extra):
+async def _tokens(client, admin, ids) -> dict[str, str]:
+    """一覧の行の印 (一覧に無い方は合わない印)."""
+    rows = (await _preview(client, admin))["rows"]
+    by = {r["patient_id"]: r["token"] for r in rows}
+    return {str(i): by.get(str(i), "0" * 32) for i in ids}
+
+
+async def _send(client, admin, ids, expected, tokens=None, **extra):
+    if tokens is None:
+        tokens = await _tokens(client, admin, ids)
     body = {
         "week_start": WEEK.isoformat(),
         "patient_ids": [str(i) for i in ids],
+        "tokens": tokens,
         "expected_count": expected,
         **extra,
     }
@@ -183,7 +212,11 @@ async def test_non_admin_is_403(client, db, base) -> None:
     await db.commit()
     for method, url, body in (
         ("post", PREVIEW, {"week_start": WEEK.isoformat()}),
-        ("post", SEND, {"week_start": WEEK.isoformat(), "patient_ids": [], "expected_count": 0}),
+        (
+            "post",
+            SEND,
+            {"week_start": WEEK.isoformat(), "patient_ids": [], "tokens": {}, "expected_count": 0},
+        ),
         ("get", "/api/v1/sms/batches", None),
         ("get", "/api/v1/sms/messages", None),
     ):
@@ -235,8 +268,9 @@ async def test_preview_classification(client, db, base) -> None:
 
     (row,) = data["rows"]
     assert row["patient_id"] == str(ok.id)
-    assert row["surname"] == "見本"
-    assert row["state"] == "new"
+    assert row["surname"] == "見本" and row["surname_uncertain"] is False
+    assert row["state"] == "new" and row["last_attempt"] is None
+    assert len(row["token"]) == 32 and "token" not in data["not_sendable"][0]
     assert row["visits"] == [
         {"date": "2026-12-01", "start": "10:00"},
         {"date": "2026-12-01", "start": "15:00"},
@@ -292,7 +326,7 @@ async def test_preview_requires_monday_and_profile(client, db, base) -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_with_mock_and_state_after(client, db, base) -> None:
+async def test_send_with_mock_and_state_after(client, db, base, _clock) -> None:
     p = await _sendable_patient(db, "S-1", "見本 一郎")
     res = await _send(client, base["admin"], [p.id], 1)
     assert res.status_code == 200, res.text
@@ -307,11 +341,12 @@ async def test_send_with_mock_and_state_after(client, db, base) -> None:
     assert msg.attempt_count == 1 and msg.next_poll_at is not None
 
     notice = await db.scalar(select(PatientWeekNotice))
-    assert notice.version == 1 and notice.last_channel == "sms"
+    assert notice.version == 1 and notice.told_version == 1 and notice.last_channel == "sms"
     assert notice.visits == [{"date": "2026-12-01", "start": "10:00"}]
     assert notice.told_by_user_id == base["admin"].id
     event = await db.scalar(select(PatientNoticeEvent))
     assert event.version == 1 and event.channel == "sms" and event.batch_id == msg.batch_id
+    assert event.told_at is not None
 
     # 同じ内容は「送信済み」・既定では送らない。
     data = await _preview(client, base["admin"])
@@ -330,8 +365,15 @@ async def test_send_with_mock_and_state_after(client, db, base) -> None:
     second = next(m for m in msgs if m.notice_version == 2)
     assert second.status == "queued"
     assert sms_notices.aware(second.not_before) == datetime(2026, 11, 25, 1, 10, tzinfo=UTC)
+    # 待ちの行がある方は「送っている途中」・もう一度は送れない (409)。
+    data = await _preview(client, base["admin"])
+    assert data["rows"][0]["state"] == "sending" and data["totals"]["messages"] == 0
+    res = await _send(client, base["admin"], [p.id], 1, resend=True)
+    assert res.status_code == 409 and "ほかの操作と重なりました" in res.json()["detail"]
 
-    # 予定が変わると「変わった」になる。
+    # 時刻が来て送れたら、予定が変わると「変わった」になる。
+    _clock["now"] = datetime(2026, 11, 25, 1, 10, tzinfo=UTC)
+    assert await sms_notices.send_due_messages() == 1
     await _visit(db, p, date(2026, 12, 4), time(11, 0))
     data = await _preview(client, base["admin"])
     assert data["rows"][0]["state"] == "changed_since_sent"
@@ -347,7 +389,7 @@ async def test_send_with_mock_and_state_after(client, db, base) -> None:
     assert len(batches) == 2
     assert sorted(str(b["status_counts"]) for b in batches) == [
         "{'accepted': 1}",
-        "{'queued': 1}",
+        "{'accepted': 1}",
     ]
     assert batches[0]["created_by_name"] == "sms-admin@example.com"
 
@@ -364,7 +406,8 @@ async def test_send_with_mock_and_state_after(client, db, base) -> None:
     )
     assert res.status_code == 200
     listed = res.json()
-    assert listed["total"] == 1 and listed["items"][0]["phone_last4"] == "0001"
+    assert listed["total"] == 2 and listed["items"][0]["phone_last4"] == "0001"
+    assert listed["items"][0]["provider"] == "mock"
     assert "09000000001" not in res.text and 'phone"' not in res.text
     res = await client.get(
         "/api/v1/sms/messages", params={"date_from": "2026-11-26"}, headers=_bearer(base["admin"])
@@ -426,7 +469,11 @@ async def test_unselected_and_not_sendable_are_not_sent(client, db, base) -> Non
     await _sendable_patient(db, "S-2", "見本 二郎", phone="09000000002")
     c = await _patient(db, "S-3", "見本 三郎")
     await _visit(db, c, date(2026, 12, 2), time(10))
+    # 送れない方を選んでいたら黙って外さず 409 (だれにも送らない・契約 §12)。
     res = await _send(client, base["admin"], [a.id, c.id], 1)
+    assert res.status_code == 409 and "予定か連絡先が変わりました" in res.json()["detail"]
+    assert await _messages(db) == []
+    res = await _send(client, base["admin"], [a.id], 1)
     assert res.status_code == 200, res.text
     (msg,) = await _messages(db)
     assert msg.patient_id == a.id
@@ -434,6 +481,7 @@ async def test_unselected_and_not_sendable_are_not_sent(client, db, base) -> Non
 
 @pytest.mark.asyncio
 async def test_allowlist_skips_numbers_not_listed(client, db, base, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "sms_send_mode", "test")
     monkeypatch.setattr(get_settings(), "sms_test_allowlist", "090-0000-0001")
     a = await _sendable_patient(db, "S-1", "見本 一郎", phone="09000000001")
     b = await _sendable_patient(db, "S-2", "見本 二郎", phone="09000000002")
@@ -442,8 +490,26 @@ async def test_allowlist_skips_numbers_not_listed(client, db, base, monkeypatch)
     by_patient = {m.patient_id: m for m in await _messages(db)}
     assert by_patient[a.id].status == "accepted"
     assert by_patient[b.id].status == "skipped"
-    assert by_patient[b.id].skip_reason == "not_in_test_allowlist"
+    assert by_patient[b.id].skip_reason == "test_mode"
     assert by_patient[b.id].provider_msg_id is None
+
+
+@pytest.mark.asyncio
+async def test_test_mode_with_empty_allowlist_sends_nothing(client, db, base, monkeypatch) -> None:
+    # 既定 (test・一覧が空) は 1 件も送らない (守りの側に倒す)。
+    monkeypatch.setattr(get_settings(), "sms_send_mode", "test")
+    monkeypatch.setattr(get_settings(), "sms_test_allowlist", "")
+    a = await _sendable_patient(db, "S-1", "見本 一郎", phone="09000000001")
+    res = await _send(client, base["admin"], [a.id], 1)
+    assert res.status_code == 200, res.text
+    (msg,) = await _messages(db)
+    assert msg.status == "skipped" and msg.skip_reason == "test_mode"
+    assert msg.provider_msg_id is None
+    # 知らない値も test として扱う。live だけが全員に送る。
+    monkeypatch.setattr(get_settings(), "sms_send_mode", "LIVE?")
+    assert sms_notices.may_really_send("09000000001", get_settings()) is False
+    monkeypatch.setattr(get_settings(), "sms_send_mode", "live")
+    assert sms_notices.may_really_send("09000000001", get_settings()) is True
 
 
 @pytest.mark.asyncio
@@ -574,6 +640,33 @@ def test_migration_0110_sqlite_roundtrip(tmp_path: Path) -> None:
 
     run(migration.upgrade)
     assert set(_TABLES) <= set(inspect(engine).get_table_names())
+    # 段階 2 の欄 (お知らせ待ち・ベル・届かなかったベル・送らずに済ませた説明)。
+    cols = {c["name"] for c in inspect(engine).get_columns("patient_week_notices")}
+    assert {
+        "pending_since",
+        "pending_signature",
+        "pending_signature_at",
+        "pending_cleared_at",
+        "pending_urgent",
+        "last_bell_at",
+        "bell_count",
+        "told_version",
+    } <= cols
+    assert {"fail_notified_at", "expires_at"} <= {
+        c["name"] for c in inspect(engine).get_columns("sms_messages")
+    }
+    msg_indexes = {i["name"] for i in inspect(engine).get_indexes("sms_messages")}
+    assert {
+        "ix_sms_messages_phone_sent_at",
+        "ix_sms_messages_status_next_poll_at",
+        "ix_sms_messages_patient_week",
+    } <= msg_indexes
+    assert "ix_patient_week_notices_week_start" in {
+        i["name"] for i in inspect(engine).get_indexes("patient_week_notices")
+    }
+    assert {"note", "urgent"} <= {
+        c["name"] for c in inspect(engine).get_columns("patient_notice_events")
+    }
     with engine.begin() as conn:
         conn.execute(
             sa.text(
@@ -606,6 +699,17 @@ def test_migration_0110_sqlite_roundtrip(tmp_path: Path) -> None:
                     "VALUES ('n2', 'p1', '2026-11-30', '[]')"
                 )
             )
+    # 同じ版の記録は 2 つ作れない (同時の操作を止める)。
+    ev = (
+        "INSERT INTO patient_notice_events "
+        "(id, notice_id, patient_id, week_start, version, kind, channel, visits) "
+        "VALUES ('{id}', 'n1', 'p1', '2026-11-30', 2, 'week', 'sms', '[]')"
+    )
+    with engine.begin() as conn:
+        conn.execute(sa.text(ev.format(id="e1")))
+    with pytest.raises(sa.exc.IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(sa.text(ev.format(id="e2")))
 
     run(migration.downgrade)
     names = set(inspect(engine).get_table_names())

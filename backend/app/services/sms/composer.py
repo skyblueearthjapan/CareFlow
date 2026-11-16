@@ -5,7 +5,10 @@
 * 事業所名と電話は ``business_profile`` (``station_name``・``contact_tel``) から渡す
   (コードに事業所の名前を書かない)。
 * 文面には **姓だけ** を入れる (PO 決定)。姓は ``patients.name`` の最初の空白
-  (半角・全角) より前。空白が無い名前は、姓と名を分けられないので名前の全体を使う。
+  (半角・全角・NBSP・タブなど Unicode の空白すべて) より前。空白が無い名前は、姓と名を
+  分けられないので名前の全体を使い、一覧で「姓が分けられない」と印を付ける。
+* SMS (UCS-2) で送れない文字 (BMP の外: 「𠮷」・絵文字など) は :func:`has_unsupported_chars`
+  で見分け、その方には送れない (``unsupported_char``・契約 §13-3)。
 * 週の言い方は、送る日 (日本時間) とその週の関係で「今週の」「来週の」「M/Dからの週の」。
 * 1 行 = 1 回の訪問の開始時刻 ``M/D(曜)H:MM``。同じ日・同じ時刻は 1 行 (2 名で伺う訪問・
   旧形式の 2 行持ちの 2 名体制)。同じ日に 2 回なら 2 行。
@@ -19,7 +22,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, time, timedelta
 from math import ceil
-from typing import Literal
+from typing import Any, Literal
 
 WEEKDAY_JA = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -45,17 +48,33 @@ ESTIMATE_CARRIER = "docomo"
 
 
 def surname_of(name: str | None) -> str:
-    """``patients.name`` から姓を取る (最初の半角・全角の空白より前・空白が無ければ全体)."""
+    """``patients.name`` から姓を取る (最初の空白より前・空白が無ければ全体).
+
+    空白は Unicode の空白すべて (半角・全角・NBSP・タブ) を区切りとみなす。
+    """
+    parts = (name or "").split(maxsplit=1)
+    return parts[0] if parts else ""
+
+
+def surname_uncertain(name: str | None) -> bool:
+    """名前に区切りの空白が無く、姓と名を分けられない (名前の全体を姓として使う)."""
     s = (name or "").strip()
-    for i, ch in enumerate(s):
-        if ch in (" ", "　"):
-            return s[:i]
-    return s
+    return bool(s) and len(s.split(maxsplit=1)) < 2
+
+
+def has_unsupported_chars(text: str) -> bool:
+    """SMS (UCS-2) で送れない文字 (BMP の外 = U+10000 以上) があるか."""
+    return any(ord(ch) > 0xFFFF for ch in text)
+
+
+def text_length(text: str) -> int:
+    """本文の文字数 (UTF-16 の単位で数える。BMP の外の文字は 2 と数える)."""
+    return len(text.encode("utf-16-le")) // 2
 
 
 def count_chars(text: str) -> int:
     """通数の見込みに使う文字数 (au・docomo は改行 1 つを 2 文字と数える)."""
-    return len(text) + text.count("\n")
+    return text_length(text) + text.count("\n")
 
 
 def estimate_segments(chars: int, carrier: str = ESTIMATE_CARRIER) -> int:
@@ -99,6 +118,19 @@ def slots_to_json(slots: Sequence[tuple[date, time]]) -> list[dict[str, str]]:
     return [{"date": d.isoformat(), "start": f"{t.hour:02d}:{t.minute:02d}"} for d, t in slots]
 
 
+def slots_from_json(visits: Iterable[dict[str, Any]] | None) -> list[tuple[date, time]]:
+    """``patient_week_notices.visits`` の形 → 日・開始時刻の並び (形の違う行は飛ばす)."""
+    out: list[tuple[date, time]] = []
+    for v in visits or []:
+        try:
+            d = date.fromisoformat(str(v["date"]))
+            hh, mm = (int(x) for x in str(v["start"]).split(":")[:2])
+        except (KeyError, ValueError, TypeError):
+            continue
+        out.append((d, time(hh, mm)))
+    return unique_slots(out)
+
+
 def compose_week_notice(
     *,
     station_name: str,
@@ -135,7 +167,8 @@ class VisitChange:
     new_start: time | None = None
 
 
-def _change_line(c: VisitChange) -> str:
+def change_line(c: VisitChange) -> str:
+    """1 つの変更の 1 行 (一覧の ``label`` と、変更が 2 つ以上のときの本文の行)."""
     if c.kind == "time":
         assert c.old_date and c.old_start and c.new_start
         return f"{format_slot(c.old_date, c.old_start)}→{format_time(c.new_start)}"
@@ -160,7 +193,8 @@ def compose_change_notice(
 
     変更が 1 つなら設計の 3 つの形 (時刻・日の変更 / お休み / 追加)。
     2 つ以上なら「ご訪問の変更です。」の後に 1 行ずつ並べる。
-    頭の【】には ``station_name`` をそのまま入れる (短い名前の設定はまだ無い)。
+    頭の【】には ``station_name`` をそのまま入れる (呼ぶ側が設定 ``sms_station_short_name``
+    か ``business_profile.station_name`` を渡す)。
     """
     if not changes:
         raise ValueError("changes is empty")
@@ -168,7 +202,7 @@ def compose_change_notice(
     if len(changes) == 1:
         c = changes[0]
         if c.kind in ("time", "date"):
-            return f"{head} ご訪問の変更です。{_change_line(c)} ご都合が悪いときは{contact_tel}へ"
+            return f"{head} ご訪問の変更です。{change_line(c)} ご都合が悪いときは{contact_tel}へ"
         if c.kind == "cancel":
             assert c.old_date and c.old_start
             return (
@@ -181,6 +215,6 @@ def compose_change_notice(
             f"ご都合が悪いときは{contact_tel}へ"
         )
     lines = [f"{head} ご訪問の変更です。"]
-    lines.extend(_change_line(c) for c in changes)
+    lines.extend(change_line(c) for c in changes)
     lines.append(f"ご都合が悪いときは{contact_tel}へ")
     return "\n".join(lines)

@@ -95,8 +95,18 @@ class SmsProvider(Protocol):
     async def get_status(self, msg_id: str) -> StatusResult: ...
 
 
+class UnsupportedCharError(ValueError):
+    """UCS-2 で表せない文字 (BMP の外) がある (送らない・送り直さない)."""
+
+
 def encode_sms_text(text: str) -> str:
-    """``smsTextEnc``: 本文を UCS-2 (UTF-16BE・BOM なし) にして Base64."""
+    """``smsTextEnc``: 本文を UCS-2 (UTF-16BE・BOM なし) にして Base64.
+
+    BMP の外の文字 (「𠮷」・絵文字) は UCS-2 で表せない (UTF-16 の代理対になり、KDDI 側で
+    異常として検知されるおそれがある) ので :class:`UnsupportedCharError` で断ち切る。
+    """
+    if any(ord(ch) > 0xFFFF for ch in text):
+        raise UnsupportedCharError("text has characters outside the BMP")
     return base64.b64encode(text.encode("utf-16-be")).decode("ascii")
 
 
@@ -123,9 +133,10 @@ class MockProvider:
         )
 
     async def get_status(self, msg_id: str) -> StatusResult:
+        # 模擬の照会 (実際には送っていない)。画面で見分けられるよう値は "mock"。
         return StatusResult(
             status="delivered",
-            status_raw="delivered",
+            status_raw="mock",
             split_num=None,
             carrier=None,
             reason=None,
@@ -219,6 +230,8 @@ class KddiProvider:
             return SendResult(outcome="failed", error_code="config", needs_human=True)
         try:
             body = self.build_body(phone, text)
+        except UnsupportedCharError:
+            return SendResult(outcome="failed", error_code="unsupported_char")
         except ValueError:
             return SendResult(outcome="failed", error_code="bad_phone")
         try:
@@ -319,8 +332,38 @@ class KddiProvider:
         )
 
 
+def provider_setting(settings: Any) -> str:
+    """設定 ``sms_provider`` の値 (小文字・空なら mock)。打ち間違いもそのまま返す."""
+    return str(getattr(settings, "sms_provider", "mock") or "mock").strip().lower()
+
+
 def get_provider(settings: Any) -> SmsProvider:
     """設定 ``sms_provider`` から窓口を選ぶ (知らない値は mock = 外へ出さない)."""
-    if str(getattr(settings, "sms_provider", "mock") or "mock").strip().lower() == "kddi":
+    if provider_setting(settings) == "kddi":
         return KddiProvider(settings)
     return MockProvider()
+
+
+def provider_config_error(settings: Any) -> bool:
+    """窓口の設定に誤りがある (知らない値・``live`` なのに kddi でない)。"""
+    name = provider_setting(settings)
+    if name not in ("mock", "kddi"):
+        return True
+    live = str(getattr(settings, "sms_send_mode", "test") or "test").strip().lower() == "live"
+    return live and name != "kddi"
+
+
+def provider_ok(settings: Any) -> bool:
+    """窓口の設定がそろっているか.
+
+    mock は True (``live`` のときは False・mock では届かない)。kddi は接続の値がすべてある。
+    知らない値は False。
+    """
+    if provider_config_error(settings):
+        return False
+    name = provider_setting(settings)
+    if name == "mock":
+        return True
+    if name == "kddi":
+        return KddiProvider(settings).configured
+    return False

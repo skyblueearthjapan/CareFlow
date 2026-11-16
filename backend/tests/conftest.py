@@ -88,6 +88,19 @@ async def visits_pds_unique_index(_engine) -> None:
 
 
 @pytest_asyncio.fixture(scope="function")
+async def sqlite_foreign_keys(_engine) -> None:
+    """SQLite で外部キーを確かめる (使う試験だけ・既定の SQLite は外部キーを見ない).
+
+    PostgreSQL では外部キーの順番の誤り (親より先に子を書く) が落ちるが、既定の SQLite では
+    見えない (2026-11-17 の SMS の週のお知らせ)。試験の DB は 1 本の接続 (StaticPool) なので、
+    その接続で ``PRAGMA foreign_keys=ON`` にする。
+    """
+    async with _engine.connect() as conn:
+        await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+        assert (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar() == 1
+
+
+@pytest_asyncio.fixture(scope="function")
 async def db(_engine) -> AsyncIterator:
     """Yield an async DB session."""
     factory = db_session.get_session_factory()

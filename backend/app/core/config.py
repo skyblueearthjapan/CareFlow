@@ -156,9 +156,14 @@ class Settings(BaseSettings):
     sms_kddi_sms_number: str = Field(default="")
     sms_kddi_basic_id: str = Field(default="")
     sms_kddi_basic_password: str = Field(default="")
-    # 試験の守り: 番号 (数字だけ・カンマ区切り)。空でないあいだは、ここに無い番号へは
-    # kddi でも実際には送らず skipped として記録だけにする。
+    # 送り方: test (既定) = sms_test_allowlist にある番号にだけ実際に送る (一覧が空なら 1 件も
+    # 送らない・skipped / skip_reason=test_mode)。live = 全員に送る (一覧は見ない)。
+    # test / live 以外の値は test として扱う (誤って全員へ送らないため)。
+    sms_send_mode: str = Field(default="test")
+    # 試験の守り: 番号 (数字だけ・カンマ区切り)。test のあいだは、ここにある番号にだけ送る。
     sms_test_allowlist: str = Field(default="")
+    # 変更のお知らせの頭の【 】に入れる短い名前 (空なら business_profile.station_name)。
+    sms_station_short_name: str = Field(default="")
     # 送ってよい時間帯 (日本時間・"HH:MM-HH:MM"・終わりの時刻は含まない)。
     sms_send_hours: str = Field(default="08:00-20:00")
 
