@@ -39,7 +39,11 @@ vi.mock('@/lib/utils', () => ({
       .join(' '),
 }));
 
-import { CourseWeekOverview, type WeekOverviewVisit } from '../CourseWeekOverview';
+import {
+  COURSE_WEEK_DAY_MIN_PX,
+  CourseWeekOverview,
+  type WeekOverviewVisit,
+} from '../CourseWeekOverview';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import type { AccompanimentBinding } from '@/components/schedule/timeline/accompaniment/types';
@@ -154,6 +158,37 @@ describe('CourseWeekOverview (B-6)', () => {
     // 患者氏名が描画される
     expect(screen.getByTestId('course-week-overview-name-v-1')).toHaveTextContent('田中');
     expect(screen.getByTestId('course-week-overview-name-v-2')).toHaveTextContent('佐藤');
+  });
+
+  it('狭い窓 (A): 曜日の列は 176px より縮めず、札は折り返さない・距離と残り枠は次の行へ回れる', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[
+          {
+            id: 'v-1',
+            patient_id: 'p-1',
+            patient_name: '田中',
+            weekday: 0,
+            course_template_id: 'tpl-A',
+            start_time: null,
+          },
+        ]}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+      />,
+    );
+    expect(COURSE_WEEK_DAY_MIN_PX).toBe(176);
+    const grid = screen.getByTestId('course-week-overview').querySelector('.grid') as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toContain('minmax(176px, 1fr)');
+    const badge = screen.getByTestId('course-week-overview-capacity-tpl-A-0');
+    expect(badge.className).toContain('whitespace-nowrap');
+    expect(badge.parentElement!.className).toContain('flex-wrap');
+    expect(screen.getByTestId('course-week-overview-remaining-tpl-A-0').className).toContain(
+      'whitespace-nowrap',
+    );
   });
 
   it('2 名で訪問の 2 人目のコースの分も件数と残り枠に数える (1 行の訪問の写し)', () => {

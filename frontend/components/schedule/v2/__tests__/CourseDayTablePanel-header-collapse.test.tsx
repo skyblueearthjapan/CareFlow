@@ -621,3 +621,48 @@ describe('CourseDayTablePanel — トグル「非稼働を表示」', () => {
     expect(screen.getAllByTestId('schedule-show-inactive-toggle')).toHaveLength(1);
   });
 });
+
+/**
+ * 保留プールを細い帯に畳む (narrow-window-layout-design-2026-11-18.md C)。
+ *  PC-1  既定は開いていて、見出しに［畳む］がある
+ *  PC-2  ［畳む］→ 細い帯になり、右の列が細くなる・localStorage に永続する
+ *  PC-3  帯を押すと開く
+ */
+describe('CourseDayTablePanel — 保留プールを畳む', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    useUIStore.setState({ scheduleHeaderCollapsed: false, schedulePoolCollapsed: false });
+  });
+
+  it('PC-1. 既定は開いていて、見出しに［畳む］がある', () => {
+    renderPanel();
+    expect(screen.getByTestId('course-day-two-pane')).toHaveAttribute(
+      'data-pool-collapsed',
+      'false',
+    );
+    expect(screen.getByTestId('pool-collapse-button')).toBeInTheDocument();
+    expect(screen.queryByTestId('pool-expand-strip')).not.toBeInTheDocument();
+  });
+
+  it('PC-2. ［畳む］で細い帯になり、localStorage (carelink-ui) に永続する', () => {
+    renderPanel();
+    fireEvent.click(screen.getByTestId('pool-collapse-button'));
+
+    const pane = screen.getByTestId('course-day-two-pane');
+    expect(pane).toHaveAttribute('data-pool-collapsed', 'true');
+    expect(pane.className).toContain('lg:grid-cols-[1fr_40px]');
+    expect(screen.getByTestId('pool-expand-strip')).toHaveAttribute('aria-expanded', 'false');
+    const raw = window.localStorage.getItem('carelink-ui');
+    expect(JSON.parse(raw as string).state.schedulePoolCollapsed).toBe(true);
+  });
+
+  it('PC-3. 帯を押すと開く', () => {
+    useUIStore.setState({ schedulePoolCollapsed: true });
+    renderPanel();
+    fireEvent.click(screen.getByTestId('pool-expand-strip'));
+    expect(useUIStore.getState().schedulePoolCollapsed).toBe(false);
+    expect(screen.queryByTestId('pool-expand-strip')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pool-collapse-button')).toBeVisible();
+  });
+});

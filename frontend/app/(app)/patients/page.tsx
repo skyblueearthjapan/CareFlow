@@ -169,27 +169,31 @@ export default function PatientsPage() {
           title="患者マスタ"
           subtitle={<>{total > 0 ? `全 ${total} 件` : '登録済み患者を一覧表示します'}</>}
         />
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+        <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-2">
           {/* RB (PO決定 2026-07-08): 全ロール同一表示。staff には無効化して見せる
               (全患者置換のみ admin 限定のセンシティブ機能として非表示を維持)。 */}
           <div
-            className={cn('flex items-center gap-2', !canCreate && 'opacity-50')}
+            className={cn('flex flex-wrap items-center gap-2', !canCreate && 'opacity-50')}
             aria-disabled={!canCreate}
             inert={!canCreate || undefined}
           >
-            <span className="text-xs font-medium text-text-muted">一括 (全患者)</span>
+            <span className="whitespace-nowrap text-xs font-medium text-text-muted">
+              一括 (全患者)
+            </span>
             <PatientsExcelButtons />
             {isAdmin ? <PatientsReplaceAllButton /> : null}
           </div>
           <div
             className={cn(
-              'flex items-center gap-2 border-l border-border-default pl-2',
+              'flex flex-wrap items-center gap-2 border-l border-border-default pl-2',
               !canCreate && 'opacity-50',
             )}
             aria-disabled={!canCreate}
             inert={!canCreate || undefined}
           >
-            <span className="text-xs font-medium text-text-muted">個別カルテ (1 患者)</span>
+            <span className="whitespace-nowrap text-xs font-medium text-text-muted">
+              個別カルテ (1 患者)
+            </span>
             <PatientKarteButtons />
           </div>
           {canCreate ? (

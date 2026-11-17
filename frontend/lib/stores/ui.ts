@@ -34,6 +34,15 @@ type UIState = {
    * (schedule-unit-switch-design-2026-10-21.md D9)。［わかった］で true・以後この端末では出さない。
    */
   scheduleUnitIntroSeen: boolean;
+  /**
+   * 縦が狭い画面 (900px 未満) の初回表示でスケジュールの上部をコンパクト表示にしたか
+   * (narrow-window-layout-design-2026-11-18.md B)。一度適用したら以後は利用者の切り替えを尊重する。
+   */
+  scheduleHeaderAutoCollapsedApplied: boolean;
+  /** スケジュール画面の右の欄「保留プール」を細い帯に畳むか (同 C)。機械ごとに覚える。 */
+  schedulePoolCollapsed: boolean;
+  /** 横が狭い画面 (1400px 未満) の初回表示で保留プールを畳んだか (同 C)。 */
+  schedulePoolAutoCollapsedApplied: boolean;
   setSidebarCollapsed: (v: boolean) => void;
   applySidebarAutoCollapse: () => void;
   setDensity: (v: 'compact' | 'comfortable') => void;
@@ -41,6 +50,9 @@ type UIState = {
   setShowInactiveVisits: (v: boolean) => void;
   setShowCancelledVisits: (v: boolean) => void;
   setScheduleUnitIntroSeen: (v: boolean) => void;
+  applyScheduleHeaderAutoCollapse: () => void;
+  setSchedulePoolCollapsed: (v: boolean) => void;
+  applySchedulePoolAutoCollapse: () => void;
 };
 
 export const useUIStore = create<UIState>()(
@@ -53,6 +65,9 @@ export const useUIStore = create<UIState>()(
       showInactiveVisits: false,
       showCancelledVisits: false,
       scheduleUnitIntroSeen: false,
+      scheduleHeaderAutoCollapsedApplied: false,
+      schedulePoolCollapsed: false,
+      schedulePoolAutoCollapsedApplied: false,
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
       applySidebarAutoCollapse: () =>
         set((s) =>
@@ -65,6 +80,19 @@ export const useUIStore = create<UIState>()(
       setShowInactiveVisits: (v) => set({ showInactiveVisits: v }),
       setShowCancelledVisits: (v) => set({ showCancelledVisits: v }),
       setScheduleUnitIntroSeen: (v) => set({ scheduleUnitIntroSeen: v }),
+      applyScheduleHeaderAutoCollapse: () =>
+        set((s) =>
+          s.scheduleHeaderAutoCollapsedApplied
+            ? s
+            : { scheduleHeaderAutoCollapsedApplied: true, scheduleHeaderCollapsed: true },
+        ),
+      setSchedulePoolCollapsed: (v) => set({ schedulePoolCollapsed: v }),
+      applySchedulePoolAutoCollapse: () =>
+        set((s) =>
+          s.schedulePoolAutoCollapsedApplied
+            ? s
+            : { schedulePoolAutoCollapsedApplied: true, schedulePoolCollapsed: true },
+        ),
     }),
     {
       name: 'carelink-ui',
@@ -76,6 +104,9 @@ export const useUIStore = create<UIState>()(
         showInactiveVisits: s.showInactiveVisits,
         showCancelledVisits: s.showCancelledVisits,
         scheduleUnitIntroSeen: s.scheduleUnitIntroSeen,
+        scheduleHeaderAutoCollapsedApplied: s.scheduleHeaderAutoCollapsedApplied,
+        schedulePoolCollapsed: s.schedulePoolCollapsed,
+        schedulePoolAutoCollapsedApplied: s.schedulePoolAutoCollapsedApplied,
       }),
     },
   ),

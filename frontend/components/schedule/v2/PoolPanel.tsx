@@ -29,7 +29,7 @@
  */
 import * as React from 'react';
 import { useDroppable } from '@dnd-kit/core';
-import { Inbox } from 'lucide-react';
+import { Inbox, PanelRightClose } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
@@ -210,6 +210,11 @@ export interface PoolGroupedByWeekdayProps {
    * 未指定時は何も描画されない (従来どおり)。
    */
   topSection?: React.ReactNode;
+  /**
+   * 欄を細い帯に畳む (narrow-window-layout-design-2026-11-18.md C)。
+   * 指定すると見出しの横に［畳む］を出す。未指定なら出さない (従来どおり)。
+   */
+  onCollapse?: () => void;
 }
 
 /**
@@ -273,6 +278,7 @@ export function PoolGroupedByWeekday({
   partnerLocationByPatientSlot,
   headerAction,
   topSection,
+  onCollapse,
 }: PoolGroupedByWeekdayProps) {
   const { isOver, setNodeRef } = useDroppable({
     id: POOL_DROPPABLE_ID,
@@ -307,10 +313,26 @@ export function PoolGroupedByWeekday({
           (320px ペインで headerAction と合わせて横スクロールが発生していた).
           flex-wrap で最悪時も折返しにフォールバック. */}
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="flex items-center gap-1 text-sm font-semibold text-text-primary">
-          <Inbox className="h-4 w-4" aria-hidden />
-          保留プール
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="flex items-center gap-1 whitespace-nowrap text-sm font-semibold text-text-primary">
+            <Inbox className="h-4 w-4" aria-hidden />
+            保留プール
+          </h2>
+          {onCollapse ? (
+            <button
+              type="button"
+              onClick={onCollapse}
+              aria-label="保留プールを畳む"
+              aria-expanded={true}
+              title="保留プールを細い帯に畳んで、表を広く使います"
+              className="inline-flex items-center rounded px-1 text-[11px] text-text-muted hover:bg-bg-muted hover:text-text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+              data-testid="pool-collapse-button"
+            >
+              <PanelRightClose className="mr-0.5 h-3.5 w-3.5" aria-hidden />
+              畳む
+            </button>
+          ) : null}
+        </div>
         {headerAction ?? null}
       </div>
       {/* 特別訪問週間セクション (§6-2): 通常プールより上・別枠で描く. */}

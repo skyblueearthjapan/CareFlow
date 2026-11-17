@@ -274,7 +274,26 @@ describe('StaffTimelineView — 描画', () => {
     renderView({ fixedAllDay: [{ start: '08:30', end: '08:45', title: '朝会' }] });
     const lane = screen.getByTestId('tl-lane-fixed');
     expect(lane).toHaveTextContent('全員（固定）');
-    expect(lane).toHaveTextContent('🔒 08:30 朝会');
+    // 15 分の帯は狭いので時刻を省き、名前を先に出す。時刻は説明 (title) に残す (D)。
+    expect(lane).toHaveTextContent('🔒 朝会');
+    expect(lane).not.toHaveTextContent('08:30');
+    expect(lane.querySelector('[title="08:30 朝会"]')).not.toBeNull();
+  });
+
+  it('D: 狭いバー (30 分未満) は時刻の行を省いて名前を出し、時刻は title に残す', () => {
+    renderView({ visits: [visit({ id: 'v1', start_time: '09:00', end_time: '09:15' })] });
+    const bar = screen.getByTestId('tl-bar-v1');
+    expect(bar).toHaveAttribute('data-narrow', 'true');
+    expect(bar).toHaveTextContent('山田');
+    expect(bar).not.toHaveTextContent('09:00〜09:15');
+    expect(bar.getAttribute('title')).toContain('09:00〜09:15 山田　太郎');
+  });
+
+  it('D: 30 分以上のバーは今どおり時刻の行を出す', () => {
+    renderView({ visits: [visit({ id: 'v1', start_time: '10:00', end_time: '10:30' })] });
+    const bar = screen.getByTestId('tl-bar-v1');
+    expect(bar).not.toHaveAttribute('data-narrow');
+    expect(bar).toHaveTextContent('10:00〜10:30');
   });
 
   it('他の曜日のマーカー・訪問は描かない', () => {

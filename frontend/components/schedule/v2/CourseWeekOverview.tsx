@@ -44,6 +44,12 @@ import type { AccompanimentBinding } from '../timeline/accompaniment/types';
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
+/**
+ * 曜日の列の最小幅 (px)。訪問 1 行に「時刻・姓 名・距離」が入る幅
+ * (narrow-window-layout-design-2026-11-18.md A)。これより狭い窓では横に送る。
+ */
+export const COURSE_WEEK_DAY_MIN_PX = 176;
+
 /** CourseWeekOverview が必要とする 1 セル分の visit 表示データ. */
 export interface WeekOverviewVisit {
   id: string;
@@ -393,8 +399,9 @@ export function CourseWeekOverview({
     );
   }
 
-  // 列幅: 行ヘッダ (course label) 144px + 各曜日 minmax(120px, 1fr).
-  const gridCols = `144px repeat(${WEEKDAYS.length}, minmax(120px, 1fr))`;
+  // 列幅: 行ヘッダ (course label) 144px + 各曜日 minmax(COURSE_WEEK_DAY_MIN_PX, 1fr).
+  // 狭い窓では縮めずに横へ送る (narrow-window-layout-design-2026-11-18.md A)。
+  const gridCols = `144px repeat(${WEEKDAYS.length}, minmax(${COURSE_WEEK_DAY_MIN_PX}px, 1fr))`;
 
   return (
     // lg 以上は親 (Panel の週パネル) の高さいっぱいで内部スクロールし、
@@ -801,10 +808,11 @@ export function CourseWeekOverview({
                               </span>
                             ) : null}
                           </div>
-                          <div className="mb-0.5 flex items-center justify-between gap-1">
+                          {/* 札は 1 文字ずつ折れないよう nowrap。距離と「残N枠」は入らなければ次の行へ (A)。 */}
+                          <div className="mb-0.5 flex flex-wrap items-center justify-between gap-1">
                             <span
                               className={cn(
-                                'rounded px-1 text-[10px] tnum',
+                                'whitespace-nowrap rounded px-1 text-[10px] tnum',
                                 occupantCount >= cap
                                   ? 'bg-warning/20 text-warning'
                                   : 'bg-bg-muted text-text-muted',
@@ -831,7 +839,7 @@ export function CourseWeekOverview({
                               {/* コース合計距離 (直線・概算). コース右端に表示. */}
                               {courseTotalKm > 0 ? (
                                 <span
-                                  className="rounded bg-bg-muted px-1 text-[10px] tnum text-text-muted"
+                                  className="whitespace-nowrap rounded bg-bg-muted px-1 text-[10px] tnum text-text-muted"
                                   data-testid={`course-week-overview-distance-${tpl.id}-${wd}`}
                                   data-distance-km={courseTotalKm.toFixed(1)}
                                   title="コース合計の移動距離 (直線概算)"
@@ -846,7 +854,7 @@ export function CourseWeekOverview({
                                 const remaining = Math.max(0, cap - occupantCount);
                                 return remaining > 0 ? (
                                   <span
-                                    className="rounded bg-brand-primary/10 px-1 text-[10px] font-semibold tnum text-brand-primary"
+                                    className="whitespace-nowrap rounded bg-brand-primary/10 px-1 text-[10px] font-semibold tnum text-brand-primary"
                                     data-testid={`course-week-overview-remaining-${tpl.id}-${wd}`}
                                     data-remaining={remaining}
                                     title={`空き ${remaining} 枠`}

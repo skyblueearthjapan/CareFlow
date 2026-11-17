@@ -71,6 +71,7 @@ import {
   type SuggestionBadgeMap,
 } from './suggestionBadge';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
 import {
@@ -343,6 +344,19 @@ const LANE_STEP = 54;
 const LANE_PAD = 8;
 /** 時間軸の最小幅 (px)。PO 要望 2026-08-22: 患者氏名が読める大きさ (1時間 ≒ 200px・PO 再要望で 1600→2400)。 */
 const MIN_TRACK_PX = 2400;
+/**
+ * これより幅が狭いバーは、時刻を省いて名前を先に出す (px・内側の余白を含む)。
+ * 「09:00〜09:15」が入りきらず「09:…」「…」になっていたため
+ * (narrow-window-layout-design-2026-11-18.md D)。時刻はマウスを載せたときの説明に残す。
+ * 幅は時間軸の最小幅からの見込み (1 分 ≒ 3.3px → 30 分未満が狭いバー)。
+ */
+const NARROW_BAR_PX = 92;
+/** 時間軸の最小幅での 1 分あたりの幅 (px)。 */
+const MIN_PX_PER_MIN = (MIN_TRACK_PX - NAME_COL_PX) / TOTAL_MIN;
+/** その長さ (分) のバーが、時刻を出すには狭いか。 */
+export function isNarrowTimelineBar(durationMin: number): boolean {
+  return durationMin * MIN_PX_PER_MIN < NARROW_BAR_PX;
+}
 /** 15分スナップ。 */
 const SNAP_MIN = 15;
 /** これ以下の移動はクリック扱い (モック bindTlDrag と同値)。 */
@@ -1260,10 +1274,15 @@ export function StaffTimelineView({
                   const e = parseHM(f.end);
                   if (s === null) return null;
                   const end = e !== null && e > s ? e : s + DEFAULT_DURATION_MIN;
+                  const narrow = isNarrowTimelineBar(end - s);
                   return (
                     <div
                       key={`${f.start}-${f.title}-${i}`}
-                      className="absolute overflow-hidden truncate rounded px-2 py-1 text-[12px] leading-tight"
+                      title={`${f.start.slice(0, 5)} ${f.title}`}
+                      className={cn(
+                        'absolute overflow-hidden truncate rounded py-1 text-[12px] leading-tight',
+                        narrow ? 'px-1' : 'px-2',
+                      )}
                       style={{
                         left: `${leftPct(s)}%`,
                         width: `${widthPct(end - s)}%`,
@@ -1274,7 +1293,9 @@ export function StaffTimelineView({
                         color: 'var(--sched-neutral-ink)',
                       }}
                     >
-                      🔒 {f.start.slice(0, 5)} {f.title}
+                      {/* 狭いときは時刻を省いて名前を先に出す (D)。 */}
+                      🔒 {narrow ? null : `${f.start.slice(0, 5)} `}
+                      {f.title}
                     </div>
                   );
                 })}
@@ -1801,6 +1822,9 @@ const Bar = React.memo(function Bar({
   const title = isVisit ? (item.visit.patient_name ?? '訪問') : item.event.title;
   const sub = isVisit ? (item.visit.course_label ?? '') : 'イベント';
   const timeLabel = `${hhmm(startMin)}〜${hhmm(endMin)}`;
+  // 狭いバー (30 分未満) は時刻の行を省いて名前を先に出す。時刻は説明 (title) に残す (D)。
+  const narrow = isNarrowTimelineBar(durationMin);
+  const hint = blockReason ?? 'ドラッグ=時刻(15分刻み) / 別の行へ=担当変更 / クリック=メニュー';
   const ariaLabel = [
     timeLabel,
     title,
@@ -1818,7 +1842,13 @@ const Bar = React.memo(function Bar({
       data-visit-id={isVisit ? item.id : undefined}
       aria-label={ariaLabel}
       aria-disabled={movable ? undefined : true}
-      title={blockReason ?? 'ドラッグ=時刻(15分刻み) / 別の行へ=担当変更 / クリック=メニュー'}
+      title={
+        narrow
+          ? `${timeLabel} ${title}
+${hint}`
+          : hint
+      }
+      data-narrow={narrow ? 'true' : undefined}
       onPointerDown={(e) => onPointerDown(e, item, rowKey, movable)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -1837,7 +1867,7 @@ const Bar = React.memo(function Bar({
         width: `${widthPct(durationMin)}%`,
         top,
         height: BAR_H,
-        padding: '5px 8px',
+        padding: narrow ? '5px 4px' : '5px 8px',
         background: palette.bg,
         borderLeft: `3px solid ${palette.bar}`,
         color: palette.ink,
@@ -1846,10 +1876,12 @@ const Bar = React.memo(function Bar({
         touchAction: 'none',
       }}
     >
-      <b className="block truncate text-[11px] font-medium tabular-nums opacity-70">
-        {timeLabel} {sub}
-      </b>
-      <span className="block truncate">
+      {narrow ? null : (
+        <b className="block truncate text-[11px] font-medium tabular-nums opacity-70">
+          {timeLabel} {sub}
+        </b>
+      )}
+      <span className={cn('block truncate', narrow && 'text-[12px] font-medium')}>
         {unsent ? (
           <i
             className="mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle"

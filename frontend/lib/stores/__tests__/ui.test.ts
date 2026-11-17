@@ -60,3 +60,51 @@ describe('useUIStore — showInactiveVisits', () => {
     expect(persisted.state.showInactiveVisits).toBe(true);
   });
 });
+
+/**
+ * 狭い窓の初回表示 (narrow-window-layout-design-2026-11-18.md B・C)。
+ * サイドバーと同じく 1 度だけ畳み、利用者が切り替えた後はそれを守る。
+ */
+describe('useUIStore — schedule header / pool auto collapse', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useUIStore.setState({
+      scheduleHeaderCollapsed: false,
+      scheduleHeaderAutoCollapsedApplied: false,
+      schedulePoolCollapsed: false,
+      schedulePoolAutoCollapsedApplied: false,
+    });
+  });
+
+  it('B-1. 初回は上部をコンパクト表示にしてフラグを立てる', () => {
+    useUIStore.getState().applyScheduleHeaderAutoCollapse();
+    expect(useUIStore.getState().scheduleHeaderCollapsed).toBe(true);
+    expect(useUIStore.getState().scheduleHeaderAutoCollapsedApplied).toBe(true);
+  });
+
+  it('B-2. 利用者が上部を表示に戻した後は二度と自動で畳まない', () => {
+    useUIStore.getState().applyScheduleHeaderAutoCollapse();
+    useUIStore.getState().setScheduleHeaderCollapsed(false);
+    useUIStore.getState().applyScheduleHeaderAutoCollapse();
+    expect(useUIStore.getState().scheduleHeaderCollapsed).toBe(false);
+  });
+
+  it('C-1. 初回は保留プールを畳み、利用者が開いた後は畳まない', () => {
+    useUIStore.getState().applySchedulePoolAutoCollapse();
+    expect(useUIStore.getState().schedulePoolCollapsed).toBe(true);
+    useUIStore.getState().setSchedulePoolCollapsed(false);
+    useUIStore.getState().applySchedulePoolAutoCollapse();
+    expect(useUIStore.getState().schedulePoolCollapsed).toBe(false);
+  });
+
+  it('C-2. 保留プールの開閉とフラグは localStorage (carelink-ui) に永続される', () => {
+    useUIStore.getState().applySchedulePoolAutoCollapse();
+    useUIStore.getState().applyScheduleHeaderAutoCollapse();
+    const persisted = JSON.parse(window.localStorage.getItem('carelink-ui')!) as {
+      state: Record<string, unknown>;
+    };
+    expect(persisted.state.schedulePoolCollapsed).toBe(true);
+    expect(persisted.state.schedulePoolAutoCollapsedApplied).toBe(true);
+    expect(persisted.state.scheduleHeaderAutoCollapsedApplied).toBe(true);
+  });
+});

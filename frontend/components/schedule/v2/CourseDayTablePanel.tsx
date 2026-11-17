@@ -59,8 +59,10 @@ import {
   ChevronUp,
   Columns3,
   HeartPulse,
+  Inbox,
   ListChecks,
   Loader2,
+  PanelRightOpen,
   Redo2,
   RefreshCw,
   Route,
@@ -690,6 +692,10 @@ export function CourseDayTablePanel({
   // 既定 OFF = 取消済みの訪問を盤面から隠す。ON で打ち消し線つきで出す (「取消をやめる」用)。
   const showCancelled = useUIStore((s) => s.showCancelledVisits);
   const setShowCancelled = useUIStore((s) => s.setShowCancelledVisits);
+  // ─── 保留プールを細い帯に畳む (narrow-window-layout-design-2026-11-18.md C) ─────
+  // 機械ごとに覚える。狭い窓の初回は AppShell が 1 度だけ畳む。
+  const poolCollapsed = useUIStore((s) => s.schedulePoolCollapsed);
+  const setPoolCollapsed = useUIStore((s) => s.setSchedulePoolCollapsed);
   // 畳んだままでも Row1/Row2 のボタン群をその場で一時展開する (「ツール」).
   const [compactToolsOpen, setCompactToolsOpen] = useState(false);
   // コンパクト表示の「その他 ▾」(一斉スタッフ未割当・非稼働を表示・拠点・D5)。
@@ -7198,8 +7204,15 @@ export function CourseDayTablePanel({
           // (これが無いと行が内容ぶん伸びて下端がはみ出し、内部スクロールが効かない)。
           // プール列は 320px 固定 → clamp(248px, 22vw, 320px): 1280〜1440px の画面で盤面に
           // 幅を回す (mac-ui-crossplatform-design.md §2-B3)。1456px 以上では従来どおり 320px。
-          className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_clamp(248px,22vw,320px)] lg:grid-rows-[minmax(0,1fr)]"
+          // 保留プールを畳んだときは右の列を細い帯 (40px) にして盤面へ幅を回す (C)。
+          className={cn(
+            'grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)]',
+            poolCollapsed
+              ? 'lg:grid-cols-[1fr_40px]'
+              : 'lg:grid-cols-[1fr_clamp(248px,22vw,320px)]',
+          )}
           data-testid="course-day-two-pane"
+          data-pool-collapsed={poolCollapsed ? 'true' : 'false'}
         >
           {/* 左ペイン: 当該曜日の盤面 (lg 以上はこの中だけ縦スクロール)。
               日タイムラインだけは盤面内部でスクロールさせる (列ヘッダ固定のため)。 */}
@@ -7871,111 +7884,134 @@ export function CourseDayTablePanel({
             {/* Stage P-2: PoolOverviewPane が PoolGroupedByWeekday をラップし、
                 「効果を計算」ボタン・delta バッジ・効果順ソートを追加する。
                 患者カードクリック→詳細ダイアログへの既存導線は変更しない。 */}
-            <PoolOverviewPane
-              patients={poolPatients}
-              disabled={!canEdit}
-              assignedSlotsByPatient={assignedSlotsForPool}
-              partnerLocationByPatientSlot={partnerLocationByPatientSlot}
-              isoYear={isoYear}
-              isoWeek={isoWeek}
-              officeId={officeId}
-              onBulkInsert={canEdit ? () => setBulkPoolInsertOpen(true) : undefined}
-              /*
-               * ⭐ の曜日ゲートは撤去 (`dnd-all-views-design-2026-09-08.md` §2-4)。
-               * どのビュー・どの曜日でも掴め、落とした先が違う曜日なら
-               * 「配置の確認」モーダルが問い直す。掴めるか否かは canEdit のみ。
-               */
-              unregisteredPatients={unregisteredActivePatients}
-              offWeekPatients={offWeekPatients}
-              onOverviewItems={handlePoolOverviewItems}
-              onClickUnregisteredPatient={handleOpenPoolPatientDetail}
-              onOpenUnblock={(pid) => handleOpenPoolPatientDetail(pid, { autoUnblock: true })}
-              renderCard={(p, slotInfo) => {
-                const wp = coerceWeeklyPattern(p.weekly_pattern);
-                // Phase G-44: 不足表示用. 複数体制患者は slot 単位で表示しているので
-                // 数値ラベルは出さない (= 既存 partnerAssigned バッジで十分).
-                const isMultiStaff =
-                  (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ===
-                  true;
-                const shortageInfo =
-                  !isMultiStaff && patientShortageById.has(p.id)
-                    ? (patientShortageById.get(p.id) ?? null)
-                    : null;
-                const draggableId = buildPoolDraggableId(p.id, slotInfo.slotIndex);
-                const cardData: PatientCardData = {
-                  id: p.id,
-                  name: p.name,
-                  // タイムラインカードと同じ性別ウォッシュ意匠 (A-1 PO要望)。
-                  sex: (p as { sex?: string | null }).sex ?? null,
-                  caption: p.kana ?? undefined,
-                  preferredTimeLabel: formatPreferredTimeLabel(wp),
-                  serviceMinutes: wp.service_minutes ?? undefined,
-                  sexRestriction:
-                    (p.sex_restriction as 'female_only' | 'male_only' | null | undefined) ?? null,
-                  requiresMultipleStaff:
-                    (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ??
-                    null,
-                  patientStatus: p.status ?? null,
-                  // NG スタッフあり バッジ (§8-2 Phase 2). 患者一覧 (usePatients) が
-                  // 載せている派生カウントをそのまま渡す。
-                  ngStaffCount: p.ng_staff_count ?? null,
-                  slotIndex: slotInfo.slotIndex,
-                  partnerAssigned: slotInfo.partnerAssigned,
-                  // Wave 38: 相方の現在地ラベル ("本店-A 15:00" など) を素通しする.
-                  partnerLocationLabel: slotInfo.partnerLocationLabel ?? null,
-                  // Phase G-44: 「希望 N、配置 X、不足 Y」 のラベル表示.
-                  shortageInfo,
-                };
-                // ドラッグ開始時にゴーストへ流用するため「表示中のデータ」を記録。
-                poolCardDataRef.current.set(draggableId, cardData);
+            {poolCollapsed ? (
+              // 畳んだ欄 = 細い帯。押すと開く (C)。
+              <button
+                type="button"
+                onClick={() => setPoolCollapsed(false)}
+                aria-label="保留プールを開く"
+                aria-expanded={false}
+                title="保留プールを開きます"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-border-default bg-bg-base px-2 py-2 text-xs font-semibold text-text-secondary shadow-sm hover:bg-bg-muted hover:text-text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary lg:h-full lg:flex-col lg:justify-start lg:px-0 lg:py-3"
+                data-testid="pool-expand-strip"
+              >
+                <PanelRightOpen className="h-4 w-4 shrink-0" aria-hidden />
+                <Inbox className="h-4 w-4 shrink-0" aria-hidden />
+                <span className="whitespace-nowrap lg:[writing-mode:vertical-rl]">保留プール</span>
+                <span className="tnum text-text-muted" data-testid="pool-expand-strip-count">
+                  {poolPatients.length}
+                </span>
+              </button>
+            ) : null}
+            {/* 畳んでいる間も中身は残す (「効果を表示」の結果などを消さないため)。 */}
+            <div className={poolCollapsed ? 'hidden' : undefined}>
+              <PoolOverviewPane
+                onCollapse={() => setPoolCollapsed(true)}
+                patients={poolPatients}
+                disabled={!canEdit}
+                assignedSlotsByPatient={assignedSlotsForPool}
+                partnerLocationByPatientSlot={partnerLocationByPatientSlot}
+                isoYear={isoYear}
+                isoWeek={isoWeek}
+                officeId={officeId}
+                onBulkInsert={canEdit ? () => setBulkPoolInsertOpen(true) : undefined}
+                /*
+                 * ⭐ の曜日ゲートは撤去 (`dnd-all-views-design-2026-09-08.md` §2-4)。
+                 * どのビュー・どの曜日でも掴め、落とした先が違う曜日なら
+                 * 「配置の確認」モーダルが問い直す。掴めるか否かは canEdit のみ。
+                 */
+                unregisteredPatients={unregisteredActivePatients}
+                offWeekPatients={offWeekPatients}
+                onOverviewItems={handlePoolOverviewItems}
+                onClickUnregisteredPatient={handleOpenPoolPatientDetail}
+                onOpenUnblock={(pid) => handleOpenPoolPatientDetail(pid, { autoUnblock: true })}
+                renderCard={(p, slotInfo) => {
+                  const wp = coerceWeeklyPattern(p.weekly_pattern);
+                  // Phase G-44: 不足表示用. 複数体制患者は slot 単位で表示しているので
+                  // 数値ラベルは出さない (= 既存 partnerAssigned バッジで十分).
+                  const isMultiStaff =
+                    (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ===
+                    true;
+                  const shortageInfo =
+                    !isMultiStaff && patientShortageById.has(p.id)
+                      ? (patientShortageById.get(p.id) ?? null)
+                      : null;
+                  const draggableId = buildPoolDraggableId(p.id, slotInfo.slotIndex);
+                  const cardData: PatientCardData = {
+                    id: p.id,
+                    name: p.name,
+                    // タイムラインカードと同じ性別ウォッシュ意匠 (A-1 PO要望)。
+                    sex: (p as { sex?: string | null }).sex ?? null,
+                    caption: p.kana ?? undefined,
+                    preferredTimeLabel: formatPreferredTimeLabel(wp),
+                    serviceMinutes: wp.service_minutes ?? undefined,
+                    sexRestriction:
+                      (p.sex_restriction as 'female_only' | 'male_only' | null | undefined) ?? null,
+                    requiresMultipleStaff:
+                      (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ??
+                      null,
+                    patientStatus: p.status ?? null,
+                    // NG スタッフあり バッジ (§8-2 Phase 2). 患者一覧 (usePatients) が
+                    // 載せている派生カウントをそのまま渡す。
+                    ngStaffCount: p.ng_staff_count ?? null,
+                    slotIndex: slotInfo.slotIndex,
+                    partnerAssigned: slotInfo.partnerAssigned,
+                    // Wave 38: 相方の現在地ラベル ("本店-A 15:00" など) を素通しする.
+                    partnerLocationLabel: slotInfo.partnerLocationLabel ?? null,
+                    // Phase G-44: 「希望 N、配置 X、不足 Y」 のラベル表示.
+                    shortageInfo,
+                  };
+                  // ドラッグ開始時にゴーストへ流用するため「表示中のデータ」を記録。
+                  poolCardDataRef.current.set(draggableId, cardData);
 
-                // ── 同行モード連携 ─────────────────────────────────────
-                //   ②カード (複数名対応・2人目未配置) を、同行モード中にクリック
-                //   したら、その患者の配置済み訪問を個別リンクとして一括トグルする
-                //   (既にコース選択に内包される訪問はスキップ)。モード中は通常の
-                //   カードクリック (患者詳細) は抑止する。
-                //   ②カードは患者単位の操作なので「患者単位」に絞っているときだけ armed。
-                const isSecondStaffCard =
-                  isMultiStaff &&
-                  slotInfo.slotIndex === 1 &&
-                  slotInfo.partnerAssigned === true &&
-                  accompaniment.binding.isVisitArmed;
-                const accSelectableVisitIds =
-                  accompaniment.active && isSecondStaffCard
-                    ? (placedVisitsByPatient.get(p.id) ?? [])
-                        .map((v) => v.id)
-                        .filter((id) => !accompaniment.binding.isVisitInSelectedCourse(id))
-                    : [];
-                const accSelected =
-                  accSelectableVisitIds.length > 0 &&
-                  accSelectableVisitIds.every((id) => accompaniment.binding.isVisitSelected(id));
-                const handlePoolCardClick = () => {
-                  if (accompaniment.active) {
-                    if (isSecondStaffCard) {
-                      // 全選択済みなら解除、そうでなければ全選択 (タイムライン選択と同言語)。
-                      const { toggleIds } = planSecondStaffToggle(
-                        accSelectableVisitIds,
-                        accompaniment.binding.isVisitSelected,
-                      );
-                      for (const id of toggleIds) accompaniment.binding.toggleVisit(id);
+                  // ── 同行モード連携 ─────────────────────────────────────
+                  //   ②カード (複数名対応・2人目未配置) を、同行モード中にクリック
+                  //   したら、その患者の配置済み訪問を個別リンクとして一括トグルする
+                  //   (既にコース選択に内包される訪問はスキップ)。モード中は通常の
+                  //   カードクリック (患者詳細) は抑止する。
+                  //   ②カードは患者単位の操作なので「患者単位」に絞っているときだけ armed。
+                  const isSecondStaffCard =
+                    isMultiStaff &&
+                    slotInfo.slotIndex === 1 &&
+                    slotInfo.partnerAssigned === true &&
+                    accompaniment.binding.isVisitArmed;
+                  const accSelectableVisitIds =
+                    accompaniment.active && isSecondStaffCard
+                      ? (placedVisitsByPatient.get(p.id) ?? [])
+                          .map((v) => v.id)
+                          .filter((id) => !accompaniment.binding.isVisitInSelectedCourse(id))
+                      : [];
+                  const accSelected =
+                    accSelectableVisitIds.length > 0 &&
+                    accSelectableVisitIds.every((id) => accompaniment.binding.isVisitSelected(id));
+                  const handlePoolCardClick = () => {
+                    if (accompaniment.active) {
+                      if (isSecondStaffCard) {
+                        // 全選択済みなら解除、そうでなければ全選択 (タイムライン選択と同言語)。
+                        const { toggleIds } = planSecondStaffToggle(
+                          accSelectableVisitIds,
+                          accompaniment.binding.isVisitSelected,
+                        );
+                        for (const id of toggleIds) accompaniment.binding.toggleVisit(id);
+                      }
+                      return; // モード中は患者詳細を開かない。
                     }
-                    return; // モード中は患者詳細を開かない。
-                  }
-                  handleOpenPoolPatientDetail(p.id);
-                };
-                return (
-                  <PatientCard
-                    draggableId={draggableId}
-                    patient={cardData}
-                    disabled={!canEdit}
-                    // 保留プールの患者カードクリックで詳細 + プール投入提案を開く.
-                    // 同行モード中は②カードで訪問をトグル選択 (詳細は抑止)。
-                    onCardClick={handlePoolCardClick}
-                    selected={accSelected}
-                  />
-                );
-              }}
-            />
+                    handleOpenPoolPatientDetail(p.id);
+                  };
+                  return (
+                    <PatientCard
+                      draggableId={draggableId}
+                      patient={cardData}
+                      disabled={!canEdit}
+                      // 保留プールの患者カードクリックで詳細 + プール投入提案を開く.
+                      // 同行モード中は②カードで訪問をトグル選択 (詳細は抑止)。
+                      onCardClick={handlePoolCardClick}
+                      selected={accSelected}
+                    />
+                  );
+                }}
+              />
+            </div>
           </aside>
         </div>
 

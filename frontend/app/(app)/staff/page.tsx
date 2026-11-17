@@ -136,11 +136,11 @@ export default function StaffPage() {
             </>
           }
         />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {/* RB (PO決定 2026-07-08): 全ロール同一表示。staff には無効化して見せる
               (全置換のみ admin 限定として非表示を維持)。 */}
           <div
-            className={cn('flex items-center gap-2', !canCreate && 'opacity-50')}
+            className={cn('flex flex-wrap items-center gap-2', !canCreate && 'opacity-50')}
             aria-disabled={!canCreate}
             inert={!canCreate || undefined}
           >

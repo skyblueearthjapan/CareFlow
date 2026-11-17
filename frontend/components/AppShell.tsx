@@ -19,10 +19,25 @@ interface AppShellProps {
  */
 const SIDEBAR_AUTO_COLLAPSE_MAX_WIDTH = 1536;
 
+/**
+ * これ未満の画面の高さでは、初回表示時にスケジュールの上部をコンパクト表示にする (px)。
+ * Mac の Safari のいつもの窓 (約 840) で表がほぼ見えなかったため
+ * (narrow-window-layout-design-2026-11-18.md B)。
+ */
+const SCHEDULE_HEADER_AUTO_COLLAPSE_MAX_HEIGHT = 900;
+
+/**
+ * これ未満の画面幅では、初回表示時にスケジュールの保留プールを細い帯に畳む (px)
+ * (narrow-window-layout-design-2026-11-18.md C)。
+ */
+const SCHEDULE_POOL_AUTO_COLLAPSE_MAX_WIDTH = 1400;
+
 export function AppShell({ children }: AppShellProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
   const applySidebarAutoCollapse = useUIStore((s) => s.applySidebarAutoCollapse);
+  const applyScheduleHeaderAutoCollapse = useUIStore((s) => s.applyScheduleHeaderAutoCollapse);
+  const applySchedulePoolAutoCollapse = useUIStore((s) => s.applySchedulePoolAutoCollapse);
 
   // 狭い画面 (MacBook 13 の 1280〜1440px や 13 インチ Windows ノート) では初回だけ
   // サイドバーを畳んで盤面に +160px を回す (mac-ui-crossplatform-design.md §2-B2)。
@@ -30,6 +45,18 @@ export function AppShell({ children }: AppShellProps) {
   useEffect(() => {
     if (window.innerWidth < SIDEBAR_AUTO_COLLAPSE_MAX_WIDTH) applySidebarAutoCollapse();
   }, [applySidebarAutoCollapse]);
+
+  // 狭い窓 (Mac の Safari のいつもの窓など) では初回だけスケジュールの上部をコンパクトに、
+  // 保留プールを細い帯にする (narrow-window-layout-design-2026-11-18.md B・C)。
+  // サイドバーと同じく 1 度だけ。利用者が切り替えた後はそれを守る。
+  useEffect(() => {
+    if (window.innerHeight < SCHEDULE_HEADER_AUTO_COLLAPSE_MAX_HEIGHT) {
+      applyScheduleHeaderAutoCollapse();
+    }
+    if (window.innerWidth < SCHEDULE_POOL_AUTO_COLLAPSE_MAX_WIDTH) {
+      applySchedulePoolAutoCollapse();
+    }
+  }, [applyScheduleHeaderAutoCollapse, applySchedulePoolAutoCollapse]);
 
   // WebView/PWA では 100vh (環境によっては 100dvh も) がビューポート実寸より大きく
   // 計算され、アプリ枠の下端が画面外に欠ける (= 内部スクロールが最後まで届かない)。
