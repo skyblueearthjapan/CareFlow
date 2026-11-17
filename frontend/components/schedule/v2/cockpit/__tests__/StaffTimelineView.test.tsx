@@ -280,12 +280,21 @@ describe('StaffTimelineView — 描画', () => {
     expect(lane.querySelector('[title="08:30 朝会"]')).not.toBeNull();
   });
 
-  it('D: 狭いバー (30 分未満) は時刻の行を省いて名前を出し、時刻は title に残す', () => {
-    renderView({ visits: [visit({ id: 'v1', start_time: '09:00', end_time: '09:15' })] });
+  it('D: 狭いバー (30 分未満) は時刻の行を省いて名前を出し、時刻とコース名は title に残す', () => {
+    renderView({
+      visits: [visit({ id: 'v1', start_time: '09:00', end_time: '09:15', course_label: '稲毛A' })],
+    });
     const bar = screen.getByTestId('tl-bar-v1');
     expect(bar).toHaveAttribute('data-narrow', 'true');
     expect(bar).toHaveTextContent('山田');
     expect(bar).not.toHaveTextContent('09:00〜09:15');
+    expect(bar).not.toHaveTextContent('稲毛A');
+    expect(bar.getAttribute('title')).toContain('09:00〜09:15 稲毛A 山田　太郎');
+  });
+
+  it('D: 狭いバーでコース名が無いときは title に余分な空白を入れない', () => {
+    renderView({ visits: [visit({ id: 'v1', start_time: '09:00', end_time: '09:15' })] });
+    const bar = screen.getByTestId('tl-bar-v1');
     expect(bar.getAttribute('title')).toContain('09:00〜09:15 山田　太郎');
   });
 

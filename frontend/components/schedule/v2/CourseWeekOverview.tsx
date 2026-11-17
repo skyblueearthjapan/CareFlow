@@ -415,8 +415,12 @@ export function CourseWeekOverview({
           className="grid border-b border-border-default text-[11px]"
           style={{ gridTemplateColumns: gridCols }}
         >
-          {/* ヘッダー行: コーナー + 曜日ラベル (縦スクロールで固定)。 */}
-          <div className="sticky top-0 z-10 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-[10px] font-semibold text-text-muted">
+          {/* ヘッダー行: コーナー + 曜日ラベル (縦スクロールで固定)。
+              コーナーは横スクロールでも左に残し、曜日ヘッダとコース名の列より上に重ねる。 */}
+          <div
+            className="sticky left-0 top-0 z-20 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-[10px] font-semibold text-text-muted"
+            data-testid="course-week-overview-corner"
+          >
             コース \ 曜日
           </div>
           {WEEKDAYS.map((wd) => {
@@ -468,7 +472,7 @@ export function CourseWeekOverview({
           {eventFramesByWeekday && eventFramesByWeekday.size > 0 && (
             <>
               <div
-                className="border-b border-r border-border-default px-2 py-1 text-[11px] font-semibold"
+                className="sticky left-0 z-[5] border-b border-r border-border-default px-2 py-1 text-[11px] font-semibold"
                 style={{
                   background: 'var(--sched-event-bg)',
                   color: 'var(--sched-event-ink)',
@@ -526,8 +530,9 @@ export function CourseWeekOverview({
             const officeName = officeNameById.get(tpl.office_id) ?? '';
             return (
               <React.Fragment key={tpl.id}>
+                {/* コース名の列は横スクロールでも左に残す (曜日のセルより上に重ねる)。 */}
                 <div
-                  className="border-b border-r border-border-default bg-bg-base px-2 py-1 text-[11px] font-semibold text-text-primary"
+                  className="sticky left-0 z-[5] border-b border-r border-border-default bg-bg-base px-2 py-1 text-[11px] font-semibold text-text-primary"
                   data-testid={`course-week-overview-row-header-${tpl.id}`}
                 >
                   {officeName ? `${officeName}-${tpl.label}` : tpl.label}

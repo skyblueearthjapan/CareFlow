@@ -62,8 +62,8 @@ export function RakusukeTitle({ pose, title, subtitle, className }: RakusukeTitl
     <div className={cn('flex items-center gap-3', className)}>
       <Rakusuke pose={pose} className="h-11 shrink-0" />
       <div className="space-y-0.5">
-        {/* 見出しは折り返さない (狭い窓で「患者マ／スタ」と折れたため)。折り返すのはボタンの列のほう。 */}
-        <h1 className="whitespace-nowrap font-serif text-2xl font-bold text-text-primary">
+        {/* 見出しは 640px 以上で折り返さない (狭い窓で「患者マ／スタ」と折れたため)。折り返すのはボタンの列のほう。スマホ幅ではあふれないよう折り返す。 */}
+        <h1 className="font-serif sm:whitespace-nowrap text-2xl font-bold text-text-primary">
           {title}
         </h1>
         {subtitle && <p className="text-sm text-text-secondary">{subtitle}</p>}

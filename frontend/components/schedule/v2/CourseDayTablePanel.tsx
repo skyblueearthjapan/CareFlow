@@ -59,10 +59,8 @@ import {
   ChevronUp,
   Columns3,
   HeartPulse,
-  Inbox,
   ListChecks,
   Loader2,
-  PanelRightOpen,
   Redo2,
   RefreshCw,
   Route,
@@ -300,7 +298,12 @@ import { useUIStore } from '@/lib/stores/ui';
 import { type TimelineRowMeta } from './CourseMoveTimeline';
 import { PatientCard, type PatientCardData } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
-import { POOL_DROPPABLE_ID, buildPoolDraggableId, parsePoolDraggableId } from './PoolPanel';
+import {
+  POOL_DROPPABLE_ID,
+  PoolCollapsedStrip,
+  buildPoolDraggableId,
+  parsePoolDraggableId,
+} from './PoolPanel';
 import { PoolOverviewPane } from './PoolOverviewPane';
 // ⭐特別訪問週間チケットの DnD (`special-ticket-dnd-design-2026-09-08.md`)。
 import {
@@ -7885,28 +7888,18 @@ export function CourseDayTablePanel({
                 「効果を計算」ボタン・delta バッジ・効果順ソートを追加する。
                 患者カードクリック→詳細ダイアログへの既存導線は変更しない。 */}
             {poolCollapsed ? (
-              // 畳んだ欄 = 細い帯。押すと開く (C)。
-              <button
-                type="button"
-                onClick={() => setPoolCollapsed(false)}
-                aria-label="保留プールを開く"
-                aria-expanded={false}
-                title="保留プールを開きます"
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-border-default bg-bg-base px-2 py-2 text-xs font-semibold text-text-secondary shadow-sm hover:bg-bg-muted hover:text-text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary lg:h-full lg:flex-col lg:justify-start lg:px-0 lg:py-3"
-                data-testid="pool-expand-strip"
-              >
-                <PanelRightOpen className="h-4 w-4 shrink-0" aria-hidden />
-                <Inbox className="h-4 w-4 shrink-0" aria-hidden />
-                <span className="whitespace-nowrap lg:[writing-mode:vertical-rl]">保留プール</span>
-                <span className="tnum text-text-muted" data-testid="pool-expand-strip-count">
-                  {poolPatients.length}
-                </span>
-              </button>
+              // 畳んだ欄 = 細い帯。押すと開く (C)。畳んでいる間はこの帯が drop を受ける。
+              <PoolCollapsedStrip
+                count={poolPatients.length}
+                onExpand={() => setPoolCollapsed(false)}
+                disabled={!canEdit}
+              />
             ) : null}
             {/* 畳んでいる間も中身は残す (「効果を表示」の結果などを消さないため)。 */}
             <div className={poolCollapsed ? 'hidden' : undefined}>
               <PoolOverviewPane
                 onCollapse={() => setPoolCollapsed(true)}
+                dropDisabled={poolCollapsed}
                 patients={poolPatients}
                 disabled={!canEdit}
                 assignedSlotsByPatient={assignedSlotsForPool}

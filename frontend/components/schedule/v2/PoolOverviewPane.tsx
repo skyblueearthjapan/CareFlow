@@ -263,6 +263,7 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
       onOverviewItems,
       offWeekPatients = [],
       onCollapse,
+      dropDisabled,
     }: PoolOverviewPaneProps,
     ref,
   ) {
@@ -512,6 +513,7 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
         partnerLocationByPatientSlot={partnerLocationByPatientSlot}
         headerAction={headerAction}
         onCollapse={onCollapse}
+        dropDisabled={dropDisabled}
         topSection={
           // 特別訪問週間 (§6-2): 表示中の週のチケットを最上段に。0 件なら何も描かない。
           <SpecialVisitPoolSection

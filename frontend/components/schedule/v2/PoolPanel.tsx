@@ -29,7 +29,7 @@
  */
 import * as React from 'react';
 import { useDroppable } from '@dnd-kit/core';
-import { Inbox, PanelRightClose } from 'lucide-react';
+import { Inbox, PanelRightClose, PanelRightOpen } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
@@ -43,6 +43,8 @@ import {
 import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 
 export const POOL_DROPPABLE_ID = 'pool';
+/** 欄を畳んでいる間、中の drop 領域が退く id (無効のまま。onDragEnd には来ない)。 */
+const POOL_COLLAPSED_INNER_DROPPABLE_ID = 'pool:collapsed-inner';
 
 // ─────────────────────────────────────────────────────────────────────────
 // W37 Phase 3-B: pool draggable id helpers (multi-staff slot 0/1)
@@ -215,6 +217,12 @@ export interface PoolGroupedByWeekdayProps {
    * 指定すると見出しの横に［畳む］を出す。未指定なら出さない (従来どおり)。
    */
   onCollapse?: () => void;
+  /**
+   * 欄を畳んでいる間 true。drop は細い帯 (`PoolCollapsedStrip`) が `POOL_DROPPABLE_ID`
+   * で受けるため、中の drop 領域は別の id に退いて無効にする
+   * (dnd-kit は同じ id を 1 つしか持てず、後から登録した方が勝つため)。
+   */
+  dropDisabled?: boolean;
 }
 
 /**
@@ -279,10 +287,11 @@ export function PoolGroupedByWeekday({
   headerAction,
   topSection,
   onCollapse,
+  dropDisabled = false,
 }: PoolGroupedByWeekdayProps) {
   const { isOver, setNodeRef } = useDroppable({
-    id: POOL_DROPPABLE_ID,
-    disabled,
+    id: dropDisabled ? POOL_COLLAPSED_INNER_DROPPABLE_ID : POOL_DROPPABLE_ID,
+    disabled: disabled || dropDisabled,
     data: { kind: 'pool' },
   });
 
@@ -416,5 +425,52 @@ export function PoolGroupedByWeekday({
         )}
       </div>
     </Card>
+  );
+}
+
+/**
+ * 畳んだ保留プールの細い帯 (narrow-window-layout-design-2026-11-18.md C)。
+ * 押すと開く。畳んでいる間はこの帯が `POOL_DROPPABLE_ID` の drop 先になり、
+ * 帯に落とすとプールに落としたのと同じ扱い (親の onDragEnd) になる。
+ */
+export function PoolCollapsedStrip({
+  count,
+  onExpand,
+  disabled = false,
+}: {
+  count: number;
+  onExpand: () => void;
+  /** RBAC で編集できないとき true。drop を受けない。 */
+  disabled?: boolean;
+}) {
+  const { isOver, setNodeRef } = useDroppable({
+    id: POOL_DROPPABLE_ID,
+    disabled,
+    data: { kind: 'pool' },
+  });
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      onClick={onExpand}
+      aria-label="保留プールを開く"
+      aria-expanded={false}
+      title="保留プールを開きます"
+      data-pool="true"
+      data-testid="pool-expand-strip"
+      className={cn(
+        'flex w-full items-center justify-center gap-2 rounded-lg border px-2 py-2 text-xs font-semibold shadow-sm transition-colors hover:bg-bg-muted hover:text-text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary lg:h-full lg:flex-col lg:justify-start lg:px-0 lg:py-3',
+        isOver && !disabled
+          ? 'border-brand-primary/60 bg-brand-primary/10 text-text-primary'
+          : 'border-border-default bg-bg-base text-text-secondary',
+      )}
+    >
+      <PanelRightOpen className="h-4 w-4 shrink-0" aria-hidden />
+      <Inbox className="h-4 w-4 shrink-0" aria-hidden />
+      <span className="whitespace-nowrap lg:[writing-mode:vertical-rl]">保留プール</span>
+      <span className="tnum text-text-muted" data-testid="pool-expand-strip-count">
+        {count}
+      </span>
+    </button>
   );
 }

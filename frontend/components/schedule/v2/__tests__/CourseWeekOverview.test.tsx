@@ -191,6 +191,27 @@ describe('CourseWeekOverview (B-6)', () => {
     );
   });
 
+  it('狭い窓 (A): 横に送ってもコース名の列とコーナーは左に残る (sticky)', () => {
+    render(
+      <CourseWeekOverview
+        templates={[makeTemplate('tpl-A', 'A', 'o1')]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+      />,
+    );
+    const cls = (el: HTMLElement) => el.className.split(/\s+/);
+    const corner = cls(screen.getByTestId('course-week-overview-corner'));
+    expect(corner).toEqual(expect.arrayContaining(['sticky', 'left-0', 'top-0', 'z-20']));
+    const rowHeader = cls(screen.getByTestId('course-week-overview-row-header-tpl-A'));
+    expect(rowHeader).toEqual(expect.arrayContaining(['sticky', 'left-0', 'z-[5]', 'bg-bg-base']));
+    // 曜日ヘッダは今どおり縦スクロールで固定 (コーナーより下に重なる)。
+    const dayHeader = cls(screen.getByTestId('course-week-overview-header-0'));
+    expect(dayHeader).toEqual(expect.arrayContaining(['sticky', 'top-0', 'z-10']));
+    expect(dayHeader).not.toContain('left-0');
+  });
+
   it('2 名で訪問の 2 人目のコースの分も件数と残り枠に数える (1 行の訪問の写し)', () => {
     const tplA = makeTemplate('tpl-A', 'A', 'o1');
     const tplB = makeTemplate('tpl-B', 'B', 'o1');

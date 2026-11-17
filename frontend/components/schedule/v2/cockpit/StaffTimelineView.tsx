@@ -1844,7 +1844,7 @@ const Bar = React.memo(function Bar({
       aria-disabled={movable ? undefined : true}
       title={
         narrow
-          ? `${timeLabel} ${title}
+          ? `${[timeLabel, sub, title].filter(Boolean).join(' ')}
 ${hint}`
           : hint
       }
