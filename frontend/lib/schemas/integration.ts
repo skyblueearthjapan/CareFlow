@@ -213,6 +213,14 @@ export const ApplyRequestSchema = z.object({
    * 部分適用はシートを applied にしない = 同じ計算結果から 1 件ずつ複数回送れる。
    */
   itemIds: z.array(z.string().uuid()).optional(),
+  /**
+   * 月を指定した送信 (月をまたぐ週・2026-11-18 PO): 実日付がこの月の行だけを送る。
+   * 送った行は送信済みになり、残りの月を同じシートからあとで送れる。
+   */
+  month: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/)
+    .optional(),
 });
 export type ApplyRequest = z.infer<typeof ApplyRequestSchema>;
 

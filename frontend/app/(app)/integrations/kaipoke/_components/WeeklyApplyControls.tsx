@@ -38,6 +38,11 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
     setConfirm,
     showDiffDetail,
     setShowDiffDetail,
+    confirmMonth,
+    setConfirmMonth,
+    spansMonths,
+    monthGroups,
+    monthExpanded,
     setWeekStart,
     expandStatus,
     expand,
@@ -56,6 +61,8 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
     runDiff,
     runApply,
   } = vm;
+  const confirmGroup =
+    confirmMonth !== null ? monthGroups.find((g) => g.month === confirmMonth) : undefined;
 
   return (
     <div>
@@ -222,6 +229,74 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
             <p className="text-xs text-text-muted">
               差分がある場合に、dry-run で確認 → 本番反映ができます。
             </p>
+          ) : spansMonths ? (
+            <div className="space-y-2">
+              <p className="text-xs text-warning-strong">
+                この週は月をまたぎます。カイポケの画面は月ごとのため、月ごとに分けて送ります。上の月が終わってから、下の月を押してください。
+              </p>
+              <p className="text-xs text-text-muted">
+                送信がカイポケで失敗したときは、②で差分を取り直してから、もう一度送ってください。
+              </p>
+              {monthGroups.map((g) => {
+                const done = g.pending === 0;
+                const notExpanded = !monthExpanded(g.month);
+                return (
+                  <div
+                    key={g.month}
+                    className="flex flex-wrap items-center gap-2"
+                    data-testid={`apply-month-${g.month}`}
+                  >
+                    <span className="min-w-[10rem] whitespace-nowrap text-sm font-medium">
+                      {g.label}
+                    </span>
+                    <span className="whitespace-nowrap text-xs text-text-muted">
+                      {done
+                        ? g.sent > 0
+                          ? `送信済み ${g.sent} 件`
+                          : g.blocked > 0
+                            ? '送れる行なし'
+                            : '差分なし'
+                        : `${g.pending} 件`}
+                      {!done && g.sent > 0 && `（送信済み ${g.sent} 件）`}
+                      {g.blocked > 0 && `（送れない ${g.blocked} 件）`}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setConfirmMonth(g.month);
+                        setConfirm('dry');
+                      }}
+                      disabled={!credentialsConfigured || busy || done}
+                    >
+                      dry-run で確認
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => {
+                        setConfirmMonth(g.month);
+                        setConfirm('real');
+                      }}
+                      disabled={!credentialsConfigured || busy || done}
+                    >
+                      {g.month.slice(5).replace(/^0/, '')} 月分を本番反映
+                    </Button>
+                    {notExpanded && !done && (
+                      <span className="text-xs text-error">
+                        {g.month.slice(5).replace(/^0/, '')} 月の展開がまだです
+                      </span>
+                    )}
+                    {g.boundaryMoves > 0 && (
+                      <span className="text-xs text-text-muted">
+                        月の境をまたぐ日の移動 {g.boundaryMoves}{' '}
+                        件は送れません（カイポケで手で動かしてください）
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -249,14 +324,28 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
       </div>
 
       {/* 確認ダイアログ */}
-      <Dialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
+      <Dialog
+        open={confirm !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setConfirm(null);
+            setConfirmMonth(null);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
               {confirm === 'expand' && 'この月を展開しますか？'}
               {confirm === 'reexpand' && '再展開しますか？（上書き注意）'}
-              {confirm === 'real' && 'この週で本番反映しますか？'}
-              {confirm === 'dry' && 'dry-run で確認しますか？'}
+              {confirm === 'real' &&
+                (confirmGroup
+                  ? `${confirmGroup.label}を本番反映しますか？`
+                  : 'この週で本番反映しますか？')}
+              {confirm === 'dry' &&
+                (confirmGroup
+                  ? `${confirmGroup.label}を dry-run で確認しますか？`
+                  : 'dry-run で確認しますか？')}
             </DialogTitle>
             <DialogDescription className="space-y-2">
               {(confirm === 'expand' || confirm === 'reexpand') && (
@@ -276,7 +365,8 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
               {(confirm === 'real' || confirm === 'dry') && (
                 <>
                   <span className="block">
-                    対象週: <span className="font-medium text-text-primary">{label}</span>（{total}
+                    対象週: <span className="font-medium text-text-primary">{label}</span>（
+                    {confirmGroup ? `${confirmGroup.label} ${confirmGroup.pending}` : total}
                     件）
                   </span>
                   {confirm === 'real' ? (
@@ -299,7 +389,13 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirm(null)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirm(null);
+                setConfirmMonth(null);
+              }}
+            >
               やめる
             </Button>
             <Button
@@ -307,7 +403,7 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
               disabled={apply.isPending || expand.isPending}
               onClick={() => {
                 if (confirm === 'expand' || confirm === 'reexpand') void runExpand();
-                else void runApply(confirm === 'dry');
+                else void runApply(confirm === 'dry', confirmMonth);
               }}
             >
               {confirm === 'expand' && '展開する'}

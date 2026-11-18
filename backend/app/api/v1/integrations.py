@@ -1915,6 +1915,33 @@ async def trigger_apply(
             )
     else:
         selected_all = [it for it in sheet.items if it.include]
+    # 月を指定した送信 (月をまたぐ週・2026-11-18 PO): 実日付がその月の行だけを送る。
+    # 日付が週内で一意に決まらない行は、どの月の画面に書くか分からないので送らない。
+    is_partial = bool(payload.item_ids) or payload.month is not None
+    if payload.month is not None:
+        if payload.item_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="月の指定と行の指定は同時に使えません",
+            )
+        if sheet.week_start is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="月の指定は週のシートだけで使えます",
+            )
+        _y, _m = (int(x) for x in payload.month.split("-"))
+        selected_all = [
+            it
+            for it in selected_all
+            if (_d := resolve_item_date(it.action, it.before, it.after, sheet.week_start))
+            is not None
+            and (_d.year, _d.month) == (_y, _m)
+        ]
+        if not selected_all:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{_y} 年 {_m} 月分の送っていない行はありません（送信済みか、差分がありません）",
+            )
     if not selected_all:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2063,7 +2090,7 @@ async def trigger_apply(
             "dry_run": payload.dry_run,
             # 部分適用フラグ: reconcile がシートを applied に倒さない判定にも使う
             # (実体は「applying に遷移させない」ことで担保している)。
-            "partial": bool(payload.item_ids),
+            "partial": is_partial,
             "skipped_past": skipped_past,
             "skipped_rpa_unsupported": skipped_rpa_unsupported,
             "skipped_month_boundary": skipped_month_boundary,
@@ -2158,12 +2185,12 @@ async def trigger_apply(
         # レポート表紙 (向き・op ラベル・実行者)。
         "report_meta": build_report_meta("apply", user=user),
     }
-    if not payload.dry_run and not payload.item_ids:
+    if not payload.dry_run and not is_partial:
         # 非同期のため投入時は中間状態。実際の完了は _reconcile_latest_job が
         # job 完了を観測して applied/failed へ遷移させる (早計な applied を避ける)。
         # 部分適用 (itemIds) は遷移させない = 同一シートから続けて 1 件ずつ送れる。
         sheet.status = "applying"
-    if not payload.dry_run and payload.item_ids:
+    if not payload.dry_run and is_partial:
         # 再送ガード (レビューM1): 送った item を include=False に落とす =
         # 同じ item の再指定は上の 422 で拒否・全体適用(週次反映)の選択からも外れる。
         for _it in selected:

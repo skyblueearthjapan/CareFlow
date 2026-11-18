@@ -585,6 +585,87 @@ async def test_apply_uses_item_month_not_sheet_target_month(client, db, stub_kai
 
 
 @pytest.mark.asyncio
+async def test_apply_by_month_sends_each_month_from_same_sheet(client, db, stub_kaipoke) -> None:
+    """月をまたぐ週は month を指定して 1 か月ずつ、同じシートから 2 回で送れる (2026-11-18 PO)。"""
+    admin = await _make_admin(db)
+    week_start = _month_spanning_week_start()
+    days = [week_start + timedelta(days=i) for i in range(7)]
+    first = [d for d in days if d.month == week_start.month]
+    second = [d for d in days if d.month != week_start.month]
+    sheet = await _outbound_week_sheet(db, admin, week_start, [d.day for d in days])
+    m1 = f"{first[0].year:04d}-{first[0].month:02d}"
+    m2 = f"{second[0].year:04d}-{second[0].month:02d}"
+    stub_kaipoke.responses["apply"] = {"async": True}
+
+    # dry-run は状態を変えない
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": True, "month": m1},
+    )
+    assert res.status_code == 202, res.text
+    await db.refresh(sheet, ["items", "status"])
+    assert sheet.status == "ready"
+    assert all(it.include for it in sheet.items)
+
+    # 1 つ目の月
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False, "month": m1},
+    )
+    assert res.status_code == 202, res.text
+    sent = [c for c in stub_kaipoke.calls if c[0] == "apply"]
+    assert sent[-1][1]["month"] == m1
+    assert len(sent[-1][1]["correction_data"]) == len(first)
+    await db.refresh(sheet, ["items", "status"])
+    assert sheet.status == "partial"
+    assert sum(1 for it in sheet.items if it.include) == len(second)
+
+    # 同じ月をもう一度 → 送る行がない
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False, "month": m1},
+    )
+    assert res.status_code == 422, res.text
+    assert "送っていない行はありません" in res.json()["detail"]
+
+    # 2 つ目の月
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False, "month": m2},
+    )
+    assert res.status_code == 202, res.text
+    sent = [c for c in stub_kaipoke.calls if c[0] == "apply"]
+    assert sent[-1][1]["month"] == m2
+    assert len(sent[-1][1]["correction_data"]) == len(second)
+    await db.refresh(sheet, ["items", "status"])
+    assert not any(it.include for it in sheet.items)
+
+
+@pytest.mark.asyncio
+async def test_apply_month_rejects_with_item_ids(client, db, stub_kaipoke) -> None:
+    """month と itemIds は同時に使えない。"""
+    admin = await _make_admin(db)
+    week_start = _month_spanning_week_start()
+    sheet = await _outbound_week_sheet(db, admin, week_start, [week_start.day])
+    await db.refresh(sheet, ["items"])
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={
+            "sheetId": str(sheet.id),
+            "dryRun": True,
+            "month": f"{week_start.year:04d}-{week_start.month:02d}",
+            "itemIds": [str(sheet.items[0].id)],
+        },
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
 async def test_direction_guards(client, db, stub_kaipoke) -> None:
     """inbound シートは /apply で拒否、outbound シートは /apply-inbound で拒否。"""
     await _seed_week(db)

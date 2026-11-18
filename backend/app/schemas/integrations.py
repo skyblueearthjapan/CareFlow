@@ -253,6 +253,10 @@ class IntegrationApplyRequest(BaseModel):
     # 見ない。部分適用はシートを applying/applied に遷移させない = 同じ計算結果
     # から 1 件ずつ複数回送れる (従来は 1 件送るとシート全体がロックされ 409)。
     item_ids: list[UUID] | None = Field(default=None, alias="itemIds")
+    # 月を指定した送信 (月をまたぐ週・2026-11-18 PO): 週のシートのうち、実日付が
+    # この月の行だけを送る。部分適用と同じく送った行は include=False・シートは
+    # partial になり、残りの月をあとで同じシートから送れる。item_ids と同時には使えない。
+    month: str | None = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 class JobAccepted(BaseModel):
